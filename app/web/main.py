@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.8.99"
+APP_VERSION = "0.8.100"
 
 import asyncio
 import datetime
@@ -4487,6 +4487,75 @@ async def api_station_volume_cached(location_id: int):
         str(k): {"volume": v[0], "best_sell": v[1], "traded_volume": v[2]}
         for k, v in data.items()
     }}
+
+
+@app.get("/prices/refresh/station/stream")
+async def prices_station_stream(request: Request, location_id: int):
+    """Streamed custom-station load with real progress. The volume phase fetches
+    7-day region history for every cached type (thousands), which is slow — the
+    old fixed 90% fake bar looked frozen. Streams orders/volume progress; on done
+    the client reads the now-cached data via /api/prices/station-volume/cached."""
+    import json as _json
+    conn = get_conn()
+    token = get_active_token(request, conn)
+    ensure_price_table(conn)
+    try:
+        region_id = await get_region_for_location(conn, location_id, token)
+    except Exception:
+        region_id = None
+
+    async def gen():
+        task = None
+        try:
+            cached = get_cached_station_volumes(conn, location_id)
+            if cached is not None:
+                yield f"data: {_json.dumps({'done': True, 'cached': True, 'region_id': region_id, 'pct': 100})}\n\n"
+                return
+            type_ids = [r[0] for r in conn.execute("SELECT type_id FROM market_price_cache").fetchall()]
+            if not type_ids:
+                type_ids = _refresh_type_ids(conn)
+            total = len(type_ids) or 1
+            holder = [0]
+            def _prog(done, _tot):
+                holder[0] = done
+            yield f"data: {_json.dumps({'phase': 'orders', 'pct': 4})}\n\n"
+
+            if location_id >= 1_000_000_000:
+                if not token:
+                    yield f"data: {_json.dumps({'error': 'Sign-in is required to access the structure market.'})}\n\n"
+                    return
+                task = asyncio.create_task(fetch_structure_market(
+                    conn, location_id, token, set(type_ids), region_id, progress_cb=_prog))
+            else:
+                task = asyncio.create_task(fetch_station_volumes(
+                    conn, location_id, region_id, type_ids, progress_cb=_prog))
+
+            while not task.done():
+                await asyncio.sleep(0.5)
+                pct = min(98, 8 + int(holder[0] * 90 / total))
+                yield f"data: {_json.dumps({'phase': 'volumes', 'vol_done': holder[0], 'vol_total': total, 'pct': pct})}\n\n"
+
+            exc = task.exception()
+            if exc is not None:
+                yield f"data: {_json.dumps({'error': str(exc) or 'Fetch failed.'})}\n\n"
+                return
+            task = None   # completed cleanly — don't cancel in finally
+            yield f"data: {_json.dumps({'done': True, 'cached': False, 'region_id': region_id, 'pct': 100})}\n\n"
+        except Exception as e:
+            yield f"data: {_json.dumps({'error': str(e)})}\n\n"
+        finally:
+            # If the client disconnected mid-load, cancel the background fetch so it
+            # doesn't keep writing to the connection we're about to close.
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            conn.close()
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.post("/api/prices/station-volume")

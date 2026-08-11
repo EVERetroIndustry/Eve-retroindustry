@@ -795,79 +795,73 @@
     setTimeout(() => { stationBox.style.display = 'none'; }, 150);
   });
 
-  stationLoad && stationLoad.addEventListener('click', async () => {
+  // Apply a loaded custom station's data to the table + freshness chip + chart region.
+  function applyStationResult(data, regionId, cached, shortName, locId) {
+    document.querySelectorAll('.stn-name').forEach(el => el.textContent = shortName);
+    document.querySelectorAll('.station-col').forEach(el => el.style.display = '');
+    const stnChip = document.getElementById('freshness-station');
+    if (stnChip) {
+      stnChip.querySelector('.stn-fresh-label').textContent = shortName;
+      stnChip.querySelector('.stn-fresh-age').textContent = cached ? '<30m' : 'now';
+      stnChip.classList.remove('d-none');
+    }
+    loadedStationData = data;
+    if (regionId) histCustomStation = { id: regionId, name: shortName };
+    try {
+      localStorage.setItem('eveCustomStation', JSON.stringify({
+        location_id: parseInt(locId), name: shortName, region_id: regionId || null,
+      }));
+    } catch {}
+    const liveTbody = document.getElementById('price-table')?.querySelector('tbody');
+    if (!liveTbody) {
+      stationStatus.textContent = `Loaded ${Object.keys(data || {}).length} items. Refresh the page to see station prices.`;
+      stationStatus.classList.remove('d-none');
+    } else {
+      applyStationDataToTbody();
+    }
+  }
+
+  stationLoad && stationLoad.addEventListener('click', () => {
     const locId = stationId.value;
     if (!locId || downloadBusy) return;
     dlLock(true);
     stationLoad.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Loading…';
     stationStatus.classList.add('d-none');
+    dlStart('Connecting…');
+    const shortName = stationDisplay.value.split(' - ')[0];
 
-    // Animated fake progress bar (the POST has no streamed progress)
-    dlStart('Fetching orders…');
-    let fakeP = 0;
-    const fakeInterval = setInterval(() => {
-      fakeP = Math.min(90, fakeP + (90 - fakeP) * 0.07 + 0.3);
-      dlSet(fakeP);
-    }, 600);
+    function endBtn() { stationLoad.innerHTML = '<i class="bi bi-download me-1"></i>Load'; dlLock(false); }
 
-    try {
-      const r = await fetch('/api/prices/station-volume', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({location_id: parseInt(locId)}),
-      });
-      const json = await r.json();
-      clearInterval(fakeInterval);
-
-      if (!json.ok) {
-        dlFinish('error', 'Error: ' + (json.error || 'unknown error'));
-        stationLoad.innerHTML = '<i class="bi bi-download me-1"></i>Load';
-        dlLock(false);
-        dlHide(4000);
+    // Streamed load with real progress — the volume phase fetches 7-day region
+    // history for every cached type (thousands), so it can take a few minutes.
+    const es = new EventSource('/prices/refresh/station/stream?location_id=' + encodeURIComponent(locId));
+    es.onmessage = (e) => {
+      let d; try { d = JSON.parse(e.data); } catch { return; }
+      if (d.error) {
+        es.close(); dlFinish('error', 'Error: ' + d.error); endBtn(); dlHide(4000); return;
+      }
+      if (d.done) {
+        es.close(); dlSet(100, 'Loading data…');
+        fetch('/api/prices/station-volume/cached?location_id=' + encodeURIComponent(locId))
+          .then(r => r.json())
+          .then(j => {
+            if (!j.ok) { dlFinish('error', 'Loaded, but no data returned.'); endBtn(); dlHide(3000); return; }
+            applyStationResult(j.data, d.region_id, d.cached, shortName, locId);
+            dlFinish('done', d.cached ? 'Data from cache (< 30 min).' : 'Done.');
+            endBtn(); dlHide(2500);
+          })
+          .catch(() => { dlFinish('error', 'Loaded, but failed to read data.'); endBtn(); dlHide(3000); });
         return;
       }
-
-      dlFinish('done', json.cached ? 'Data from cache (< 30 min).' : 'Done.');
-      dlHide(2500);
-
-      // Show the columns and set the station name
-      const stationShortName = stationDisplay.value.split(' - ')[0];
-      document.querySelectorAll('.stn-name').forEach(el => el.textContent = stationShortName);
-      document.querySelectorAll('.station-col').forEach(el => el.style.display = '');
-
-      // Add the custom station to the freshness strip at the top.
-      const stnChip = document.getElementById('freshness-station');
-      if (stnChip) {
-        stnChip.querySelector('.stn-fresh-label').textContent = stationShortName;
-        stnChip.querySelector('.stn-fresh-age').textContent = json.cached ? '<30m' : 'now';
-        stnChip.classList.remove('d-none');
-      }
-
-      // Persist + render via the shared path (sets data-v and applies the
-      // current number format, incl. compact mode).
-      loadedStationData = json.data;
-      // Make this station's region available to the price-history chart.
-      if (json.region_id) histCustomStation = { id: json.region_id, name: stationShortName };
-      // Remember it so it's restored (with age) on the next page load.
-      try {
-        localStorage.setItem('eveCustomStation', JSON.stringify({
-          location_id: parseInt(locId), name: stationShortName, region_id: json.region_id || null,
-        }));
-      } catch {}
-      const liveTbody = document.getElementById('price-table')?.querySelector('tbody');
-      if (!liveTbody) {
-        stationStatus.textContent = `Loaded ${Object.keys(json.data).length} items. Refresh the page to see station prices.`;
-        stationStatus.classList.remove('d-none');
-      } else {
-        applyStationDataToTbody();
-      }
-    } catch(e) {
-      clearInterval(fakeInterval);
-      dlFinish('error', 'Connection error.');
-      dlHide(3000);
-    }
-    stationLoad.innerHTML = '<i class="bi bi-download me-1"></i>Load';
-    dlLock(false);
+      const txt = (d.phase === 'volumes' && (d.vol_done || 0) > 0)
+        ? `Fetching 7-day volume… ${euro(d.vol_done || 0, false)} / ${euro(d.vol_total || 0, false)}`
+        : 'Fetching market orders…';
+      dlSet(d.pct || 0, txt);
+    };
+    es.onerror = () => {
+      if (es.readyState === EventSource.CLOSED) return;
+      es.close(); dlFinish('error', 'Connection error.'); endBtn(); dlHide(3000);
+    };
   });
 
   // --- Restore the last custom station from a previous session (cache, any age) ---

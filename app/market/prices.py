@@ -207,25 +207,26 @@ async def _fetch_region_volume(client: httpx.AsyncClient, region_id: int, type_i
         # column blank for ~half the items. A 200 with an empty history list means
         # the type has simply never traded → 0, which is a real answer (not a
         # failure), so we don't retry that.
-        for attempt in range(4):
+        for attempt in range(2):   # one quick retry — enough for transient blips
             try:
                 r = await client.get(
                     f"{ESI_BASE}/markets/{region_id}/history/",
                     params={"type_id": type_id, "datasource": "tranquility"},
-                    timeout=20,
+                    timeout=12,
                 )
             except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError):
-                await asyncio.sleep(0.5 * (attempt + 1))
-                continue
+                if attempt == 0:
+                    await asyncio.sleep(0.3)
+                    continue
+                return None
             if r.status_code == 200:
                 history = r.json()
                 if not isinstance(history, list) or not history:
                     return 0
                 cutoff = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
                 return sum(e.get("volume", 0) for e in history if (e.get("date") or "") >= cutoff)
-            if r.status_code == 420 or r.status_code >= 500:
-                # error-limited / transient server error → back off and retry
-                await asyncio.sleep(1.0 * (attempt + 1))
+            if (r.status_code == 420 or r.status_code >= 500) and attempt == 0:
+                await asyncio.sleep(0.6)
                 continue
             return None   # 400/404/… → no usable data
     return None
@@ -513,6 +514,7 @@ async def fetch_structure_market(
     token: str,
     our_type_ids: set[int],
     region_id: int | None = None,
+    progress_cb=None,
 ) -> dict[int, tuple[int | None, float | None, int | None]]:
     """
     Fetches all sell orders from a player structure via the authorized endpoint.
@@ -582,11 +584,25 @@ async def fetch_structure_market(
 
     history_map: dict[int, int | None] = {}
     if region_id and our_type_ids:
+        tids = list(our_type_ids)
+        total = len(tids)
+        done = 0
+        _BATCH = 300
         async with esi_client() as client:
-            hist_tasks = {tid: _fetch_region_volume(client, region_id, tid) for tid in our_type_ids}
-            hist_results = await asyncio.gather(*hist_tasks.values(), return_exceptions=True)
-        for tid, res in zip(hist_tasks.keys(), hist_results):
-            history_map[tid] = res if isinstance(res, int) else None
+            for start in range(0, total, _BATCH):
+                batch = tids[start:start + _BATCH]
+                res = await asyncio.gather(
+                    *[_fetch_region_volume(client, region_id, t) for t in batch],
+                    return_exceptions=True,
+                )
+                for tid, r in zip(batch, res):
+                    history_map[tid] = r if isinstance(r, int) else None
+                done += len(batch)
+                if progress_cb:
+                    try:
+                        progress_cb(done, total)
+                    except Exception:
+                        pass
 
     now = time.time()
     result: dict[int, tuple[int | None, float | None, int | None]] = {}
@@ -639,6 +655,7 @@ async def fetch_station_volumes(
     location_id: int,
     region_id: int,
     type_ids: list[int],
+    progress_cb=None,
 ) -> dict[int, tuple[int | None, float | None, int | None]]:
     """Fetches and stores volumes+prices+history for all type_ids at the given NPC station."""
     ensure_price_table(conn)
@@ -667,11 +684,24 @@ async def fetch_station_volumes(
     # order at the station (otherwise "sold in the last 7 days" would be missing for them).
     history_map: dict[int, int | None] = {}
     if type_ids:
+        total = len(type_ids)
+        done = 0
+        _BATCH = 300   # report progress every 300 types (this phase is the slow one)
         async with esi_client() as client:
-            hist_tasks = [_fetch_region_volume(client, region_id, tid) for tid in type_ids]
-            hist_results = await asyncio.gather(*hist_tasks, return_exceptions=True)
-        for tid, res in zip(type_ids, hist_results):
-            history_map[tid] = res if isinstance(res, int) else None
+            for start in range(0, total, _BATCH):
+                batch = type_ids[start:start + _BATCH]
+                res = await asyncio.gather(
+                    *[_fetch_region_volume(client, region_id, t) for t in batch],
+                    return_exceptions=True,
+                )
+                for tid, r in zip(batch, res):
+                    history_map[tid] = r if isinstance(r, int) else None
+                done += len(batch)
+                if progress_cb:
+                    try:
+                        progress_cb(done, total)
+                    except Exception:
+                        pass
 
     now = time.time()
     rows = []
