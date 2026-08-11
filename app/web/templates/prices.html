@@ -258,6 +258,9 @@
   .item-hist { cursor: pointer; }
   .item-hist:hover { color: var(--eve-gold); text-decoration: underline; text-underline-offset: 2px; }
   #histModal .modal-content { background: linear-gradient(180deg,#171e28,#131922); border:1px solid var(--eve-border); }
+  /* Dynamic width — grows with the app window (market data likes more room),
+     capped so it never gets unwieldy on very wide screens. */
+  #histModal .hist-dialog { max-width: min(1400px, 94vw); width: 100%; }
   #hist-host canvas { display:block; width:100%; }
   #hist-host .tip {
     position:absolute; pointer-events:none; background:#0d1117ee; border:1px solid var(--eve-border);
@@ -270,7 +273,7 @@
   #hist-host .tip .v { color:#8fc3ff; }
 </style>
 <div class="modal fade" id="histModal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-lg modal-dialog-centered">
+  <div class="modal-dialog modal-dialog-centered hist-dialog">
     <div class="modal-content">
       <div class="modal-header py-2">
         <div class="me-auto">
@@ -281,7 +284,13 @@
       </div>
       <div class="modal-body">
         <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between mb-2">
-          <select id="hist-market" class="form-select form-select-sm" style="width:auto;min-width:150px"></select>
+          <div class="d-flex gap-2 align-items-center">
+            <div class="btn-group btn-group-sm" id="hist-tabs">
+              <button type="button" class="btn btn-outline-secondary active" data-tab="chart"><i class="bi bi-graph-up me-1"></i>Chart</button>
+              <button type="button" class="btn btn-outline-secondary" data-tab="market"><i class="bi bi-bar-chart-steps me-1"></i>Market</button>
+            </div>
+            <select id="hist-market" class="form-select form-select-sm" style="width:auto;min-width:150px"></select>
+          </div>
           <div class="btn-group btn-group-sm" id="hist-ranges">
             <button class="btn btn-outline-secondary" data-days="7">7d</button>
             <button class="btn btn-outline-secondary" data-days="30">30d</button>
@@ -289,10 +298,43 @@
             <button class="btn btn-outline-secondary" data-days="365">1y</button>
           </div>
         </div>
-        <div class="position-relative" id="hist-host" style="min-height:340px">
-          <canvas id="hist-cv"></canvas>
-          <div class="tip" id="hist-tip"></div>
-          <div id="hist-loading" class="text-muted small" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center">Loading…</div>
+
+        <div id="hist-chart-view">
+          <div class="position-relative" id="hist-host" style="min-height:340px">
+            <canvas id="hist-cv"></canvas>
+            <div class="tip" id="hist-tip"></div>
+            <div id="hist-loading" class="text-muted small" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center">Loading…</div>
+          </div>
+        </div>
+
+        <div id="hist-market-view" style="display:none">
+          <div id="hist-market-loading" class="text-muted small py-5 text-center">Loading…</div>
+          <div class="row g-3" id="hist-market-tables" style="display:none">
+            <div class="col-lg-6">
+              <div class="d-flex justify-content-between align-items-baseline mb-1">
+                <span class="text-uppercase small" style="color:#3fb950;letter-spacing:.05em"><i class="bi bi-arrow-up-circle me-1"></i>Sell orders</span>
+                <span class="text-muted small" id="hist-sell-count"></span>
+              </div>
+              <div style="max-height:52vh;overflow-y:auto">
+                <table class="table table-sm tbl-compact mb-0">
+                  <thead><tr><th class="text-end">Price</th><th class="text-end">Qty</th><th>Location</th></tr></thead>
+                  <tbody id="hist-sell-body"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="col-lg-6">
+              <div class="d-flex justify-content-between align-items-baseline mb-1">
+                <span class="text-uppercase small" style="color:var(--eve-gold);letter-spacing:.05em"><i class="bi bi-arrow-down-circle me-1"></i>Buy orders</span>
+                <span class="text-muted small" id="hist-buy-count"></span>
+              </div>
+              <div style="max-height:52vh;overflow-y:auto">
+                <table class="table table-sm tbl-compact mb-0">
+                  <thead><tr><th class="text-end">Price</th><th class="text-end">Qty</th><th>Location</th></tr></thead>
+                  <tbody id="hist-buy-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -945,7 +987,66 @@
         })
         .catch(() => { hloading.textContent = 'Failed to load history.'; hloading.style.display = 'flex'; });
     }
-    marketSel.addEventListener('change', () => { saveLastMarket(); loadSeries(); });
+    // ── Chart / Market tabs ─────────────────────────────────────────────
+    const chartView  = document.getElementById('hist-chart-view');
+    const marketView = document.getElementById('hist-market-view');
+    const rangesEl   = document.getElementById('hist-ranges');
+    const mktLoading = document.getElementById('hist-market-loading');
+    const mktTables  = document.getElementById('hist-market-tables');
+    const sellBody   = document.getElementById('hist-sell-body');
+    const buyBody    = document.getElementById('hist-buy-body');
+    const sellCount  = document.getElementById('hist-sell-count');
+    const buyCount   = document.getElementById('hist-buy-count');
+    let activeTab = 'chart', marketKey = null;   // marketKey = "type|region" currently rendered
+
+    function reloadActive() {
+      if (activeTab === 'chart') loadSeries();
+      else { marketKey = null; loadMarket(); }
+    }
+    marketSel.addEventListener('change', () => { saveLastMarket(); reloadActive(); });
+
+    function setTab(tab) {
+      activeTab = tab;
+      document.querySelectorAll('#hist-tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+      const isChart = tab === 'chart';
+      chartView.style.display  = isChart ? '' : 'none';
+      marketView.style.display = isChart ? 'none' : '';
+      rangesEl.style.display   = isChart ? '' : 'none';   // ranges only apply to the chart
+      if (isChart) { document.getElementById('hist-sub').textContent = marketName(+marketSel.value) + ' · region-wide daily history'; draw(); }
+      else loadMarket();
+    }
+    document.getElementById('hist-tabs').addEventListener('click', e => {
+      const b = e.target.closest('button'); if (b) setTab(b.dataset.tab);
+    });
+
+    function mktRows(list) {
+      if (!list || !list.length) return '<tr><td colspan="3" class="text-muted text-center py-3">No orders</td></tr>';
+      return list.map(o => `<tr>
+        <td class="text-end font-monospace">${fmtNum(o.price, true, false)}</td>
+        <td class="text-end font-monospace">${intS(o.qty)}</td>
+        <td class="text-truncate" style="max-width:240px" title="${String(o.location || '').replace(/"/g,'&quot;')}">${o.location || '—'}</td>
+      </tr>`).join('');
+    }
+    function loadMarket() {
+      const rid = +marketSel.value;
+      const key = curType + '|' + rid;
+      if (key === marketKey) return;   // already rendered for this type+region
+      marketKey = key;
+      mktTables.style.display = 'none';
+      mktLoading.textContent = 'Loading market orders…'; mktLoading.style.display = '';
+      document.getElementById('hist-sub').textContent = marketName(rid) + ' · live regional market orders';
+      fetch('/api/prices/orders?type_id=' + encodeURIComponent(curType) + '&region_id=' + rid)
+        .then(r => r.json())
+        .then(d => {
+          if (!d || !d.ok) { mktLoading.textContent = 'Failed to load market orders.'; return; }
+          sellBody.innerHTML = mktRows(d.sell);
+          buyBody.innerHTML  = mktRows(d.buy);
+          sellCount.textContent = (d.sell_count || 0) + (d.sell_count > 150 ? ' · top 150' : '');
+          buyCount.textContent  = (d.buy_count  || 0) + (d.buy_count  > 150 ? ' · top 150' : '');
+          mktLoading.style.display = 'none'; mktTables.style.display = '';
+        })
+        .catch(() => { mktLoading.textContent = 'Failed to load market orders.'; marketKey = null; });
+    }
 
     const iskC = v => v >= 1e9 ? (v / 1e9).toFixed(2) + 'B' : v >= 1e6 ? (v / 1e6).toFixed(2) + 'M'
                     : v >= 1e3 ? (v / 1e3).toFixed(2) + 'k' : Math.round(v).toString();
@@ -1058,6 +1159,11 @@
       document.querySelectorAll('#hist-ranges button').forEach(x => x.classList.toggle('active', x.dataset.days === '90'));
       populateMarkets();
       selectMarket();   // default to the last market the user picked
+      // Always open on the Chart tab; force a fresh Market fetch next time it's opened.
+      marketKey = null;
+      activeTab = 'chart';
+      document.querySelectorAll('#hist-tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === 'chart'));
+      chartView.style.display = ''; marketView.style.display = 'none'; rangesEl.style.display = '';
       bootstrap.Modal.getOrCreateInstance(modalEl).show();
       loadSeries();
     };

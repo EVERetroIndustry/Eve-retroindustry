@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.8.98"
+APP_VERSION = "0.8.99"
 
 import asyncio
 import datetime
@@ -4226,6 +4226,75 @@ async def api_price_history(type_id: int, region_id: int = JITA_REGION):
     finally:
         conn.close()
     return {"type_id": type_id, "region_id": region_id, "series": series}
+
+
+@app.get("/api/prices/orders")
+async def api_market_orders(request: Request, type_id: int, region_id: int = JITA_REGION):
+    """Live regional market orders for one type — the "Market" tab of the item
+    popup. Returns sell orders (cheapest first) and buy orders (highest first),
+    like the in-game regional market. A per-type region query is small (usually
+    one page), so this is cheap even for liquid items."""
+    conn = get_conn()
+    token = get_active_token(request, conn)
+    try:
+        orders: list[dict] = []
+        async with esi_client() as client:
+            page = 1
+            while page <= 20:
+                try:
+                    r = await client.get(
+                        f"https://esi.evetech.net/latest/markets/{region_id}/orders/",
+                        params={"type_id": type_id, "order_type": "all",
+                                "datasource": "tranquility", "page": page},
+                        timeout=20,
+                    )
+                except Exception:
+                    break
+                if r.status_code != 200:
+                    break
+                batch = r.json()
+                if not isinstance(batch, list) or not batch:
+                    break
+                orders.extend(batch)
+                if page >= int(r.headers.get("X-Pages", 1)):
+                    break
+                page += 1
+
+        sells = sorted((o for o in orders if not o.get("is_buy_order")),
+                       key=lambda o: o.get("price", 0))
+        buys = sorted((o for o in orders if o.get("is_buy_order")),
+                      key=lambda o: -o.get("price", 0))
+
+        loc_ids = list({o.get("location_id") for o in orders if o.get("location_id")})
+        loc_names: dict[int, str] = {}
+        if loc_ids:
+            try:
+                loc_names = await resolve_station_names_bulk(loc_ids, token=token, conn=conn)
+            except Exception:
+                loc_names = load_location_names_from_db(conn)
+
+        def _loc(lid):
+            if not lid:
+                return ""
+            return loc_names.get(lid) or (f"Citadel #{lid}" if lid >= 1_000_000_000_000 else str(lid))
+
+        def _pack(o):
+            return {
+                "price": o.get("price", 0.0),
+                "qty": o.get("volume_remain", 0),
+                "location": _loc(o.get("location_id")),
+                "range": o.get("range"),
+            }
+
+        # Cap to the best 150 per side — enough depth, keeps the payload small
+        # for super-liquid items (which can have thousands of orders).
+        return {
+            "ok": True, "type_id": type_id, "region_id": region_id,
+            "sell": [_pack(o) for o in sells[:150]], "sell_count": len(sells),
+            "buy": [_pack(o) for o in buys[:150]], "buy_count": len(buys),
+        }
+    finally:
+        conn.close()
 
 
 @app.get("/api/prices/suggest")
