@@ -806,7 +806,7 @@
       stnChip.classList.remove('d-none');
     }
     loadedStationData = data;
-    if (regionId) histCustomStation = { id: regionId, name: shortName };
+    if (regionId) histCustomStation = { id: regionId, name: shortName, location_id: parseInt(locId) };
     try {
       localStorage.setItem('eveCustomStation', JSON.stringify({
         location_id: parseInt(locId), name: shortName, region_id: regionId || null,
@@ -886,7 +886,7 @@
         document.querySelectorAll('.stn-name').forEach(el => el.textContent = shortName);
         document.querySelectorAll('.station-col').forEach(el => el.style.display = '');
         applyStationDataToTbody();
-        if (saved.region_id) histCustomStation = { id: saved.region_id, name: shortName };
+        if (saved.region_id) histCustomStation = { id: saved.region_id, name: shortName, location_id: saved.location_id };
         const chip = document.getElementById('freshness-station');
         if (chip) {
           chip.querySelector('.stn-fresh-label').textContent = shortName;
@@ -948,7 +948,10 @@
       allMarkets().forEach(m => {
         const o = document.createElement('option');
         o.value = m.id; o.textContent = m.name;
-        if (histCustomStation && m === histCustomStation) o.dataset.station = '1';
+        if (histCustomStation && m === histCustomStation) {
+          o.dataset.station = '1';
+          if (m.location_id) o.dataset.loc = m.location_id;
+        }
         marketSel.appendChild(o);
       });
     }
@@ -1023,13 +1026,18 @@
     }
     function loadMarket() {
       const rid = +marketSel.value;
-      const key = curType + '|' + rid;
-      if (key === marketKey) return;   // already rendered for this type+region
+      const opt = marketSel.selectedOptions[0];
+      const loc = (opt && opt.dataset.station === '1' && opt.dataset.loc) ? opt.dataset.loc : '';
+      const key = curType + '|' + rid + '|' + loc;
+      if (key === marketKey) return;   // already rendered for this type+market
       marketKey = key;
       mktTables.style.display = 'none';
       mktLoading.textContent = 'Loading market orders…'; mktLoading.style.display = '';
-      document.getElementById('hist-sub').textContent = marketName(rid) + ' · live regional market orders';
-      fetch('/api/prices/orders?type_id=' + encodeURIComponent(curType) + '&region_id=' + rid)
+      document.getElementById('hist-sub').textContent = marketName(rid)
+        + (loc ? ' · orders at this station' : ' · live regional market orders');
+      let url = '/api/prices/orders?type_id=' + encodeURIComponent(curType) + '&region_id=' + rid;
+      if (loc) url += '&location_id=' + encodeURIComponent(loc);
+      fetch(url)
         .then(r => r.json())
         .then(d => {
           if (!d || !d.ok) { mktLoading.textContent = 'Failed to load market orders.'; return; }

@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.8.101"
+APP_VERSION = "0.8.102"
 
 import asyncio
 import datetime
@@ -4229,36 +4229,71 @@ async def api_price_history(type_id: int, region_id: int = JITA_REGION):
 
 
 @app.get("/api/prices/orders")
-async def api_market_orders(request: Request, type_id: int, region_id: int = JITA_REGION):
-    """Live regional market orders for one type — the "Market" tab of the item
-    popup. Returns sell orders (cheapest first) and buy orders (highest first),
-    like the in-game regional market. A per-type region query is small (usually
-    one page), so this is cheap even for liquid items."""
+async def api_market_orders(request: Request, type_id: int, region_id: int = JITA_REGION,
+                            location_id: int = 0):
+    """Live market orders for one type — the "Market" tab of the item popup.
+
+    Without location_id → region-wide orders (Jita / hub = the in-game regional
+    market). With location_id → only THAT station/citadel's orders: a private
+    citadel's orders are not in the public region feed, so we read its authed
+    structure market directly (otherwise the tab showed unrelated region orders
+    and never matched the table's per-station sell / available)."""
     conn = get_conn()
     token = get_active_token(request, conn)
     try:
         orders: list[dict] = []
-        async with esi_client() as client:
-            page = 1
-            while page <= 20:
-                try:
-                    r = await client.get(
-                        f"https://esi.evetech.net/latest/markets/{region_id}/orders/",
-                        params={"type_id": type_id, "order_type": "all",
-                                "datasource": "tranquility", "page": page},
-                        timeout=20,
-                    )
-                except Exception:
-                    break
-                if r.status_code != 200:
-                    break
-                batch = r.json()
-                if not isinstance(batch, list) or not batch:
-                    break
-                orders.extend(batch)
-                if page >= int(r.headers.get("X-Pages", 1)):
-                    break
-                page += 1
+        is_structure = bool(location_id) and location_id >= 1_000_000_000_000
+
+        if is_structure:
+            if not token:
+                return {"ok": False, "error": "Sign-in is required to read this citadel's market."}
+            async with esi_client() as client:
+                page = 1
+                while page <= 30:
+                    try:
+                        r = await client.get(
+                            f"https://esi.evetech.net/latest/markets/structures/{location_id}/",
+                            params={"datasource": "tranquility", "page": page},
+                            headers={"Authorization": f"Bearer {token}"},
+                            timeout=20,
+                        )
+                    except Exception:
+                        break
+                    if r.status_code == 403:
+                        return {"ok": False, "error": "No access to this structure's market."}
+                    if r.status_code != 200:
+                        break
+                    batch = r.json()
+                    if not isinstance(batch, list) or not batch:
+                        break
+                    orders.extend(o for o in batch if o.get("type_id") == type_id)
+                    if page >= int(r.headers.get("X-Pages", 1)):
+                        break
+                    page += 1
+        else:
+            async with esi_client() as client:
+                page = 1
+                while page <= 20:
+                    try:
+                        r = await client.get(
+                            f"https://esi.evetech.net/latest/markets/{region_id}/orders/",
+                            params={"type_id": type_id, "order_type": "all",
+                                    "datasource": "tranquility", "page": page},
+                            timeout=20,
+                        )
+                    except Exception:
+                        break
+                    if r.status_code != 200:
+                        break
+                    batch = r.json()
+                    if not isinstance(batch, list) or not batch:
+                        break
+                    orders.extend(batch)
+                    if page >= int(r.headers.get("X-Pages", 1)):
+                        break
+                    page += 1
+            if location_id:   # custom NPC station → keep only that station's orders
+                orders = [o for o in orders if o.get("location_id") == location_id]
 
         sells = sorted((o for o in orders if not o.get("is_buy_order")),
                        key=lambda o: o.get("price", 0))
