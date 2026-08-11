@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.8.102"
+APP_VERSION = "0.8.103"
 
 import asyncio
 import datetime
@@ -36,6 +36,7 @@ from app.character import wallet as wallet_api
 from app.character import orders as orders_api
 from app.character import jobs as jobs_api
 from app.character import contracts as contracts_api
+from app.character import planets as planets_api
 from app.web import contracts_helper
 from app.character.assets import (
     fetch_assets, ensure_assets_table, assets_at_location,
@@ -5558,6 +5559,159 @@ async def jobs_page(request: Request):
     return _tr("jobs.html", request, {
         "groups": groups, "error": None, "total_active": total_active,
         "fetch_failed": fetch_failed,
+    })
+
+
+@app.get("/planets", response_class=HTMLResponse)
+async def planets_page(request: Request):
+    """Planetary Interaction — colonies per character with extractor expiry
+    countdowns (à la RIFT: the point is knowing when to go reset PI)."""
+    conn = get_conn()
+    chars = list_characters(conn)
+    if not chars:
+        conn.close()
+        return _tr("planets.html", request, {
+            "groups": [], "error": "You are not signed in.",
+            "total_extractors": 0, "expiring_soon": 0, "needs_relogin": []})
+
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+
+    async def _one(cid: int):
+        try:
+            tok = _get_valid_token_for(conn, cid)
+            if not tok:
+                return cid, None
+            async with esi_client() as client:
+                colonies = await planets_api.fetch_planets(client, cid, tok)
+                if colonies == "forbidden" or colonies is None or not colonies:
+                    return cid, colonies
+                details = await asyncio.gather(*[
+                    planets_api.fetch_planet_detail(client, cid, c["planet_id"], tok)
+                    for c in colonies], return_exceptions=True)
+                return cid, (colonies, details)
+        except Exception:
+            return cid, None
+
+    results = await asyncio.gather(*[_one(cid) for cid, _ in chars])
+    char_name = {cid: name for cid, name in chars}
+
+    # Ids to resolve: planet names (per-planet endpoint — /universe/names can't do
+    # planets), product type names (SDE).
+    planet_ids: set[int] = set()
+    type_ids: set[int] = set()
+    for _cid, res in results:
+        if not res or isinstance(res, str):
+            continue
+        colonies, details = res
+        for c in colonies:
+            planet_ids.add(c["planet_id"])
+        for d in details:
+            if isinstance(d, dict):
+                for pin in d.get("pins", []):
+                    ed = pin.get("extractor_details") or {}
+                    if ed.get("product_type_id"):
+                        type_ids.add(ed["product_type_id"])
+
+    type_names: dict[int, str] = {}
+    if type_ids:
+        ph = ",".join("?" * len(type_ids))
+        type_names = {r[0]: r[1] for r in conn.execute(
+            f"SELECT type_id, name FROM sde_types WHERE type_id IN ({ph})", list(type_ids)
+        ).fetchall()}
+
+    # Planet names ("Jita IV", already includes the system) — one public call per
+    # planet (few per character), concurrently.
+    planet_names: dict[int, str] = {}
+    if planet_ids:
+        async def _pname(client, pid):
+            try:
+                r = await client.get(
+                    f"https://esi.evetech.net/latest/universe/planets/{pid}/",
+                    params={"datasource": "tranquility"}, timeout=8)
+                if r.status_code == 200:
+                    return pid, r.json().get("name")
+            except Exception:
+                pass
+            return pid, None
+        try:
+            async with esi_client(timeout=8) as client:
+                for pid, nm in await asyncio.gather(*[_pname(client, p) for p in planet_ids]):
+                    if nm:
+                        planet_names[pid] = nm
+        except Exception:
+            pass
+
+    def _rem(iso: str):
+        try:
+            end = _dt.datetime.fromisoformat(iso.replace("Z", "+00:00"))
+            secs = int((end - now).total_seconds())
+        except Exception:
+            return "", None
+        if secs <= 0:
+            return "Expired", secs
+        d, r = divmod(secs, 86400); h, r = divmod(r, 3600); m = r // 60
+        return (f"{d}d " if d else "") + (f"{h}h " if (d or h) else "") + f"{m}m", secs
+
+    groups = []
+    total_extractors = 0
+    expiring_soon = 0
+    needs_relogin: list[str] = []
+    for cid, res in results:
+        cname = char_name.get(cid, str(cid))
+        if res == "forbidden":
+            needs_relogin.append(cname); continue
+        if not res:
+            continue
+        colonies, details = res
+        det = {c["planet_id"]: (d if isinstance(d, dict) else None)
+               for c, d in zip(colonies, details)}
+        col_list = []
+        for c in colonies:
+            d = det.get(c["planet_id"])
+            extractors = []
+            if d:
+                for pin in d.get("pins", []):
+                    ed = pin.get("extractor_details")
+                    if not ed:
+                        continue
+                    exp = pin.get("expiry_time") or ""
+                    rem, secs = _rem(exp) if exp else ("", None)
+                    state = "expired" if (secs is not None and secs <= 0) else \
+                            ("soon" if (secs is not None and secs < 86400) else "ok")
+                    if state in ("expired", "soon"):
+                        expiring_soon += 1
+                    extractors.append({
+                        "product": type_names.get(ed.get("product_type_id"), f"#{ed.get('product_type_id')}"),
+                        "product_id": ed.get("product_type_id"),
+                        "expiry_iso": exp,
+                        "remaining": rem,
+                        "state": state,
+                        "qty_per_cycle": ed.get("qty_per_cycle", 0),
+                        "cycle_hours": round((ed.get("cycle_time") or 0) / 3600, 1),
+                        "heads": len(ed.get("heads", [])),
+                    })
+            total_extractors += len(extractors)
+            soonest = min((e["expiry_iso"] for e in extractors if e["expiry_iso"]), default="")
+            col_list.append({
+                "planet_name": planet_names.get(c["planet_id"], f"Planet #{c['planet_id']}"),
+                "system": "",   # the planet name already includes the system
+                "type_label": planets_api.planet_type_label(c.get("planet_type", "")),
+                "planet_type": c.get("planet_type", ""),
+                "upgrade_level": c.get("upgrade_level", 0),
+                "num_pins": c.get("num_pins", 0),
+                "extractors": extractors,
+                "soonest_iso": soonest,
+            })
+        col_list.sort(key=lambda x: x["soonest_iso"] or "9999")
+        groups.append({"char_id": cid, "char_name": cname, "colonies": col_list})
+
+    groups.sort(key=lambda g: (g["colonies"][0]["soonest_iso"] if g["colonies"] else "9999"))
+    conn.close()
+    return _tr("planets.html", request, {
+        "groups": groups, "error": None,
+        "total_extractors": total_extractors, "expiring_soon": expiring_soon,
+        "needs_relogin": needs_relogin,
     })
 
 

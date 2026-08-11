@@ -233,6 +233,44 @@ def main() -> None:
 
     m.orders_api.fetch_orders = fake_orders
 
+    # ── PI colonies (live from ESI; scope-gated) — stubbed for the screenshot.
+    #    Real planet/system ids so /universe/names resolves "Jita IV" etc. ──
+    PLANETS_BY_INDEX = {
+        0: [{"planet_id": 40009082, "solar_system_id": 30000142, "planet_type": "barren",
+             "upgrade_level": 3, "num_pins": 9, "owner_id": 0, "last_update": ""},
+            {"planet_id": 40009077, "solar_system_id": 30000142, "planet_type": "temperate",
+             "upgrade_level": 4, "num_pins": 12, "owner_id": 0, "last_update": ""}],
+        1: [{"planet_id": 40139389, "solar_system_id": 30002187, "planet_type": "lava",
+             "upgrade_level": 5, "num_pins": 12, "owner_id": 0, "last_update": ""}],
+    }
+
+    def _pi_extractor(pin_id, product, cycle_s, qty, heads, ends):
+        return {"pin_id": pin_id, "type_id": 3060,
+                "extractor_details": {"product_type_id": product, "cycle_time": cycle_s,
+                                      "qty_per_cycle": qty, "head_radius": 0.01,
+                                      "heads": [{"head_id": i} for i in range(heads)]},
+                "install_time": (utcnow - dt.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "expiry_time": (utcnow + ends).strftime("%Y-%m-%dT%H:%M:%SZ")}
+
+    PI_DETAIL = {
+        40009082: {"links": [], "routes": [], "pins": [
+            _pi_extractor(1, 2267, 3600, 24500, 10, dt.timedelta(days=2, hours=5)),
+            _pi_extractor(2, 2270, 3600, 18200, 8, dt.timedelta(hours=6))]},
+        40009077: {"links": [], "routes": [], "pins": [
+            _pi_extractor(3, 2268, 1800, 42000, 6, dt.timedelta(hours=-1))]},
+        40139389: {"links": [], "routes": [], "pins": [
+            _pi_extractor(4, 2272, 7200, 30000, 10, dt.timedelta(days=4))]},
+    }
+
+    async def fake_planets(client, cid, tok):
+        return list(PLANETS_BY_INDEX.get(order.get(cid, 0), []))
+
+    async def fake_planet_detail(client, cid, planet_id, tok):
+        return PI_DETAIL.get(planet_id)
+
+    m.planets_api.fetch_planets = fake_planets
+    m.planets_api.fetch_planet_detail = fake_planet_detail
+
     @m.app.get("/demo/assetsshot")
     async def _assetsshot(request: Request):
         # Render the real assets page, then expand the first station + its hangar
@@ -303,6 +341,7 @@ def main() -> None:
         "jobs":            f"http://127.0.0.1:{PORT}/jobs",
         "orders":          f"http://127.0.0.1:{PORT}/orders?char=all",
         "prices":          f"http://127.0.0.1:{PORT}/demo/pricesshot",
+        "planets":         f"http://127.0.0.1:{PORT}/planets",
     }
     HEIGHT = {"assets": 1750}
     VTB = {"assets": 13000, "prices": 12000}

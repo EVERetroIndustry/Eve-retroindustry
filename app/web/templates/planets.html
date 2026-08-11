@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}Planets — EVE Retroindustry{% endblock %}
+{% block content %}
+
+<style>
+  .pi-countdown.pi-expired { color: #f85149; font-weight: 600; }
+  .pi-countdown.pi-soon    { color: #e6b84a; font-weight: 600; }
+  .pi-planet-band { background: linear-gradient(90deg, rgba(63,185,80,.12), rgba(63,185,80,.02)); }
+</style>
+
+<div class="row mb-3 align-items-center">
+  <div class="col">
+    <h4 class="mb-0"><i class="bi bi-globe-americas me-2 text-primary"></i>Planetary Interaction
+      {% if total_extractors %}<span class="badge bg-secondary ms-2">{{ total_extractors }} extractor{{ 's' if total_extractors != 1 }}</span>{% endif %}
+      {% if expiring_soon %}<span class="badge ms-1" style="background:#3d2c00;color:#e6b84a"><i class="bi bi-clock-history me-1"></i>{{ expiring_soon }} expiring &lt;24h</span>{% endif %}
+    </h4>
+  </div>
+</div>
+
+{% if error %}
+<div class="alert alert-danger"><i class="bi bi-exclamation-circle me-2"></i>{{ error }}</div>
+{% endif %}
+
+{% if needs_relogin %}
+<div class="alert alert-warning py-2">
+  <i class="bi bi-shield-lock me-2"></i>PI access not authorized for: <strong>{{ needs_relogin | join(', ') }}</strong>.
+  Re-add {{ 'these characters' if needs_relogin | length > 1 else 'this character' }} to grant the Planetary Interaction permission.
+</div>
+{% endif %}
+
+{% if not groups and not error %}
+<div class="card"><div class="text-muted text-center py-4">
+  <i class="bi bi-globe-americas mb-2" style="font-size:2rem;opacity:.3"></i><br>
+  No planetary colonies across your characters.
+</div></div>
+{% endif %}
+
+{% for g in groups %}
+<div class="mb-4">
+  <div class="d-flex align-items-center gap-2 mb-2">
+    <img src="https://images.evetech.net/characters/{{ g.char_id }}/portrait?size=32"
+         width="28" height="28" class="rounded-circle">
+    <span class="fw-semibold">{{ g.char_name }}</span>
+    <span class="badge bg-secondary">{{ g.colonies | length }} colon{{ 'ies' if g.colonies | length != 1 else 'y' }}</span>
+  </div>
+
+  {% for c in g.colonies %}
+  <div class="card mb-2">
+    <div class="card-header pi-planet-band d-flex align-items-center justify-content-between py-2">
+      <span class="d-flex align-items-center gap-2">
+        <i class="bi bi-globe" style="color:#3fb950"></i>
+        <strong>{{ c.planet_name }}</strong>
+        <span class="badge bg-secondary" style="font-size:.62rem">{{ c.type_label }}</span>
+        {% if c.system %}<span class="text-muted small">{{ c.system }}</span>{% endif %}
+      </span>
+      <span class="d-flex align-items-center gap-2 text-muted small">
+        <span title="Command center level">Lv {{ c.upgrade_level }}</span>
+        <span class="badge bg-secondary" style="font-size:.62rem">{{ c.num_pins }} pins</span>
+      </span>
+    </div>
+    {% if c.extractors %}
+    <div class="table-responsive">
+      <table class="table table-hover tbl-compact table-sm mb-0 align-middle">
+        <thead>
+          <tr>
+            <th>Extracting</th>
+            <th class="text-end">Per cycle</th>
+            <th class="text-end">Cycle</th>
+            <th class="text-end">Heads</th>
+            <th class="text-end">Expires</th>
+            <th class="text-end">Remaining</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for e in c.extractors %}
+          <tr>
+            <td>
+              <span class="d-inline-flex align-items-center gap-2">
+                <img loading="lazy" src="https://images.evetech.net/types/{{ e.product_id }}/icon?size=32"
+                     width="24" height="24" class="rounded" onerror="this.style.visibility='hidden'">
+                {{ e.product }}
+              </span>
+            </td>
+            <td class="text-end">{{ e.qty_per_cycle | format_number }}</td>
+            <td class="text-end text-muted" style="white-space:nowrap">{{ e.cycle_hours }}h</td>
+            <td class="text-end text-muted">{{ e.heads }}</td>
+            <td class="text-end text-muted" style="white-space:nowrap;font-size:.78rem">{{ e.expiry_iso | replace('T',' ') | replace('Z','') | truncate(16,true,'') }}</td>
+            <td class="text-end pi-countdown pi-{{ e.state }}" data-expiry="{{ e.expiry_iso }}" style="white-space:nowrap">{{ e.remaining }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="text-muted text-center py-2" style="font-size:.82rem">No active extractors (factory-only or idle colony).</div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endfor %}
+
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  function fmt(ms) {
+    if (ms <= 0) return 'Expired';
+    let s = Math.floor(ms / 1000);
+    const d = Math.floor(s / 86400); s -= d * 86400;
+    const h = Math.floor(s / 3600);  s -= h * 3600;
+    const m = Math.floor(s / 60);
+    return (d ? d + 'd ' : '') + ((d || h) ? h + 'h ' : '') + m + 'm';
+  }
+  function tick() {
+    const now = Date.now();
+    document.querySelectorAll('.pi-countdown').forEach(el => {
+      const iso = el.dataset.expiry;
+      if (!iso) return;
+      const ms = new Date(iso).getTime() - now;
+      el.textContent = fmt(ms);
+      el.classList.remove('pi-expired', 'pi-soon');
+      if (ms <= 0) el.classList.add('pi-expired');
+      else if (ms < 86400000) el.classList.add('pi-soon');
+    });
+  }
+  tick();
+  setInterval(tick, 60000);
+})();
+</script>
+{% endblock %}
