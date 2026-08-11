@@ -155,13 +155,21 @@
       <small class="text-muted">Search any item by name or category — full cache is loaded on demand.</small>
     </div>
     <div class="col-auto">
-      <input type="search" id="price-search" class="form-control form-control-sm"
-             placeholder="Search item or group…" style="width:220px" autocomplete="off">
+      <div class="position-relative" style="width:280px">
+        <input type="search" id="price-search" class="form-control form-control-sm"
+               placeholder="Search item or group…" autocomplete="off">
+        <div id="price-suggest" style="
+          display:none; position:absolute; z-index:1050; left:0; right:0; top:100%;
+          background:#161b22; border:1px solid #30363d; border-radius:6px; margin-top:2px;
+          max-height:340px; overflow-y:auto; box-shadow:0 8px 24px rgba(0,0,0,.5); font-size:.85rem;"></div>
+      </div>
     </div>
   </div>
 
   <div style="max-height:520px; overflow-y:auto;">
     <style>
+      /* Search autocomplete rows */
+      #price-suggest .ac-item:hover { background: #1c2531; }
       /* Compact price table: proportional tabular figures instead of wide
          monospace, smaller font, tighter rows, smaller icon. Scoped to
          #price-table so the rest of the app is untouched. */
@@ -564,6 +572,60 @@
       }
     }, 350);
   });
+
+  // ── Search autocomplete: suggest market groups + item names. This is how the
+  //    user discovers correct group names (e.g. "battlecruiser" → "Combat
+  //    Battlecruiser" / "Attack Battlecruiser") — the exact-match group search
+  //    otherwise returns nothing for a group that isn't literally named that. ──
+  (function () {
+    const box = document.getElementById('price-suggest');
+    if (!search || !box) return;
+    const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    let acDebounce = null, suppress = false;
+    function hide() { box.style.display = 'none'; box.innerHTML = ''; }
+    function pick(val) {
+      suppress = true;
+      search.value = val;
+      hide();
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+      setTimeout(() => { suppress = false; }, 60);
+    }
+    search.addEventListener('input', () => {
+      if (suppress) return;
+      const q = search.value.trim();
+      clearTimeout(acDebounce);
+      if (q.length < 2) { hide(); return; }
+      acDebounce = setTimeout(async () => {
+        try {
+          const r = await fetch('/api/prices/suggest?q=' + encodeURIComponent(q));
+          const d = await r.json();
+          const groups = d.groups || [], items = d.items || [];
+          if (!groups.length && !items.length) { hide(); return; }
+          let h = '';
+          if (groups.length) {
+            h += '<div class="px-2 pt-2 pb-1 text-muted" style="font-size:.68rem;text-transform:uppercase;letter-spacing:.05em">Groups</div>';
+            h += groups.map(g => `<div class="ac-item px-2 py-1 d-flex align-items-center gap-2" data-val="${esc(g.name)}" style="cursor:pointer">
+              <i class="bi bi-collection" style="color:var(--eve-steel)"></i>
+              <span class="flex-grow-1 text-truncate">${esc(g.name)}</span>
+              <span class="badge bg-secondary" style="font-size:.6rem">${g.count}</span></div>`).join('');
+          }
+          if (items.length) {
+            h += '<div class="px-2 pt-2 pb-1 text-muted" style="font-size:.68rem;text-transform:uppercase;letter-spacing:.05em">Items</div>';
+            h += items.map(it => `<div class="ac-item px-2 py-1 d-flex align-items-center gap-2" data-val="${esc(it.name)}" style="cursor:pointer">
+              <img src="https://images.evetech.net/types/${it.type_id}/icon?size=32" width="20" height="20" class="rounded-1" loading="lazy" onerror="this.style.visibility='hidden'">
+              <span class="text-truncate">${esc(it.name)}</span></div>`).join('');
+          }
+          box.innerHTML = h;
+          box.style.display = 'block';
+          box.querySelectorAll('.ac-item').forEach(el => {
+            el.addEventListener('mousedown', e => { e.preventDefault(); pick(el.dataset.val); });
+          });
+        } catch { hide(); }
+      }, 160);
+    });
+    search.addEventListener('blur', () => setTimeout(hide, 150));
+    search.addEventListener('keydown', e => { if (e.key === 'Escape') hide(); });
+  })();
 
   // ── Shared download progress + mutual exclusion (one ESI download at a time) ──
   // All three fetches (Jita / hub / custom station) share one progress bar and a

@@ -201,20 +201,33 @@ async def _fetch_region_volume(client: httpx.AsyncClient, region_id: int, type_i
     traded recently, which is the truthful answer."""
     import datetime
     async with _HIST_SEM:
-        try:
-            r = await client.get(
-                f"{ESI_BASE}/markets/{region_id}/history/",
-                params={"type_id": type_id, "datasource": "tranquility"},
-                timeout=15,
-            )
-            if r.status_code != 200:
-                return None
-            history = r.json()
-            if isinstance(history, list) and history:
+        # Retry on transient failures. Loading a custom station fires this for
+        # ~19k types at once; without retries a large fraction hit the ESI error
+        # limit (420) or time out and came back None, leaving the "region vol/7d"
+        # column blank for ~half the items. A 200 with an empty history list means
+        # the type has simply never traded → 0, which is a real answer (not a
+        # failure), so we don't retry that.
+        for attempt in range(4):
+            try:
+                r = await client.get(
+                    f"{ESI_BASE}/markets/{region_id}/history/",
+                    params={"type_id": type_id, "datasource": "tranquility"},
+                    timeout=20,
+                )
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError):
+                await asyncio.sleep(0.5 * (attempt + 1))
+                continue
+            if r.status_code == 200:
+                history = r.json()
+                if not isinstance(history, list) or not history:
+                    return 0
                 cutoff = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
                 return sum(e.get("volume", 0) for e in history if (e.get("date") or "") >= cutoff)
-        except Exception:
-            pass
+            if r.status_code == 420 or r.status_code >= 500:
+                # error-limited / transient server error → back off and retry
+                await asyncio.sleep(1.0 * (attempt + 1))
+                continue
+            return None   # 400/404/… → no usable data
     return None
 
 

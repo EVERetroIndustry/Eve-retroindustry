@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.8.96"
+APP_VERSION = "0.8.97"
 
 import asyncio
 import datetime
@@ -4226,6 +4226,49 @@ async def api_price_history(type_id: int, region_id: int = JITA_REGION):
     finally:
         conn.close()
     return {"type_id": type_id, "region_id": region_id, "series": series}
+
+
+@app.get("/api/prices/suggest")
+async def prices_suggest(q: str = ""):
+    """Typeahead for the Prices search box: matching market groups + item names.
+    Groups let the user discover the correct group name — e.g. typing
+    "battlecruiser" surfaces "Combat Battlecruiser" / "Attack Battlecruiser"
+    (there is no group literally named "Battlecruiser"), which the exact-match
+    group search then resolves."""
+    ql = q.strip().lower()
+    if len(ql) < 2:
+        return {"groups": [], "items": []}
+    conn = get_conn()
+    try:
+        await _ensure_groups_populated(conn)
+        like = f"%{ql}%"
+        groups = [
+            {"name": r[0], "count": r[1]}
+            for r in conn.execute(
+                """SELECT g.name, COUNT(t.type_id) AS n
+                   FROM sde_groups g
+                   JOIN sde_types t ON t.group_id = g.group_id AND t.published = 1
+                   WHERE LOWER(g.name) LIKE ?
+                   GROUP BY g.group_id
+                   HAVING n > 0
+                   ORDER BY (LOWER(g.name) = ?) DESC, n DESC, g.name
+                   LIMIT 8""",
+                (like, ql),
+            ).fetchall()
+        ]
+        items = [
+            {"type_id": r[0], "name": r[1]}
+            for r in conn.execute(
+                """SELECT type_id, name FROM sde_types
+                   WHERE published = 1 AND LOWER(name) LIKE ?
+                   ORDER BY (LOWER(name) LIKE ?) DESC, LENGTH(name), name
+                   LIMIT 10""",
+                (like, ql + "%"),
+            ).fetchall()
+        ]
+        return {"groups": groups, "items": items}
+    finally:
+        conn.close()
 
 
 @app.get("/api/prices/search")
