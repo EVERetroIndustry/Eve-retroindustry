@@ -508,6 +508,28 @@ async def get_region_for_structure(structure_id: int) -> int | None:
         return None
 
 
+def _cached_region_volume(conn: sqlite3.Connection, region_id: int | None) -> dict[int, int] | None:
+    """Reuse an already-fetched 7-day *region* volume map so a custom station in a
+    known region needn't re-fetch ~19k histories (the slow part of a station load).
+    The Jita refresh stores The Forge volume in market_price_cache; hub refreshes
+    store theirs in hub_price_cache. A custom station's "region vol/7d" is exactly
+    that region-wide number, so when the region is one we've already loaded we can
+    reuse it verbatim — the same data the Jita/hub columns show. Returns
+    {type_id: volume} or None if that region isn't cached yet."""
+    if not region_id:
+        return None
+    if region_id == JITA_REGION:
+        rows = conn.execute(
+            "SELECT type_id, volume FROM market_price_cache WHERE volume IS NOT NULL"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT type_id, volume FROM hub_price_cache WHERE region_id=? AND volume IS NOT NULL",
+            (region_id,),
+        ).fetchall()
+    return {r[0]: r[1] for r in rows} if rows else None
+
+
 async def fetch_structure_market(
     conn: sqlite3.Connection,
     structure_id: int,
@@ -585,24 +607,33 @@ async def fetch_structure_market(
     history_map: dict[int, int | None] = {}
     if region_id and our_type_ids:
         tids = list(our_type_ids)
-        total = len(tids)
-        done = 0
-        _BATCH = 300
-        async with esi_client() as client:
-            for start in range(0, total, _BATCH):
-                batch = tids[start:start + _BATCH]
-                res = await asyncio.gather(
-                    *[_fetch_region_volume(client, region_id, t) for t in batch],
-                    return_exceptions=True,
-                )
-                for tid, r in zip(batch, res):
-                    history_map[tid] = r if isinstance(r, int) else None
-                done += len(batch)
-                if progress_cb:
-                    try:
-                        progress_cb(done, total)
-                    except Exception:
-                        pass
+        reuse = _cached_region_volume(conn, region_id)
+        if reuse is not None:
+            history_map = {tid: reuse.get(tid) for tid in tids}
+            if progress_cb:
+                try:
+                    progress_cb(len(tids), len(tids))
+                except Exception:
+                    pass
+        else:
+            total = len(tids)
+            done = 0
+            _BATCH = 300
+            async with esi_client() as client:
+                for start in range(0, total, _BATCH):
+                    batch = tids[start:start + _BATCH]
+                    res = await asyncio.gather(
+                        *[_fetch_region_volume(client, region_id, t) for t in batch],
+                        return_exceptions=True,
+                    )
+                    for tid, r in zip(batch, res):
+                        history_map[tid] = r if isinstance(r, int) else None
+                    done += len(batch)
+                    if progress_cb:
+                        try:
+                            progress_cb(done, total)
+                        except Exception:
+                            pass
 
     now = time.time()
     result: dict[int, tuple[int | None, float | None, int | None]] = {}
@@ -684,24 +715,36 @@ async def fetch_station_volumes(
     # order at the station (otherwise "sold in the last 7 days" would be missing for them).
     history_map: dict[int, int | None] = {}
     if type_ids:
-        total = len(type_ids)
-        done = 0
-        _BATCH = 300   # report progress every 300 types (this phase is the slow one)
-        async with esi_client() as client:
-            for start in range(0, total, _BATCH):
-                batch = type_ids[start:start + _BATCH]
-                res = await asyncio.gather(
-                    *[_fetch_region_volume(client, region_id, t) for t in batch],
-                    return_exceptions=True,
-                )
-                for tid, r in zip(batch, res):
-                    history_map[tid] = r if isinstance(r, int) else None
-                done += len(batch)
-                if progress_cb:
-                    try:
-                        progress_cb(done, total)
-                    except Exception:
-                        pass
+        reuse = _cached_region_volume(conn, region_id)
+        if reuse is not None:
+            # Region already loaded (Jita/Forge or a hub) — reuse its 7-day volume
+            # instead of re-fetching ~19k histories. Turns a ~3-minute load into
+            # seconds (only the station-specific orders phase remains).
+            history_map = {tid: reuse.get(tid) for tid in type_ids}
+            if progress_cb:
+                try:
+                    progress_cb(len(type_ids), len(type_ids))
+                except Exception:
+                    pass
+        else:
+            total = len(type_ids)
+            done = 0
+            _BATCH = 300   # report progress every 300 types (this phase is the slow one)
+            async with esi_client() as client:
+                for start in range(0, total, _BATCH):
+                    batch = type_ids[start:start + _BATCH]
+                    res = await asyncio.gather(
+                        *[_fetch_region_volume(client, region_id, t) for t in batch],
+                        return_exceptions=True,
+                    )
+                    for tid, r in zip(batch, res):
+                        history_map[tid] = r if isinstance(r, int) else None
+                    done += len(batch)
+                    if progress_cb:
+                        try:
+                            progress_cb(done, total)
+                        except Exception:
+                            pass
 
     now = time.time()
     rows = []
