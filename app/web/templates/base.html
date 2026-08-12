@@ -36,12 +36,12 @@
        whole row fits without a horizontal scrollbar. */
     .navbar-nav .nav-link { white-space: nowrap; padding-left: .5rem; padding-right: .5rem; }
     .nav-label { margin-left: .35rem; white-space: nowrap; }
-    /* Narrow widths → collapse the main nav to icons only (the full name shows
-       as a tooltip on hover). Below 992px the navbar switches to the hamburger
-       menu where full labels are used, so this only applies in between. */
-    @media (min-width: 992px) and (max-width: 1399.98px) {
-      .navbar-nav .nav-label { display: none; }
-    }
+    /* Icon-only mode. Applied by JS (fitNavbar) the moment the full-text bar
+       would overflow — a fixed width breakpoint can't know the true width
+       (character-name length, locale, font), so it always kicked in too late
+       and part of the bar was already clipped. Below 992px Bootstrap's
+       navbar-expand-lg takes over with the hamburger (full labels there). */
+    .navbar.nav-compact .navbar-nav .nav-label { display: none; }
     /* Cap the active character name (ellipsis) so a long name can't stretch the navbar. */
     .nav-char-name { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -373,6 +373,32 @@ async function openExternal(url, ev) {
     window.open(url, '_blank', 'noopener');
   }
 }
+
+// Navbar fit: switch to icon-only the instant the full-text bar would overflow.
+// We measure the real overflow instead of guessing a width breakpoint, so every
+// control stays visible at any window width (below 992px Bootstrap's hamburger
+// takes over). Measure-then-toggle happens inside one synchronous handler, so
+// the transient full-text state is never painted → no flicker.
+function fitNavbar() {
+  const nav = document.querySelector('nav.navbar');
+  const bar = nav && nav.querySelector(':scope > .container-fluid');
+  if (!nav || !bar) return;
+  // < 992px → hamburger (Bootstrap), labels shown in the dropdown.
+  if (window.innerWidth < 992) { nav.classList.remove('nav-compact'); return; }
+  nav.classList.remove('nav-compact');           // try full text first
+  if (bar.scrollWidth > bar.clientWidth + 1) {    // …doesn't fit → icons only
+    nav.classList.add('nav-compact');
+  }
+}
+let _navFitPending = false;
+function scheduleNavFit() {
+  if (_navFitPending) return;
+  _navFitPending = true;
+  requestAnimationFrame(() => { _navFitPending = false; fitNavbar(); });
+}
+window.addEventListener('resize', scheduleNavFit);
+window.addEventListener('load', fitNavbar);
+document.addEventListener('DOMContentLoaded', fitNavbar);
 
 // Global Sync All — available on every page via the navbar button.
 async function syncAll(btn) {
