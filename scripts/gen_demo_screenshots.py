@@ -252,14 +252,27 @@ def main() -> None:
                 "install_time": (utcnow - dt.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "expiry_time": (utcnow + ends).strftime("%Y-%m-%dT%H:%M:%SZ")}
 
+    def _pi_factory(pin_id, schematic):
+        return {"pin_id": pin_id, "type_id": 2473, "schematic_id": schematic,
+                "factory_details": {"schematic_id": schematic}}
+
+    def _pi_storage(pin_id, contents):
+        return {"pin_id": pin_id, "type_id": 2257,
+                "contents": [{"type_id": t, "amount": a} for t, a in contents]}
+
     PI_DETAIL = {
         40009082: {"links": [], "routes": [], "pins": [
             _pi_extractor(1, 2267, 3600, 24500, 10, dt.timedelta(days=2, hours=5)),
-            _pi_extractor(2, 2270, 3600, 18200, 8, dt.timedelta(hours=6))]},
+            _pi_extractor(2, 2270, 3600, 18200, 8, dt.timedelta(hours=6)),
+            _pi_factory(5, 65),
+            _pi_storage(6, [(2267, 128400), (2270, 91250), (2268, 40300)])]},
         40009077: {"links": [], "routes": [], "pins": [
-            _pi_extractor(3, 2268, 1800, 42000, 6, dt.timedelta(hours=-1))]},
+            _pi_extractor(3, 2268, 1800, 42000, 6, dt.timedelta(hours=-1)),
+            _pi_storage(7, [(2268, 210500)])]},
         40139389: {"links": [], "routes": [], "pins": [
-            _pi_extractor(4, 2272, 7200, 30000, 10, dt.timedelta(days=4))]},
+            _pi_extractor(4, 2272, 7200, 30000, 10, dt.timedelta(days=4)),
+            _pi_factory(8, 121),
+            _pi_storage(9, [(2272, 64000)])]},
     }
 
     async def fake_planets(client, cid, tok):

@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.8.103"
+APP_VERSION = "0.8.104"
 
 import asyncio
 import datetime
@@ -5600,6 +5600,7 @@ async def planets_page(request: Request):
     # planets), product type names (SDE).
     planet_ids: set[int] = set()
     type_ids: set[int] = set()
+    schematic_ids: set[int] = set()
     for _cid, res in results:
         if not res or isinstance(res, str):
             continue
@@ -5612,6 +5613,11 @@ async def planets_page(request: Request):
                     ed = pin.get("extractor_details") or {}
                     if ed.get("product_type_id"):
                         type_ids.add(ed["product_type_id"])
+                    for cont in (pin.get("contents") or []):
+                        if cont.get("type_id"):
+                            type_ids.add(cont["type_id"])
+                    if pin.get("schematic_id"):
+                        schematic_ids.add(pin["schematic_id"])
 
     type_names: dict[int, str] = {}
     if type_ids:
@@ -5639,6 +5645,28 @@ async def planets_page(request: Request):
                 for pid, nm in await asyncio.gather(*[_pname(client, p) for p in planet_ids]):
                     if nm:
                         planet_names[pid] = nm
+        except Exception:
+            pass
+
+    # Factory schematic names = the produced commodity (ESI gives the output name
+    # directly; the SDE has no schematic table). One public call per schematic.
+    schematic_names: dict[int, str] = {}
+    if schematic_ids:
+        async def _sname(client, sid):
+            try:
+                r = await client.get(
+                    f"https://esi.evetech.net/latest/universe/schematics/{sid}/",
+                    params={"datasource": "tranquility"}, timeout=8)
+                if r.status_code == 200:
+                    return sid, r.json().get("schematic_name")
+            except Exception:
+                pass
+            return sid, None
+        try:
+            async with esi_client(timeout=8) as client:
+                for sid, nm in await asyncio.gather(*[_sname(client, s) for s in schematic_ids]):
+                    if nm:
+                        schematic_names[sid] = nm
         except Exception:
             pass
 
@@ -5670,27 +5698,41 @@ async def planets_page(request: Request):
         for c in colonies:
             d = det.get(c["planet_id"])
             extractors = []
+            producing: list[str] = []          # factory output commodities (unique)
+            stored_agg: dict[int, int] = {}     # aggregated storage/launchpad contents
             if d:
                 for pin in d.get("pins", []):
                     ed = pin.get("extractor_details")
-                    if not ed:
-                        continue
-                    exp = pin.get("expiry_time") or ""
-                    rem, secs = _rem(exp) if exp else ("", None)
-                    state = "expired" if (secs is not None and secs <= 0) else \
-                            ("soon" if (secs is not None and secs < 86400) else "ok")
-                    if state in ("expired", "soon"):
-                        expiring_soon += 1
-                    extractors.append({
-                        "product": type_names.get(ed.get("product_type_id"), f"#{ed.get('product_type_id')}"),
-                        "product_id": ed.get("product_type_id"),
-                        "expiry_iso": exp,
-                        "remaining": rem,
-                        "state": state,
-                        "qty_per_cycle": ed.get("qty_per_cycle", 0),
-                        "cycle_hours": round((ed.get("cycle_time") or 0) / 3600, 1),
-                        "heads": len(ed.get("heads", [])),
-                    })
+                    if ed:
+                        exp = pin.get("expiry_time") or ""
+                        rem, secs = _rem(exp) if exp else ("", None)
+                        state = "expired" if (secs is not None and secs <= 0) else \
+                                ("soon" if (secs is not None and secs < 86400) else "ok")
+                        if state in ("expired", "soon"):
+                            expiring_soon += 1
+                        extractors.append({
+                            "product": type_names.get(ed.get("product_type_id"), f"#{ed.get('product_type_id')}"),
+                            "product_id": ed.get("product_type_id"),
+                            "expiry_iso": exp,
+                            "remaining": rem,
+                            "state": state,
+                            "qty_per_cycle": ed.get("qty_per_cycle", 0),
+                            "cycle_hours": round((ed.get("cycle_time") or 0) / 3600, 1),
+                            "heads": len(ed.get("heads", [])),
+                        })
+                    sid = pin.get("schematic_id")
+                    if sid:
+                        nm = schematic_names.get(sid)
+                        if nm and nm not in producing:
+                            producing.append(nm)
+                    for cont in (pin.get("contents") or []):
+                        tid = cont.get("type_id")
+                        if tid:
+                            stored_agg[tid] = stored_agg.get(tid, 0) + (cont.get("amount") or 0)
+            stored = sorted(
+                ({"name": type_names.get(tid, f"#{tid}"), "type_id": tid, "amount": amt}
+                 for tid, amt in stored_agg.items() if amt),
+                key=lambda x: -x["amount"])
             total_extractors += len(extractors)
             soonest = min((e["expiry_iso"] for e in extractors if e["expiry_iso"]), default="")
             col_list.append({
@@ -5701,6 +5743,8 @@ async def planets_page(request: Request):
                 "upgrade_level": c.get("upgrade_level", 0),
                 "num_pins": c.get("num_pins", 0),
                 "extractors": extractors,
+                "producing": producing,
+                "stored": stored,
                 "soonest_iso": soonest,
             })
         col_list.sort(key=lambda x: x["soonest_iso"] or "9999")

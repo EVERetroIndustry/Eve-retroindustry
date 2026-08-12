@@ -47,11 +47,14 @@
   {% for c in g.colonies %}
   <div class="card mb-2">
     <div class="card-header pi-planet-band d-flex align-items-center justify-content-between py-2">
-      <span class="d-flex align-items-center gap-2">
+      <span class="d-flex align-items-center gap-2 flex-wrap">
         <i class="bi bi-globe" style="color:#3fb950"></i>
         <strong>{{ c.planet_name }}</strong>
         <span class="badge bg-secondary" style="font-size:.62rem">{{ c.type_label }}</span>
-        {% if c.system %}<span class="text-muted small">{{ c.system }}</span>{% endif %}
+        {% if c.producing %}
+        <span class="text-muted small ms-1"><i class="bi bi-arrow-right-short"></i>makes</span>
+        {% for p in c.producing %}<span class="badge" style="background:#12331f;color:#7ee2a8;font-size:.62rem;border:1px solid #1f5236">{{ p }}</span>{% endfor %}
+        {% endif %}
       </span>
       <span class="d-flex align-items-center gap-2 text-muted small">
         <span title="Command center level">Lv {{ c.upgrade_level }}</span>
@@ -93,6 +96,18 @@
     </div>
     {% else %}
     <div class="text-muted text-center py-2" style="font-size:.82rem">No active extractors (factory-only or idle colony).</div>
+    {% endif %}
+    {% if c.stored %}
+    <div class="px-3 py-2 border-top" style="border-color:var(--eve-border) !important">
+      <span class="text-muted small me-2"><i class="bi bi-box-seam me-1"></i>Stored</span>
+      {% for s in c.stored[:14] %}
+      <span class="d-inline-flex align-items-center gap-1 me-2 mb-1" style="font-size:.72rem" title="{{ s.name }}">
+        <img loading="lazy" src="https://images.evetech.net/types/{{ s.type_id }}/icon?size=32" width="16" height="16" class="rounded" onerror="this.style.display='none'">
+        {{ s.name }} <span class="text-muted">×{{ s.amount | format_number }}</span>
+      </span>
+      {% endfor %}
+      {% if c.stored | length > 14 %}<span class="text-muted small">+{{ c.stored | length - 14 }} more</span>{% endif %}
+    </div>
     {% endif %}
   </div>
   {% endfor %}
