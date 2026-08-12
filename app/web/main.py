@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.8.107"
+APP_VERSION = "0.8.108"
 
 import asyncio
 import datetime
@@ -171,6 +171,8 @@ _SDE_TABLES_TO_REFRESH = (
     "sde_blueprint_products",
     "sde_blueprint_skills",
     "sde_skill_time_bonus",
+    "sde_planet_schematics",           # v0.8.106 (PI factory chains)
+    "sde_planet_schematic_materials",  # v0.8.106
 )
 
 
@@ -217,11 +219,31 @@ def _refresh_sde_from_bundle(conn: sqlite3.Connection) -> int:
     bsrc = sqlite3.connect(bundled)
     try:
         bundled_count, bundled_groups = _counts(bsrc)
-        if bundled_count <= user_count and bundled_groups <= user_groups:
-            return user_count  # user has equal/more types and groups → no merge
 
-        print(f"[sde] refreshing SDE tables: user={user_count}, bundled={bundled_count}",
-              flush=True)
+        # Also refresh when a table the app now needs is MISSING from the user's
+        # DB but present in the bundle — e.g. a new SDE table (PI schematics,
+        # v0.8.106) added without the type/group counts changing. Without this,
+        # an existing eve_cache.db never gains the new table and queries 500.
+        user_tables = {
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        bundle_tables = {
+            r[0] for r in bsrc.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        missing = any(
+            t in bundle_tables and t not in user_tables
+            for t in _SDE_TABLES_TO_REFRESH
+        )
+
+        if bundled_count <= user_count and bundled_groups <= user_groups and not missing:
+            return user_count  # user is up to date on types, groups, and tables
+
+        print(f"[sde] refreshing SDE tables: user={user_count}, bundled={bundled_count}, "
+              f"missing_table={missing}", flush=True)
         payload = []
         for table in _SDE_TABLES_TO_REFRESH:
             ddl = bsrc.execute(
@@ -5646,8 +5668,14 @@ async def planets_page(request: Request):
 
     # Factory schematics from the SDE (output + inputs + cycle) — powers the
     # production-chain view. Adds their type_ids so names resolve below.
+    # The table arrives with v0.8.106; an older eve_cache.db that predates the
+    # startup SDE-refresh won't have it yet, so degrade gracefully (colonies
+    # still render, just without production chains) instead of 500-ing.
     schematics: dict[int, dict] = {}
-    if schematic_ids:
+    _has_schematics = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='sde_planet_schematics'"
+    ).fetchone() is not None
+    if schematic_ids and _has_schematics:
         sph = ",".join("?" * len(schematic_ids))
         for sid, nm, cyc, out_tid, out_qty in conn.execute(
             f"SELECT schematic_id, name, cycle_time, output_type_id, output_qty "
