@@ -51,12 +51,13 @@
         <i class="bi bi-globe" style="color:#3fb950"></i>
         <strong>{{ c.planet_name }}</strong>
         <span class="badge bg-secondary" style="font-size:.62rem">{{ c.type_label }}</span>
-        {% if c.producing %}
+        {% if c.production %}
         <span class="text-muted small ms-1"><i class="bi bi-arrow-right-short"></i>makes</span>
-        {% for p in c.producing %}<span class="badge" style="background:#12331f;color:#7ee2a8;font-size:.62rem;border:1px solid #1f5236">{{ p }}</span>{% endfor %}
+        {% for p in c.production %}<span class="badge" style="background:#12331f;color:#7ee2a8;font-size:.62rem;border:1px solid #1f5236">{{ p.output }}{% if p.count > 1 %} ×{{ p.count }}{% endif %}</span>{% endfor %}
         {% endif %}
       </span>
       <span class="d-flex align-items-center gap-2 text-muted small">
+        {% if c.value_day %}<span class="text-isk" title="Estimated output value per day (finished-goods qty × sell price, if factories stay supplied)">~{{ c.value_day | isk0 }}/day</span>{% endif %}
         <span title="Command center level">Lv {{ c.upgrade_level }}</span>
         <span class="badge bg-secondary" style="font-size:.62rem">{{ c.num_pins }} pins</span>
       </span>
@@ -96,6 +97,26 @@
     </div>
     {% else %}
     <div class="text-muted text-center py-2" style="font-size:.82rem">No active extractors (factory-only or idle colony).</div>
+    {% endif %}
+    {% if c.production %}
+    <div class="px-3 py-2 border-top" style="border-color:var(--eve-border) !important">
+      <span class="text-muted small me-2 d-block mb-1"><i class="bi bi-diagram-3 me-1"></i>Production</span>
+      {% for p in c.production %}
+      <div class="d-flex align-items-center flex-wrap gap-1 mb-1" style="font-size:.74rem">
+        {% if p.count > 1 %}<span class="text-muted">{{ p.count }}×</span>{% endif %}
+        <img loading="lazy" src="https://images.evetech.net/types/{{ p.output_id }}/icon?size=32" width="18" height="18" class="rounded" onerror="this.style.display='none'">
+        <strong style="color:#7ee2a8">{{ p.output }}</strong><span class="text-muted">×{{ p.output_qty }}</span>
+        {% if p.cycle_hours %}<span class="text-muted">/ {{ p.cycle_hours }}h</span>{% endif %}
+        {% if p.inputs %}
+        <span class="text-muted mx-1">←</span>
+        {% for i in p.inputs %}
+        <span class="d-inline-flex align-items-center gap-1 text-muted">
+          <img loading="lazy" src="https://images.evetech.net/types/{{ i.type_id }}/icon?size=32" width="14" height="14" class="rounded" onerror="this.style.display='none'">{{ i.name }} ×{{ i.qty }}</span>{{ ' +' if not loop.last }}
+        {% endfor %}
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
     {% endif %}
     {% if c.stored %}
     <div class="px-3 py-2 border-top" style="border-color:var(--eve-border) !important">

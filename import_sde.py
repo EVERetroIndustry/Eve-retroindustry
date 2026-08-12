@@ -42,6 +42,44 @@ def _yaml_load(f):
 BLUEPRINTS_YAML = os.path.join(SDE_DIR, "blueprints.yaml")
 TYPES_YAML = os.path.join(SDE_DIR, "types.yaml")
 GROUPS_YAML = os.path.join(SDE_DIR, "groups.yaml")
+PLANET_SCHEMATICS_YAML = os.path.join(SDE_DIR, "planetSchematics.yaml")
+
+
+def import_planet_schematics(conn: sqlite3.Connection):
+    """PI factory schematics: inputs → output (type_ids + quantities) + cycle time.
+    Powers the Planets production-chain view. Source: planetSchematics.yaml."""
+    if not os.path.exists(PLANET_SCHEMATICS_YAML):
+        console.print(f"[yellow]planetSchematics.yaml not found ({PLANET_SCHEMATICS_YAML}) — skipping[/]")
+        return
+    console.print("Loading planetSchematics.yaml…")
+    with open(PLANET_SCHEMATICS_YAML, "r", encoding="utf-8") as f:
+        data = _yaml_load(f)
+    sch_rows, mat_rows = [], []
+    for sid, info in (data or {}).items():
+        if not isinstance(info, dict):
+            continue
+        nf = info.get("name", {})
+        name = nf.get("en", "") if isinstance(nf, dict) else str(nf)
+        out_tid, out_qty = None, 0
+        for tid, td in (info.get("types") or {}).items():
+            if not isinstance(td, dict):
+                continue
+            qty = td.get("quantity", 0)
+            if td.get("isInput"):
+                mat_rows.append((int(sid), int(tid), qty))
+            else:
+                out_tid, out_qty = int(tid), qty
+        sch_rows.append((int(sid), name, info.get("cycleTime", 0), out_tid, out_qty))
+    conn.executemany(
+        "INSERT OR REPLACE INTO sde_planet_schematics "
+        "(schematic_id, name, cycle_time, output_type_id, output_qty) VALUES (?,?,?,?,?)",
+        sch_rows)
+    conn.executemany(
+        "INSERT OR REPLACE INTO sde_planet_schematic_materials "
+        "(schematic_id, type_id, quantity) VALUES (?,?,?)",
+        mat_rows)
+    conn.commit()
+    console.print(f"[green]Imported {len(sch_rows):,} planet schematics ({len(mat_rows):,} inputs)[/]")
 
 
 def init_db(conn: sqlite3.Connection):
@@ -90,6 +128,21 @@ def init_db(conn: sqlite3.Connection):
             skill_type_id   INTEGER PRIMARY KEY,
             skill_name      TEXT NOT NULL,
             time_bonus_pct  REAL NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS sde_planet_schematics (
+            schematic_id    INTEGER PRIMARY KEY,
+            name            TEXT,
+            cycle_time      INTEGER,
+            output_type_id  INTEGER,
+            output_qty      INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS sde_planet_schematic_materials (
+            schematic_id    INTEGER NOT NULL,
+            type_id         INTEGER NOT NULL,
+            quantity        INTEGER NOT NULL,
+            PRIMARY KEY (schematic_id, type_id)
         );
 
         CREATE INDEX IF NOT EXISTS idx_bp_product ON sde_blueprint_products(product_type_id);
@@ -295,6 +348,7 @@ def main():
     import_skill_time_bonuses(conn, types_data)
     import_blueprints(conn)
     import_groups(conn)
+    import_planet_schematics(conn)
     conn.close()
 
     console.print(f"\n[bold green]Done in {time.time()-t_start:.1f}s[/]")

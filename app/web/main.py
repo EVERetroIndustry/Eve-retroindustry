@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.8.105"
+APP_VERSION = "0.8.106"
 
 import asyncio
 import datetime
@@ -15,7 +15,7 @@ import zipfile as _zipfile
 from pathlib import Path
 
 import httpx
-from app.esi.client import esi_client
+from app.esi.client import esi_client, esi_error_message
 from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
@@ -2132,7 +2132,7 @@ async def plan_result(
         }
 
     except Exception as e:
-        error = str(e)
+        error = esi_error_message(e) or str(e)
 
     # Stock-source options (names via ESI, not bare IDs). Default = manufacturing
     # station unless the user selected explicitly.
@@ -5619,11 +5619,41 @@ async def planets_page(request: Request):
                     if pin.get("schematic_id"):
                         schematic_ids.add(pin["schematic_id"])
 
+    # Factory schematics from the SDE (output + inputs + cycle) — powers the
+    # production-chain view. Adds their type_ids so names resolve below.
+    schematics: dict[int, dict] = {}
+    if schematic_ids:
+        sph = ",".join("?" * len(schematic_ids))
+        for sid, nm, cyc, out_tid, out_qty in conn.execute(
+            f"SELECT schematic_id, name, cycle_time, output_type_id, output_qty "
+            f"FROM sde_planet_schematics WHERE schematic_id IN ({sph})", list(schematic_ids)
+        ).fetchall():
+            schematics[sid] = {"name": nm, "cycle_time": cyc or 0,
+                               "output_id": out_tid, "output_qty": out_qty or 0, "inputs": []}
+            if out_tid:
+                type_ids.add(out_tid)
+        for sid, tid, qty in conn.execute(
+            f"SELECT schematic_id, type_id, quantity FROM sde_planet_schematic_materials "
+            f"WHERE schematic_id IN ({sph})", list(schematic_ids)
+        ).fetchall():
+            if sid in schematics:
+                schematics[sid]["inputs"].append({"type_id": tid, "qty": qty})
+                type_ids.add(tid)
+
     type_names: dict[int, str] = {}
     if type_ids:
         ph = ",".join("?" * len(type_ids))
         type_names = {r[0]: r[1] for r in conn.execute(
             f"SELECT type_id, name FROM sde_types WHERE type_id IN ({ph})", list(type_ids)
+        ).fetchall()}
+
+    # Sell prices (for the est. output-value/day hint) — the Jita cache.
+    price_map: dict[int, float] = {}
+    if type_ids:
+        ph = ",".join("?" * len(type_ids))
+        price_map = {r[0]: r[1] for r in conn.execute(
+            f"SELECT type_id, sell_price FROM market_price_cache "
+            f"WHERE type_id IN ({ph}) AND sell_price IS NOT NULL", list(type_ids)
         ).fetchall()}
 
     # Planet names ("Jita IV", already includes the system) — one public call per
@@ -5645,28 +5675,6 @@ async def planets_page(request: Request):
                 for pid, nm in await asyncio.gather(*[_pname(client, p) for p in planet_ids]):
                     if nm:
                         planet_names[pid] = nm
-        except Exception:
-            pass
-
-    # Factory schematic names = the produced commodity (ESI gives the output name
-    # directly; the SDE has no schematic table). One public call per schematic.
-    schematic_names: dict[int, str] = {}
-    if schematic_ids:
-        async def _sname(client, sid):
-            try:
-                r = await client.get(
-                    f"https://esi.evetech.net/latest/universe/schematics/{sid}/",
-                    params={"datasource": "tranquility"}, timeout=8)
-                if r.status_code == 200:
-                    return sid, r.json().get("schematic_name")
-            except Exception:
-                pass
-            return sid, None
-        try:
-            async with esi_client(timeout=8) as client:
-                for sid, nm in await asyncio.gather(*[_sname(client, s) for s in schematic_ids]):
-                    if nm:
-                        schematic_names[sid] = nm
         except Exception:
             pass
 
@@ -5698,7 +5706,7 @@ async def planets_page(request: Request):
         for c in colonies:
             d = det.get(c["planet_id"])
             extractors = []
-            producing: list[str] = []          # factory output commodities (unique)
+            factory_count: dict[int, int] = {}  # schematic_id → number of factory pins
             stored_agg: dict[int, int] = {}     # aggregated storage/launchpad contents
             if d:
                 for pin in d.get("pins", []):
@@ -5722,13 +5730,42 @@ async def planets_page(request: Request):
                         })
                     sid = pin.get("schematic_id")
                     if sid:
-                        nm = schematic_names.get(sid)
-                        if nm and nm not in producing:
-                            producing.append(nm)
+                        factory_count[sid] = factory_count.get(sid, 0) + 1
                     for cont in (pin.get("contents") or []):
                         tid = cont.get("type_id")
                         if tid:
                             stored_agg[tid] = stored_agg.get(tid, 0) + (cont.get("amount") or 0)
+
+            # Production chains (output ← inputs, per schematic) + est. value/day.
+            production = []
+            value_day = 0.0
+            for sid, cnt in factory_count.items():
+                sc = schematics.get(sid)
+                if not sc:
+                    continue
+                cyc = sc["cycle_time"] or 0
+                per_day = (86400 / cyc) if cyc else 0
+                out_price = price_map.get(sc["output_id"])
+                if out_price and per_day:
+                    value_day += out_price * sc["output_qty"] * cnt * per_day
+                production.append({
+                    "output": type_names.get(sc["output_id"], f"#{sc['output_id']}"),
+                    "output_id": sc["output_id"],
+                    "output_qty": sc["output_qty"],
+                    "count": cnt,
+                    "cycle_hours": round(cyc / 3600, 1) if cyc else 0,
+                    "inputs": [{"name": type_names.get(i["type_id"], f"#{i['type_id']}"),
+                                "type_id": i["type_id"], "qty": i["qty"]} for i in sc["inputs"]],
+                })
+            production.sort(key=lambda p: p["output"])
+            # Extractor-only colony → value the raw extraction/day instead (avoids
+            # double-counting P0 that a factory would consume).
+            if not production:
+                for e in extractors:
+                    p0 = price_map.get(e["product_id"])
+                    if p0 and e["cycle_hours"]:
+                        value_day += p0 * e["qty_per_cycle"] * (24 / e["cycle_hours"])
+
             stored = sorted(
                 ({"name": type_names.get(tid, f"#{tid}"), "type_id": tid, "amount": amt}
                  for tid, amt in stored_agg.items() if amt),
@@ -5743,7 +5780,8 @@ async def planets_page(request: Request):
                 "upgrade_level": c.get("upgrade_level", 0),
                 "num_pins": c.get("num_pins", 0),
                 "extractors": extractors,
-                "producing": producing,
+                "production": production,
+                "value_day": round(value_day) if value_day else 0,
                 "stored": stored,
                 "soonest_iso": soonest,
             })
