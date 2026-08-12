@@ -6,6 +6,16 @@
   .pi-countdown.pi-expired { color: #f85149; font-weight: 600; }
   .pi-countdown.pi-soon    { color: #e6b84a; font-weight: 600; }
   .pi-planet-band { background: linear-gradient(90deg, rgba(63,185,80,.12), rgba(63,185,80,.02)); }
+  /* Fixed column layout so every planet's extractor table lines up identically
+     — otherwise each table auto-sizes to its own content and the columns drift
+     left/right between planets. First column (Extracting) absorbs the slack. */
+  .pi-ext-table { table-layout: fixed; }
+  .pi-ext-table th:nth-child(2), .pi-ext-table td:nth-child(2) { width: 130px; }
+  .pi-ext-table th:nth-child(3), .pi-ext-table td:nth-child(3) { width: 90px; }
+  .pi-ext-table th:nth-child(4), .pi-ext-table td:nth-child(4) { width: 90px; }
+  .pi-ext-table th:nth-child(5), .pi-ext-table td:nth-child(5) { width: 190px; }
+  .pi-ext-table th:nth-child(6), .pi-ext-table td:nth-child(6) { width: 130px; }
+  .pi-ext-table td:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
 
 <div class="row mb-3 align-items-center">
@@ -64,7 +74,7 @@
     </div>
     {% if c.extractors %}
     <div class="table-responsive">
-      <table class="table table-hover tbl-compact table-sm mb-0 align-middle">
+      <table class="table table-hover tbl-compact table-sm mb-0 align-middle pi-ext-table">
         <thead>
           <tr>
             <th>Extracting</th>
