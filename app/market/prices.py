@@ -546,24 +546,38 @@ async def fetch_structure_market(
     ensure_price_table(conn)
     aggregated: dict[int, dict] = {}
     page = 1
+    got_ok = False   # did we successfully read at least one page?
 
     async with esi_client() as client:
         while True:
-            try:
-                r = await client.get(
-                    f"{ESI_BASE}/markets/structures/{structure_id}/",
-                    params={"datasource": "tranquility", "page": page},
-                    headers={"Authorization": f"Bearer {token}"},
-                    timeout=20,
-                )
-            except Exception:
+            r = None
+            for attempt in range(3):   # retry transient failures — a timed-out
+                try:                    # page must NOT silently cache blank prices
+                    r = await client.get(
+                        f"{ESI_BASE}/markets/structures/{structure_id}/",
+                        params={"datasource": "tranquility", "page": page},
+                        headers={"Authorization": f"Bearer {token}"},
+                        timeout=20,
+                    )
+                except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError):
+                    await asyncio.sleep(0.6 * (attempt + 1)); r = None; continue
+                if r.status_code == 403:
+                    raise PermissionError("Insufficient permissions to access the structure market (403).")
+                if r.status_code == 200:
+                    break
+                if r.status_code == 420 or r.status_code >= 500:
+                    await asyncio.sleep(1.0 * (attempt + 1)); r = None; continue
+                r = None; break   # 400/404/… → give up this page
+
+            if r is None or r.status_code != 200:
+                # Couldn't read this page after retries. If we never read ANY page,
+                # fail loudly so the caller surfaces it and we don't cache blank
+                # sell/available over good data (the bug: only 7d vol showed).
+                if not got_ok:
+                    raise RuntimeError("Could not read the structure market (ESI timeout/error). Try again.")
                 break
 
-            if r.status_code == 403:
-                raise PermissionError("Insufficient permissions to access the structure market (403).")
-            if r.status_code != 200:
-                break
-
+            got_ok = True
             orders = r.json()
             if not orders:
                 break

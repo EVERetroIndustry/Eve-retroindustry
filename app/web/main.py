@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.8.104"
+APP_VERSION = "0.8.105"
 
 import asyncio
 import datetime
@@ -4543,10 +4543,10 @@ async def prices_station_stream(request: Request, location_id: int):
     async def gen():
         task = None
         try:
-            cached = get_cached_station_volumes(conn, location_id)
-            if cached is not None:
-                yield f"data: {_json.dumps({'done': True, 'cached': True, 'region_id': region_id, 'pct': 100})}\n\n"
-                return
+            # Explicit "Load" always fetches fresh — never serve the 30-min cache
+            # here (a previous partial/failed fetch could otherwise be replayed,
+            # e.g. blank sell/available with only 7d volume). The cache still backs
+            # the silent restore-on-page-load path (/station-volume/cached).
             type_ids = [r[0] for r in conn.execute("SELECT type_id FROM market_price_cache").fetchall()]
             if not type_ids:
                 type_ids = _refresh_type_ids(conn)
