@@ -2065,10 +2065,17 @@ async function fetchContractPrice(btn) {
   const valEl = document.getElementById('contract-price-val');
   const badgeEl = document.getElementById('contract-price-badge');
   const cmpBadge = document.querySelector('#profit-compare tr[data-src="contract"] .compare-badge');
+  // Contract prices are volatile — a cached index goes out of date fast. Re-index
+  // when: the region was never indexed, OR the user hit the ↻ refresh (fetched
+  // once already), OR the cached index is older than this TTL. Otherwise a newer,
+  // cheaper contract in-game never shows (it's not in the stale cache).
+  const CONTRACT_TTL = 1800; // 30 min
+  const isRefresh = btn.dataset.fetched === '1';
   try {
     let d = await _fetchContractOnce(locationId, typeId);
-    // Region not indexed yet → index it inline (with progress), then retry.
-    if (!d.ok && d.not_indexed && d.region_id) {
+    const ageStale = d.indexed_at && (Date.now() / 1000 - d.indexed_at) > CONTRACT_TTL;
+    // Index / re-index the region inline (with progress), then retry.
+    if (d.region_id && ((!d.ok && d.not_indexed) || isRefresh || ageStale)) {
       const ok = await indexContractRegion(d.region_id);
       if (ok) d = await _fetchContractOnce(locationId, typeId);
     }
@@ -2080,10 +2087,11 @@ async function fetchContractPrice(btn) {
       if (badgeEl) badgeEl.innerHTML = badge;
       if (cmpBadge) cmpBadge.innerHTML = badge;
       _recomputeProfitRow('contract', d.price);
+      btn.dataset.fetched = '1';   // next click (↻) forces a fresh re-index
       btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i>';
       btn.className = 'btn btn-link p-0';
       btn.setAttribute('style', 'font-size:.75rem;color:#8b949e;line-height:1');
-      btn.title = 'Refresh';
+      btn.title = 'Refresh (re-indexes contracts)';
     } else {
       if (valEl) { valEl.textContent = d.error || 'N/A'; valEl.classList.remove('d-none'); valEl.style.color = '#8b949e'; valEl.style.fontSize = '.75rem'; }
       btn.innerHTML = orig;

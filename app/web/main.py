@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.8.111"
+APP_VERSION = "0.8.112"
 
 import asyncio
 import datetime
@@ -3936,9 +3936,11 @@ async def api_plan_contract_price(request: Request, location_id: int, type_id: i
                     "error": "The contract region is not indexed — index it in the Public browser."}
         best = contracts_helper.best_contract_price(conn, region_id, type_id)
         if not best:
-            return {"ok": False, "error": "No public contract with this product in the region."}
+            return {"ok": False, "error": "No public contract with this product in the region.",
+                    "region_id": region_id, "indexed_at": status.get("indexed_at")}
         best["ok"] = True
         best["region_id"] = region_id
+        best["indexed_at"] = status.get("indexed_at")   # so the client can re-index a stale index
         return best
     finally:
         conn.close()
