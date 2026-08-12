@@ -48,6 +48,9 @@ class BOMNode:
     blueprint_type_id: int | None
     me: int = 0             # effective ME used for the calculation (0 if the user has no BP)
     product_qty_per_run: int = 1   # yield of one cycle (40 fuel block, 10000 TC, …)
+    job_fee: float = 0.0    # install fee for THIS job (0 if fee params not supplied) —
+                            # lets the make-vs-buy optimizer compare all-in make cost
+                            # (materials + fee) against the buy price, per node.
     children: list[BOMNode] = field(default_factory=list)
 
     def aggregate_leaves(self) -> dict[int, tuple[str, int]]:
@@ -72,9 +75,19 @@ class BOMResolver:
         db_path: str,
         blueprints: list[CharBlueprint] | None = None,
         runs_per_job: int | None = 1,
+        adjusted_prices: dict[int, float] | None = None,
+        rate_mfg: float = 0.0,
+        rate_rxn: float = 0.0,
     ):
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
+        # Per-job install-fee inputs (optional). When adjusted_prices is given,
+        # each node gets job_fee = EIV × rate, where EIV = Σ(adjusted_price ×
+        # BASE material qty × runs) — the same CCP formula used for the displayed
+        # fee total. rate_mfg / rate_rxn already fold in SCI×(1-bonus)+tax+SCC.
+        self._adj_prices = adjusted_prices
+        self._rate_mfg = rate_mfg
+        self._rate_rxn = rate_rxn
         # Max runs per single job (= per BPC copy). ME is rounded per job,
         # so this drives the material math:
         #   1 (default) — N parallel 1-run copies (conservative)
@@ -319,6 +332,18 @@ class BOMResolver:
             me=int(effective_me),
             product_qty_per_run=int(product_qty_per_run),
         )
+
+        # Per-job install fee (EIV × rate) — EIV uses BASE (ME 0) quantities,
+        # not the ME-reduced ones, matching CCP's job-cost formula.
+        if self._adj_prices is not None:
+            rate = self._rate_rxn if activity == "reaction" else self._rate_mfg
+            if rate:
+                eiv = sum(
+                    (self._adj_prices.get(mat["material_type_id"], 0.0) or 0.0)
+                    * mat["quantity"] * runs
+                    for mat in materials
+                )
+                node.job_fee = eiv * rate
 
         visited = visited | {type_id}  # immutable copy per branch
 

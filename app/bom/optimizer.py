@@ -3,10 +3,19 @@ Make vs. Buy optimizer.
 
 Algorithm (bottom-up):
   For each node in the tree we compute the optimal cost:
-  - leaf:     sell_price × quantity
+  - leaf:     input_price × quantity
   - non-leaf: min(make_cost, buy_cost)
-              make_cost = sum of children's optimal costs
-              buy_cost  = Jita sell_price × quantity
+              make_cost = job install fee + sum of children's optimal costs
+              buy_cost  = input_price × quantity
+
+  make_cost includes the node's OWN job install fee (node.job_fee) so the
+  decision is all-in: building a component only wins if its materials + fee
+  beat buying it. Without the fee term the optimizer over-selects "make" and
+  the (real) install fees then silently erase the paper savings.
+
+  input_price is Jita sell (index 0) or Jita buy (index 1) depending on the
+  `input_basis` argument — real builders source inputs from buy orders, which
+  is cheaper than instant-buying at sell.
 
   The result is the minimum total cost and a list of decisions for each intermediate.
 """
@@ -46,14 +55,17 @@ class OptimizationResult:
 def optimize(
     root: BOMNode,
     prices: dict[int, tuple[float | None, float | None]],
+    input_basis: str = "sell",
 ) -> OptimizationResult:
     """
     Run make vs. buy optimization on the BOM tree.
     prices: {type_id: (sell_price, buy_price)}
+    input_basis: "sell" (index 0) or "buy" (index 1) — which price to pay for inputs.
     """
+    price_idx = 1 if input_basis == "buy" else 0
     raw_decisions: list[Decision] = []
-    opt_cost   = _optimize_node(root, prices, raw_decisions, is_root=True)
-    naive_cost = _naive_cost(root, prices)
+    opt_cost   = _optimize_node(root, prices, raw_decisions, is_root=True, price_idx=price_idx)
+    naive_cost = _naive_cost(root, prices, price_idx)
 
     # Deduplication: aggregate by type_id (same component in different branches)
     merged: dict[int, Decision] = {}
@@ -90,23 +102,25 @@ def _optimize_node(
     prices: dict[int, tuple[float | None, float | None]],
     decisions: list[Decision],
     is_root: bool = False,
+    price_idx: int = 0,
 ) -> float | None:
-    sell_p, _ = prices.get(node.type_id, (None, None))
+    price = prices.get(node.type_id, (None, None))[price_idx]
 
     if node.is_leaf:
-        return (sell_p * node.quantity) if sell_p is not None else None
+        return (price * node.quantity) if price is not None else None
 
     # Recursively compute the optimal manufacturing cost (children already optimized)
     children_costs = [
-        _optimize_node(child, prices, decisions)
+        _optimize_node(child, prices, decisions, price_idx=price_idx)
         for child in node.children
     ]
     if any(c is None for c in children_costs):
         make_cost = None
     else:
-        make_cost = sum(children_costs)
+        # All-in make cost = this job's install fee + optimal children.
+        make_cost = sum(children_costs) + node.job_fee
 
-    buy_cost = (sell_p * node.quantity) if sell_p is not None else None
+    buy_cost = (price * node.quantity) if price is not None else None
 
     # Decision
     if make_cost is not None and buy_cost is not None:
@@ -174,13 +188,15 @@ def get_shopping_list(
 def _naive_cost(
     node: BOMNode,
     prices: dict[int, tuple[float | None, float | None]],
+    price_idx: int = 0,
 ) -> float | None:
-    """Naive cost — make everything, buy the leaves."""
+    """Naive cost — make everything, buy the leaves. Includes each job's install
+    fee, so 'naive' is the true all-in cost of building the whole tree."""
     if node.is_leaf:
-        sell_p, _ = prices.get(node.type_id, (None, None))
-        return (sell_p * node.quantity) if sell_p is not None else None
+        price = prices.get(node.type_id, (None, None))[price_idx]
+        return (price * node.quantity) if price is not None else None
 
-    child_costs = [_naive_cost(c, prices) for c in node.children]
+    child_costs = [_naive_cost(c, prices, price_idx) for c in node.children]
     if any(c is None for c in child_costs):
         return None
-    return sum(child_costs)
+    return sum(child_costs) + node.job_fee

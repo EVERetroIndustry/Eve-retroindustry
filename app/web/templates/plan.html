@@ -83,6 +83,13 @@
           <option value="optimal"    {% if form_mode == 'optimal'    %}selected{% endif %}>Optimal</option>
         </select>
       </div>
+          <div style="width:96px">
+        <label class="form-label" title="Which market price to pay for input materials. Sell = instant-buy from sell orders (expensive). Buy = place buy orders (cheaper, ~5–15% less) — how real manufacturers source inputs. Only affects material cost; the product still sells at its sell price.">Inputs</label>
+        <select name="input_basis" class="form-select form-select-sm">
+          <option value="sell" {% if (form_input_basis|default('sell')) == 'sell' %}selected{% endif %}>Jita sell</option>
+          <option value="buy"  {% if (form_input_basis|default('sell')) == 'buy'  %}selected{% endif %}>Jita buy</option>
+        </select>
+      </div>
           <div>
             <label class="form-label" title="How many runs one blueprint copy has. EVE rounds ME per job, so this changes material totals: 1 = parallel single-run copies (safe default, never short on materials); e.g. 10 = ten-run BPC copies, quantity is split into jobs of 10 runs + a smaller remainder job; empty = everything in ONE batched job (matches the in-game industry window for a multi-run job).">Runs/job</label>
         <input type="number" name="runs_per_job" class="form-control form-control-sm me-te-mini"
@@ -1191,7 +1198,7 @@ document.addEventListener('DOMContentLoaded', _refreshStockSummary);
 
 // === Restore last plan ===
 const _FORM_FIELD_NAMES = [
-  'product','qty','form_me','form_te','mode',
+  'product','qty','form_me','form_te','mode','input_basis',
   'station','reaction_station','selling_station',
   'facility_tax','reaction_facility_tax',
   'facility_me_bonus','reaction_me_bonus',

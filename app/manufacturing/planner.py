@@ -156,6 +156,10 @@ def build_plan(
     mfg_facility: StationFacility | None = None,
     rxn_facility: StationFacility | None = None,
     runs_per_job: int | None = 1,
+    adjusted_prices: dict[int, float] | None = None,
+    rate_mfg: float = 0.0,
+    rate_rxn: float = 0.0,
+    input_basis: str = "sell",
 ) -> ManufacturingPlan:
     db_conn = sqlite3.connect(db_path)
 
@@ -163,7 +167,9 @@ def build_plan(
     me = bp.material_efficiency if bp else 0
     te = bp.time_efficiency     if bp else 0
 
-    resolver = BOMResolver(db_path, blueprints=blueprints, runs_per_job=runs_per_job)
+    resolver = BOMResolver(db_path, blueprints=blueprints, runs_per_job=runs_per_job,
+                           adjusted_prices=adjusted_prices,
+                           rate_mfg=rate_mfg, rate_rxn=rate_rxn)
     root = resolver.resolve(
         product_type_id, quantity, me=float(me),
         mfg_facility=mfg_facility, rxn_facility=rxn_facility,
@@ -189,7 +195,7 @@ def build_plan(
     # shopping list nor the manufacturing steps.
     opt_decisions = None
     if prices:
-        opt_result = optimize(root, prices)
+        opt_result = optimize(root, prices, input_basis=input_basis)
         opt_total  = opt_result.total_cost
         opt_naive  = opt_result.naive_cost
         opt_decisions = opt_result.decisions

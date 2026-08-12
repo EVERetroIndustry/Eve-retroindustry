@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.8.106"
+APP_VERSION = "0.8.107"
 
 import asyncio
 import datetime
@@ -1688,8 +1688,10 @@ async def plan_result(
     plan_char_id: str = Form(""),
     runs_per_job: str = Form("1"),
     stock_stations: str = Form(""),
+    input_basis: str = Form("sell"),
 ):
     conn = get_conn()
+    input_basis = "buy" if input_basis == "buy" else "sell"
     error = None
     plan_data = None
     # Selection of stations the stock level is computed from. Empty = default
@@ -1817,9 +1819,63 @@ async def plan_result(
         mfg_me_mult = get_station_me_multiplier(conn, station)
         rxn_me_mult = get_station_me_multiplier(conn, eff_rxn_station_for_me)
 
+        # === Manufacturing fee parameters, computed up-front ===
+        # The make-vs-buy optimizer needs each job's install fee, not just its
+        # material cost — otherwise it "makes" components whose real install
+        # fees then quietly erase the paper savings. So resolve fee inputs
+        # (SCI, tax, structure bonus, adjusted prices) BEFORE building the plan.
+        def _safe_pct(s: str, default: float) -> float:
+            try:
+                return float(s.replace(",", "."))
+            except (ValueError, AttributeError):
+                return default
+
+        fac_tax_pct  = _safe_pct(facility_tax, 2.5)
+        fac_tax_rate = fac_tax_pct / 100
+
+        # Reaction station — 0 means use the same one as manufacturing
+        eff_rxn_station = reaction_station if reaction_station else station
+        sep_rxn_station = eff_rxn_station != station
+
+        rxn_fac_tax_pct  = _safe_pct(reaction_facility_tax, fac_tax_pct) if reaction_facility_tax.strip() else fac_tax_pct
+        rxn_fac_tax_rate = rxn_fac_tax_pct / 100
+
+        # Solar system ID of the manufacturing station
+        sys_row = conn.execute(
+            "SELECT solar_system_id FROM location_name_cache WHERE location_id=?", (station,)
+        ).fetchone()
+        solar_system_id: int | None = sys_row[0] if sys_row and sys_row[0] else None
+
+        # Solar system ID of the reaction station
+        if sep_rxn_station:
+            rxn_sys_row = conn.execute(
+                "SELECT solar_system_id FROM location_name_cache WHERE location_id=?", (eff_rxn_station,)
+            ).fetchone()
+            rxn_solar_system_id: int | None = rxn_sys_row[0] if rxn_sys_row and rxn_sys_row[0] else None
+        else:
+            rxn_solar_system_id = solar_system_id
+
+        adj_prices = await get_adjusted_prices(conn)
+
+        mfg_sci = await get_sci_for_system(conn, solar_system_id, "manufacturing") if solar_system_id else 0.0
+        rxn_sci = await get_sci_for_system(conn, rxn_solar_system_id, "reaction") if rxn_solar_system_id else 0.0
+
+        # TE multipliers for the stations (structure + rigs)
+        mfg_te_mult = get_station_te_multiplier(conn, station)
+        rxn_te_mult = get_station_te_multiplier(conn, eff_rxn_station) if sep_rxn_station else mfg_te_mult
+
+        # Cost bonus na SCI (Raitaru −3 %, Azbel −4 %, Sotiyo −5 %)
+        mfg_cost_bonus = get_station_cost_bonus(conn, station)
+        rxn_cost_bonus = get_station_cost_bonus(conn, eff_rxn_station) if sep_rxn_station else mfg_cost_bonus
+
+        # Combined install-fee rate per activity: SCI×(1−structure bonus) + tax + SCC.
+        rate_mfg = mfg_sci * (1.0 - mfg_cost_bonus) + fac_tax_rate + _SCC
+        rate_rxn = rxn_sci * (1.0 - rxn_cost_bonus) + rxn_fac_tax_rate + _SCC
+
         # The resolver gets all of the character's blueprints → per-product ME is
         # looked up for each intermediate step (Capital Armor Plates ME may differ from root ME).
-        resolver = BOMResolver(DB_ABS, blueprints=blueprints, runs_per_job=rpj_int)
+        resolver = BOMResolver(DB_ABS, blueprints=blueprints, runs_per_job=rpj_int,
+                               adjusted_prices=adj_prices, rate_mfg=rate_mfg, rate_rxn=rate_rxn)
         root = resolver.resolve(type_id, qty, me=me,
                                 mfg_facility=mfg_facility,
                                 rxn_facility=rxn_facility)
@@ -1840,8 +1896,12 @@ async def plan_result(
             mfg_facility=mfg_facility,
             rxn_facility=rxn_facility,
             runs_per_job=rpj_int,
+            adjusted_prices=adj_prices,
+            rate_mfg=rate_mfg,
+            rate_rxn=rate_rxn,
+            input_basis=input_basis,
         )
-        plan_data = _plan_to_dict(plan, prices, type_name, conn=conn)
+        plan_data = _plan_to_dict(plan, prices, type_name, conn=conn, input_basis=input_basis)
         # Override ME/TE in plan_data if entered manually
         if plan_data.get("blueprint"):
             plan_data["blueprint"]["me"] = int(me)
@@ -1886,52 +1946,10 @@ async def plan_result(
                     node.children = kept
                 _prune_bought(root)
 
-        plan_data["manufacturing_steps"] = _build_manufacturing_steps(root, prices, available)
+        plan_data["manufacturing_steps"] = _build_manufacturing_steps(root, prices, available, input_basis)
 
-        # === Manufacturing fees ===
-        def _safe_pct(s: str, default: float) -> float:
-            try:
-                return float(s.replace(",", "."))
-            except (ValueError, AttributeError):
-                return default
-
-        fac_tax_pct  = _safe_pct(facility_tax, 2.5)
-        fac_tax_rate = fac_tax_pct / 100
-
-        # Reaction station — 0 means use the same one as manufacturing
-        eff_rxn_station = reaction_station if reaction_station else station
-        sep_rxn_station = eff_rxn_station != station
-
-        rxn_fac_tax_pct  = _safe_pct(reaction_facility_tax, fac_tax_pct) if reaction_facility_tax.strip() else fac_tax_pct
-        rxn_fac_tax_rate = rxn_fac_tax_pct / 100
-
-        # Solar system ID of the manufacturing station
-        sys_row = conn.execute(
-            "SELECT solar_system_id FROM location_name_cache WHERE location_id=?", (station,)
-        ).fetchone()
-        solar_system_id: int | None = sys_row[0] if sys_row and sys_row[0] else None
-
-        # Solar system ID of the reaction station
-        if sep_rxn_station:
-            rxn_sys_row = conn.execute(
-                "SELECT solar_system_id FROM location_name_cache WHERE location_id=?", (eff_rxn_station,)
-            ).fetchone()
-            rxn_solar_system_id: int | None = rxn_sys_row[0] if rxn_sys_row and rxn_sys_row[0] else None
-        else:
-            rxn_solar_system_id = solar_system_id
-
-        adj_prices = await get_adjusted_prices(conn)
-
-        mfg_sci = await get_sci_for_system(conn, solar_system_id, "manufacturing") if solar_system_id else 0.0
-        rxn_sci = await get_sci_for_system(conn, rxn_solar_system_id, "reaction") if rxn_solar_system_id else 0.0
-
-        # TE multipliers for the stations (structure + rigs)
-        mfg_te_mult = get_station_te_multiplier(conn, station)
-        rxn_te_mult = get_station_te_multiplier(conn, eff_rxn_station) if sep_rxn_station else mfg_te_mult
-
-        # Cost bonus na SCI (Raitaru −3 %, Azbel −4 %, Sotiyo −5 %)
-        mfg_cost_bonus = get_station_cost_bonus(conn, station)
-        rxn_cost_bonus = get_station_cost_bonus(conn, eff_rxn_station) if sep_rxn_station else mfg_cost_bonus
+        # === Manufacturing fees === (fee parameters were resolved up-front,
+        # before build_plan, so the make-vs-buy optimizer could weigh them.)
 
         total_job_fee = 0.0
         total_mfg_time_s = 0   # time of all manufacturing steps (sequential)
@@ -2174,6 +2192,7 @@ async def plan_result(
         "form_rxn_station_name": rxn_station_name,
         "form_qty": qty,
         "form_mode": mode,
+        "form_input_basis": input_basis,
         "form_runs_per_job": runs_per_job,
         # After computing, always show the ROOT BP ME/TE (the actual values used in the plan) —
         # the user sees a concrete number instead of a placeholder.
@@ -2335,13 +2354,15 @@ async def _build_stock_station_options(
     return options
 
 
-def _build_manufacturing_steps(root, prices: dict, available: dict) -> list[dict]:
+def _build_manufacturing_steps(root, prices: dict, available: dict,
+                               input_basis: str = "sell") -> list[dict]:
     """
     Manufacturing steps: level 1 = manufactured first (everything from RAW), level N = last.
     Deduplicates the same type_id across branches, aggregates quantities.
     """
     from collections import defaultdict
 
+    price_idx = 1 if input_basis == "buy" else 0
     level_memo: dict[int, int] = {}
 
     def manufacture_level(node) -> int:
@@ -2366,7 +2387,7 @@ def _build_manufacturing_steps(root, prices: dict, available: dict) -> list[dict
 
         tid   = node.type_id
         level = manufacture_level(node)
-        sell_p = prices.get(tid, (None, None))[0]
+        sell_p = prices.get(tid, (None, None))[price_idx]
 
         if tid not in aggregated:
             aggregated[tid] = {
@@ -2398,7 +2419,7 @@ def _build_manufacturing_steps(root, prices: dict, available: dict) -> list[dict
                 aggregated[tid]["total_price"] = sell_p * aggregated[tid]["quantity"]
 
         for c in node.children:
-            c_sell = prices.get(c.type_id, (None, None))[0]
+            c_sell = prices.get(c.type_id, (None, None))[price_idx]
             if c.type_id not in inputs_agg[tid]:
                 inputs_agg[tid][c.type_id] = {
                     "type_id":    c.type_id,
@@ -2440,7 +2461,9 @@ def _build_manufacturing_steps(root, prices: dict, available: dict) -> list[dict
     return steps
 
 
-def _plan_to_dict(plan, prices, type_name: str, conn: sqlite3.Connection | None = None) -> dict:
+def _plan_to_dict(plan, prices, type_name: str, conn: sqlite3.Connection | None = None,
+                  input_basis: str = "sell") -> dict:
+    price_idx = 1 if input_basis == "buy" else 0
     bp = plan.blueprint
     bp_info = None
     if bp:
@@ -2468,7 +2491,7 @@ def _plan_to_dict(plan, prices, type_name: str, conn: sqlite3.Connection | None 
 
     materials = []
     for m in sorted(plan.materials, key=lambda x: (x.ok, x.coverage_pct)):
-        sell_p, _ = prices.get(m.type_id, (None, None))
+        in_p = prices.get(m.type_id, (None, None))[price_idx]
         materials.append({
             "type_id": m.type_id,
             "name": m.name,
@@ -2478,12 +2501,14 @@ def _plan_to_dict(plan, prices, type_name: str, conn: sqlite3.Connection | None 
             "missing": m.missing,
             "ok": m.ok,
             "coverage_pct": m.coverage_pct,
-            "unit_price": sell_p,
-            "total_price": sell_p * m.required if sell_p else None,
-            "buy_price": sell_p * m.missing if (sell_p and m.missing > 0) else None,
+            "unit_price": in_p,
+            "total_price": in_p * m.required if in_p else None,
+            "buy_price": in_p * m.missing if (in_p and m.missing > 0) else None,
         })
 
     total_buy = sum(m["buy_price"] for m in materials if m["buy_price"])
+    # Revenue always uses the product's sell price (what you receive when
+    # selling) — the input_basis toggle governs only what you PAY for inputs.
     sell_p, _ = prices.get(plan.product_type_id, (None, None))
     revenue = sell_p * plan.quantity if sell_p else None
     profit = (revenue - total_buy) if (revenue and total_buy) else None
