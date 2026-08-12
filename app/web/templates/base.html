@@ -246,7 +246,7 @@
           <a class="nav-link {% if request.url.path.startswith('/jobs') %}active{% endif %}" href="/jobs" title="Jobs"><i class="bi bi-gear-wide-connected"></i><span class="nav-label">Jobs</span></a>
         </li>
         <li class="nav-item">
-          <a class="nav-link {% if request.url.path.startswith('/planets') %}active{% endif %}" href="/planets" title="Planets"><i class="bi bi-globe-americas"></i><span class="nav-label">Planets</span></a>
+          <a class="nav-link {% if request.url.path.startswith('/planets') %}active{% endif %}" href="/planets" title="Planets"><i class="bi bi-globe-americas"></i><span class="nav-label">Planets</span><span id="nav-pi-badge" class="d-none badge rounded-pill ms-1" style="font-size:.6rem;vertical-align:top" title="PI extractors expiring within 24h"></span></a>
         </li>
       </ul>
       <ul class="navbar-nav ms-auto align-items-center gap-2">
@@ -436,6 +436,23 @@ async function syncAll(btn) {
   }).catch(() => {});
 })();
 {% endif %}
+
+// PI extractor alert badge on the Planets nav link. Cache-only count (no ESI),
+// so it's cheap to show on every page; the dashboard tile / a /planets visit
+// refresh the underlying cache live.
+(function () {
+  const badge = document.getElementById('nav-pi-badge');
+  if (!badge) return;
+  fetch('/api/pi-alert-count').then(r => r.json()).then(d => {
+    const n = d.n_alert || 0;
+    if (n > 0) {
+      badge.textContent = n;
+      badge.style.background = (d.n_expired > 0) ? '#f85149' : '#e6b84a';
+      badge.style.color = '#0d1117';
+      badge.classList.remove('d-none');
+    }
+  }).catch(() => {});
+})();
 </script>
 <script>
 // Global "app is busy" indicator: a thin gold top progress bar shown for slow

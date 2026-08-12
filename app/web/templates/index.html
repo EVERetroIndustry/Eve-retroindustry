@@ -65,6 +65,20 @@
       <a href="/prices" class="small mt-1 d-block">Refresh →</a>
     </div>
   </div>
+  {# PI extractor alert tile — filled live by loadPiAlerts() #}
+  <div class="col">
+    <a href="/planets" class="text-decoration-none">
+      <div class="card stat-card h-100 p-3" id="pi-tile" style="border-left-color:#3fb950">
+        <div class="text-muted small mb-1"><i class="bi bi-globe-americas me-1"></i>PI Extractors</div>
+        <div id="pi-tile-body">
+          <div class="d-flex align-items-center gap-2 mt-1">
+            <span class="spinner-border spinner-border-sm text-muted" style="width:1rem;height:1rem"></span>
+            <span class="text-muted small">Loading…</span>
+          </div>
+        </div>
+      </div>
+    </a>
+  </div>
 </div>
 
 {# ── Character cards ── #}
@@ -302,6 +316,52 @@
   }
   tick();
   setInterval(tick, 1000);
+})();
+
+// PI extractor alert tile — live count of extractors expiring within 24h.
+(function () {
+  const body = document.getElementById('pi-tile-body');
+  const tile = document.getElementById('pi-tile');
+  if (!body || !tile) return;   // not logged in / tile absent
+  function esc(s) { const d = document.createElement('div'); d.textContent = (s == null ? '' : s); return d.innerHTML; }
+  function cd(iso) {
+    const t = Date.parse((iso || '').replace('Z', '+00:00'));
+    if (isNaN(t)) return '';
+    let s = Math.floor((t - Date.now()) / 1000);
+    if (s <= 0) return 'expired';
+    const d = Math.floor(s / 86400); s -= d * 86400;
+    const h = Math.floor(s / 3600);  s -= h * 3600;
+    const m = Math.floor(s / 60);
+    return (d ? d + 'd ' : '') + ((d || h) ? h + 'h ' : '') + m + 'm';
+  }
+  function render(d) {
+    const nAlert = d.n_alert || 0, nExp = d.n_expired || 0, total = d.total || 0;
+    if (nAlert > 0) {
+      const col = nExp > 0 ? '#f85149' : '#e6b84a';
+      tile.style.borderLeftColor = col;
+      const soon = (d.items && d.items[0]) || null;
+      body.innerHTML =
+        `<div class="fw-bold" style="font-size:1.05rem;color:${col}">${nAlert} expiring &lt;24h`
+        + (nExp > 0 ? ` <span style="font-size:.8rem">(${nExp} expired)</span>` : '') + `</div>`
+        + (soon
+            ? `<div class="text-muted" style="font-size:.72rem">soonest: ${esc(soon.product)} · `
+              + `<span class="pi-tile-cd" data-expiry="${esc(soon.expiry_iso)}">${cd(soon.expiry_iso)}</span></div>`
+            : '');
+    } else {
+      tile.style.borderLeftColor = '#3fb950';
+      body.innerHTML =
+        `<div class="fw-bold mt-1" style="font-size:.95rem;color:#3fb950">All healthy</div>`
+        + `<div class="text-muted" style="font-size:.72rem">${total} extractor${total === 1 ? '' : 's'} running</div>`;
+    }
+  }
+  fetch('/api/dashboard/pi-alerts')
+    .then(r => r.json()).then(render)
+    .catch(() => { body.innerHTML = '<div class="text-muted small mt-1">PI data unavailable</div>'; });
+  setInterval(function () {
+    document.querySelectorAll('.pi-tile-cd').forEach(function (el) {
+      el.textContent = cd(el.dataset.expiry);
+    });
+  }, 60000);
 })();
 </script>
 {% endblock %}

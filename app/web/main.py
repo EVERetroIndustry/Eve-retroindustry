@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.8.110"
+APP_VERSION = "0.8.111"
 
 import asyncio
 import datetime
@@ -5826,6 +5826,7 @@ async def planets_page(request: Request):
             total_extractors += len(extractors)
             soonest = min((e["expiry_iso"] for e in extractors if e["expiry_iso"]), default="")
             col_list.append({
+                "planet_id": c["planet_id"],
                 "planet_name": planet_names.get(c["planet_id"], f"Planet #{c['planet_id']}"),
                 "system": "",   # the planet name already includes the system
                 "type_label": planets_api.planet_type_label(c.get("planet_type", "")),
@@ -5842,12 +5843,223 @@ async def planets_page(request: Request):
         groups.append({"char_id": cid, "char_name": cname, "colonies": col_list})
 
     groups.sort(key=lambda g: (g["colonies"][0]["soonest_iso"] if g["colonies"] else "9999"))
+
+    # Refresh the PI alert cache from this (freshest) view so the dashboard tile
+    # + nav badge reflect it. Per-char, only for characters we fetched OK.
+    try:
+        ok_cids = [cid for cid, res in results if res and not isinstance(res, str)]
+        entries = [{
+            "char_id": g["char_id"], "char_name": g["char_name"],
+            "planet_id": col["planet_id"], "planet_name": col["planet_name"],
+            "product_id": e["product_id"], "product": e["product"], "expiry_iso": e["expiry_iso"],
+        } for g in groups for col in g["colonies"] for e in col["extractors"] if e.get("expiry_iso")]
+        _store_pi_cache_for_chars(conn, ok_cids, entries)
+    except Exception as exc:
+        print(f"[planets] pi-cache update failed: {exc}", flush=True)
+
     conn.close()
     return _tr("planets.html", request, {
         "groups": groups, "error": None,
         "total_extractors": total_extractors, "expiring_soon": expiring_soon,
         "needs_relogin": needs_relogin,
     })
+
+
+# ── PI extractor alerts (dashboard tile + nav badge) ─────────────────────────
+# PI is "set and forget until the extractor runs out", so the useful alert is
+# "which extractors expire within 24h (or already have)". We cache the extractor
+# expiry times in the DB so the count can be shown cheaply on every page (nav
+# badge) without hitting ESI; the dashboard tile refreshes the cache live.
+
+def _ensure_pi_cache_tables(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS pi_extractor_cache (
+        char_id INTEGER, char_name TEXT, planet_id INTEGER, planet_name TEXT,
+        product_id INTEGER, product TEXT, expiry_iso TEXT, cached_at REAL,
+        PRIMARY KEY (char_id, planet_id, product_id))""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS planet_name_cache (
+        planet_id INTEGER PRIMARY KEY, name TEXT)""")
+    conn.commit()
+
+
+async def _resolve_planet_names(conn: sqlite3.Connection, planet_ids) -> dict[int, str]:
+    """Planet names ("Jita IV" — includes the system). Cached permanently in the
+    DB (they never change); only cache-misses hit ESI's per-planet endpoint
+    (/universe/names can't resolve planets)."""
+    _ensure_pi_cache_tables(conn)
+    names: dict[int, str] = {}
+    miss: list[int] = []
+    for pid in planet_ids:
+        row = conn.execute("SELECT name FROM planet_name_cache WHERE planet_id=?", (pid,)).fetchone()
+        if row and row[0]:
+            names[pid] = row[0]
+        else:
+            miss.append(pid)
+    if miss:
+        async def _p(client, pid):
+            try:
+                r = await client.get(
+                    f"https://esi.evetech.net/latest/universe/planets/{pid}/",
+                    params={"datasource": "tranquility"}, timeout=8)
+                if r.status_code == 200:
+                    return pid, r.json().get("name")
+            except Exception:
+                pass
+            return pid, None
+        try:
+            async with esi_client(timeout=8) as client:
+                for pid, nm in await asyncio.gather(*[_p(client, p) for p in miss]):
+                    if nm:
+                        names[pid] = nm
+                        conn.execute("INSERT OR REPLACE INTO planet_name_cache (planet_id, name) VALUES (?,?)", (pid, nm))
+            conn.commit()
+        except Exception:
+            pass
+    return names
+
+
+def _store_pi_cache_for_chars(conn: sqlite3.Connection, char_ids, entries) -> None:
+    """Replace the cached extractors for the given characters (per-char, so a
+    character whose ESI fetch failed keeps its last-known rows)."""
+    _ensure_pi_cache_tables(conn)
+    if not char_ids:
+        return
+    ph = ",".join("?" * len(char_ids))
+    conn.execute(f"DELETE FROM pi_extractor_cache WHERE char_id IN ({ph})", list(char_ids))
+    if entries:
+        now = _time.time()
+        conn.executemany(
+            "INSERT OR REPLACE INTO pi_extractor_cache "
+            "(char_id,char_name,planet_id,planet_name,product_id,product,expiry_iso,cached_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            [(e["char_id"], e["char_name"], e["planet_id"], e["planet_name"],
+              e["product_id"], e["product"], e["expiry_iso"], now) for e in entries])
+    conn.commit()
+
+
+async def _pi_fetch_and_cache(conn: sqlite3.Connection, chars) -> None:
+    """Fetch every character's colonies + extractor expiry times and refresh the
+    PI cache. Lightweight vs the full /planets view (extractors only)."""
+    async def _one(cid: int):
+        tok = _get_valid_token_for(conn, cid)
+        if not tok:
+            return cid, None
+        try:
+            async with esi_client() as client:
+                colonies = await planets_api.fetch_planets(client, cid, tok)
+                if colonies == "forbidden" or colonies is None:
+                    return cid, colonies
+                if not colonies:
+                    return cid, ([], [])
+                details = await asyncio.gather(*[
+                    planets_api.fetch_planet_detail(client, cid, c["planet_id"], tok)
+                    for c in colonies], return_exceptions=True)
+                return cid, (colonies, details)
+        except Exception:
+            return cid, None
+
+    results = await asyncio.gather(*[_one(cid) for cid, _ in chars])
+    char_name = {cid: name for cid, name in chars}
+
+    type_ids: set[int] = set()
+    planet_ids: set[int] = set()
+    raw: list[tuple] = []   # (cid, planet_id, product_id, expiry_iso)
+    ok_cids: list[int] = []
+    for cid, res in results:
+        if res is None or res == "forbidden":
+            continue
+        ok_cids.append(cid)
+        colonies, details = res
+        det = {c["planet_id"]: (d if isinstance(d, dict) else None)
+               for c, d in zip(colonies, details)}
+        for c in colonies:
+            planet_ids.add(c["planet_id"])
+            d = det.get(c["planet_id"])
+            if not d:
+                continue
+            for pin in d.get("pins", []):
+                ed = pin.get("extractor_details")
+                if ed and pin.get("expiry_time") and ed.get("product_type_id"):
+                    raw.append((cid, c["planet_id"], ed["product_type_id"], pin["expiry_time"]))
+                    type_ids.add(ed["product_type_id"])
+
+    type_names: dict[int, str] = {}
+    if type_ids:
+        ph = ",".join("?" * len(type_ids))
+        type_names = {r[0]: r[1] for r in conn.execute(
+            f"SELECT type_id, name FROM sde_types WHERE type_id IN ({ph})", list(type_ids))}
+    planet_names = await _resolve_planet_names(conn, planet_ids)
+
+    entries = [{
+        "char_id": cid, "char_name": char_name.get(cid, str(cid)),
+        "planet_id": pid, "planet_name": planet_names.get(pid, f"Planet #{pid}"),
+        "product_id": prod, "product": type_names.get(prod, f"#{prod}"),
+        "expiry_iso": exp,
+    } for cid, pid, prod, exp in raw]
+    _store_pi_cache_for_chars(conn, ok_cids, entries)
+
+
+def _pi_alert_summary(conn: sqlite3.Connection, limit: int = 8) -> dict:
+    """Read the PI cache and compute, against the CURRENT time, how many
+    extractors expire within 24h / are already expired, plus the soonest few."""
+    _ensure_pi_cache_tables(conn)
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    rows = conn.execute(
+        "SELECT char_name, planet_name, product, expiry_iso FROM pi_extractor_cache"
+    ).fetchall()
+    items = []
+    n_soon = n_expired = 0
+    for cname, pname, prod, iso in rows:
+        try:
+            end = _dt.datetime.fromisoformat((iso or "").replace("Z", "+00:00"))
+            if end.tzinfo is None:            # be lenient: treat naive as UTC
+                end = end.replace(tzinfo=_dt.timezone.utc)
+            secs = int((end - now).total_seconds())
+        except Exception:
+            continue
+        if secs <= 0:
+            state = "expired"; n_expired += 1
+        elif secs < 86400:
+            state = "soon"; n_soon += 1
+        else:
+            state = "ok"
+        items.append({"char": cname, "planet": pname, "product": prod,
+                      "expiry_iso": iso, "secs": secs, "state": state})
+    items.sort(key=lambda x: x["secs"])
+    alerts = [i for i in items if i["state"] in ("expired", "soon")]
+    return {
+        "n_soon": n_soon, "n_expired": n_expired, "n_alert": n_soon + n_expired,
+        "total": len(items),
+        "items": alerts[:limit] if limit else [],
+        "soonest_secs": items[0]["secs"] if items else None,
+    }
+
+
+@app.get("/api/dashboard/pi-alerts")
+async def api_pi_alerts():
+    """Live-refresh the PI cache (all chars) and return the alert summary.
+    Used by the dashboard tile; also keeps the nav badge fresh."""
+    conn = get_conn()
+    try:
+        chars = list_characters(conn)
+        if chars:
+            try:
+                await _pi_fetch_and_cache(conn, chars)
+            except Exception as exc:
+                print(f"[pi-alerts] refresh failed: {exc}", flush=True)
+        return _pi_alert_summary(conn)
+    finally:
+        conn.close()
+
+
+@app.get("/api/pi-alert-count")
+async def api_pi_alert_count():
+    """Cheap cache-only alert count (no ESI). Used by the nav badge on every page."""
+    conn = get_conn()
+    try:
+        return _pi_alert_summary(conn, limit=0)
+    finally:
+        conn.close()
 
 
 # ── Version check / update ───────────────────────────────────────────────────
