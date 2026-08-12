@@ -496,6 +496,13 @@ function switchPlanChar(charId) {
               title="Cheapest price/unit from indexed public contracts in the station's region">
         <i class="bi bi-cloud-download me-1"></i>Fetch contract
       </button>
+      {# Manual price — ESI can't read alliance/private contracts, so let the user
+         type the price they see in-game. Persisted per product in localStorage. #}
+      <input id="contract-manual-input" type="text" inputmode="decimal"
+             data-type-id="{{ result.product_type_id }}" placeholder="or type price/unit"
+             onchange="applyManualContract(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();applyManualContract(this.value);this.blur();}"
+             class="form-control form-control-sm" style="width:140px;font-size:.72rem;height:24px;padding:1px 6px"
+             title="Manually enter a contract price/unit you see in-game (e.g. an alliance contract ESI can't read). Accepts 2.85b / 2850m / 2 850 000 000.">
     </span>
 
     {# Contract-region indexing progress — inside this header row, wraps full-width directly under it. #}
@@ -2099,6 +2106,53 @@ async function fetchContractPrice(btn) {
   } catch { btn.innerHTML = orig; }
   btn.disabled = false;
 }
+
+// Parse a human ISK amount: "2.85b" / "2850m" / "2 850 000 000" / "2850000000".
+function _parseIsk(s) {
+  if (s == null) return NaN;
+  s = String(s).trim().toLowerCase().replace(/[\s,]/g, '');
+  if (!s) return NaN;
+  let mult = 1;
+  const suf = s.slice(-1);
+  if (suf === 'b') { mult = 1e9; s = s.slice(0, -1); }
+  else if (suf === 'm') { mult = 1e6; s = s.slice(0, -1); }
+  else if (suf === 'k') { mult = 1e3; s = s.slice(0, -1); }
+  const v = parseFloat(s);
+  return isNaN(v) ? NaN : v * mult;
+}
+function _contractManualKey(typeId) { return 'contractManualPrice:' + typeId; }
+
+// Manual contract price — ESI can't read alliance/private contracts, so the user
+// types the price they see in-game. Feeds the profit calc exactly like a fetched
+// contract price; persisted per product so it survives a recalculate/reload.
+function applyManualContract(value) {
+  const input = document.getElementById('contract-manual-input');
+  if (!input) return;
+  const typeId = input.dataset.typeId;
+  const price = _parseIsk(value);
+  const valEl = document.getElementById('contract-price-val');
+  const badgeEl = document.getElementById('contract-price-badge');
+  const cmpBadge = document.querySelector('#profit-compare tr[data-src="contract"] .compare-badge');
+  if (!isFinite(price) || price <= 0) {              // cleared → forget it
+    try { localStorage.removeItem(_contractManualKey(typeId)); } catch (e) {}
+    return;
+  }
+  const badge = '<span class="badge bg-info text-dark" style="font-size:.55rem" title="Manually entered (e.g. an alliance contract ESI can\'t read)">manual</span>';
+  if (valEl) { valEl.textContent = _isk(price) + ' ISK/unit'; valEl.classList.remove('d-none'); valEl.style.color = ''; valEl.style.fontSize = ''; }
+  if (badgeEl) badgeEl.innerHTML = badge;
+  if (cmpBadge) cmpBadge.innerHTML = badge;
+  _recomputeProfitRow('contract', price);
+  try { localStorage.setItem(_contractManualKey(typeId), String(price)); } catch (e) {}
+}
+// Restore a saved manual contract price for this product after a (re)render.
+(function () {
+  const input = document.getElementById('contract-manual-input');
+  if (!input) return;
+  try {
+    const saved = parseFloat(localStorage.getItem(_contractManualKey(input.dataset.typeId)));
+    if (isFinite(saved) && saved > 0) { input.value = String(saved); applyManualContract(saved); }
+  } catch (e) {}
+})();
 
 async function fetchStationSellPrice(btn) {
   const locationId = btn.dataset.locationId;
