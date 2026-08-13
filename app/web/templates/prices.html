@@ -257,6 +257,12 @@
 <style>
   .item-hist { cursor: pointer; }
   .item-hist:hover { color: var(--eve-gold); text-decoration: underline; text-underline-offset: 2px; }
+  /* While a price download runs, item chart/market popups are disabled — they'd
+     collide with the in-flight ESI fetch. Dim them + wait cursor as a cue. */
+  body.dl-busy .item-hist { cursor: wait; opacity: .5; text-decoration: none; }
+  body.dl-busy .item-hist:hover { color: inherit; }
+  @keyframes dl-flash { 0%,100% { box-shadow: none; } 30% { box-shadow: 0 0 0 3px rgba(230,184,74,.55); } }
+  .dl-flash { animation: dl-flash .7s ease; border-radius: 6px; }
   #histModal .modal-content { background: linear-gradient(180deg,#171e28,#131922); border:1px solid var(--eve-border); }
   /* Dynamic width — grows with the app window (market data likes more room),
      capped so it never gets unwieldy on very wide screens. */
@@ -685,6 +691,7 @@
   }
   function dlLock(on) {
     downloadBusy = on;
+    document.body.classList.toggle('dl-busy', on);   // dims item popups (see CSS)
     dlTriggers().forEach(b => { if (b) b.disabled = on; });
     if (!on) {
       // The custom-station Load button also requires a chosen station.
@@ -1173,6 +1180,19 @@
 
   // Open the history chart when an item name is clicked or activated.
   function _openHistFromEl(el) {
+    // A price download is in flight — opening the chart/market popup would fire
+    // ESI fetches that collide with it. Point the user at the running download
+    // instead of opening a conflicting one.
+    if (downloadBusy) {
+      if (dlProgress && !dlProgress.classList.contains('d-none')) {
+        dlProgress.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        dlProgress.classList.remove('dl-flash');
+        void dlProgress.offsetWidth;            // restart the animation
+        dlProgress.classList.add('dl-flash');
+        setTimeout(() => dlProgress.classList.remove('dl-flash'), 750);
+      }
+      return;
+    }
     const tr = el.closest('tr'); if (!tr) return;
     window.openHistory(tr.dataset.id, el.textContent.trim(), tr);
   }
