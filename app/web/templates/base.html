@@ -219,7 +219,7 @@
           <a class="nav-link {% if request.url.path == '/' %}active{% endif %}" href="/" title="Dashboard"><i class="bi bi-speedometer2"></i><span class="nav-label">Dashboard</span></a>
         </li>
         <li class="nav-item">
-          <a class="nav-link {% if request.url.path.startswith('/plan') %}active{% endif %}" href="/plan" title="Production Plan"><i class="bi bi-hammer"></i><span class="nav-label">Plan</span></a>
+          <a class="nav-link {% if request.url.path == '/plan' or request.url.path.startswith('/plan/') %}active{% endif %}" href="/plan" title="Production Plan"><i class="bi bi-hammer"></i><span class="nav-label">Plan</span></a>
         </li>
         <li class="nav-item">
           <a class="nav-link {% if request.url.path.startswith('/assets') %}active{% endif %}" href="/assets" title="Assets"><i class="bi bi-box-seam"></i><span class="nav-label">Assets</span></a>
