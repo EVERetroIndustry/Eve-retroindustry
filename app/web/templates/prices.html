@@ -217,7 +217,7 @@
          build is 99% of this page's client-side cost (measured). #}
       <tbody>
 {% for item in items -%}
-<tr data-name="{{ item.name | lower }}" data-id="{{ item.type_id }}" data-jita-sell="{{ item.sell_price if item.sell_price is not none else '' }}"><td class="py-1"><img src="https://images.evetech.net/types/{{ item.type_id }}/icon?size=32" width="24" height="24" class="rounded-1" loading="lazy" onerror="this.style.visibility='hidden'"></td><td class="py-1 align-middle"><span class="item-hist" role="button" tabindex="0" title="Show price history">{{ item.name }}</span></td><td class="text-end py-1 align-middle font-monospace small pricecol pm-sell ph-jita{% if item.sell_price is none %} text-muted{% endif %}" data-v="{{ item.sell_price if item.sell_price is not none else '' }}">{% if item.sell_price is not none %}{{ item.sell_price | price_eu }}{% else %}—{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-buy ph-jita{% if item.buy_price is none %} text-muted{% endif %}" data-v="{{ item.buy_price if item.buy_price is not none else '' }}">{% if item.buy_price is not none %}{{ item.buy_price | price_eu }}{% else %}—{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-vol ph-jita{% if item.volume is none %} text-muted{% endif %}" data-v="{{ item.volume if item.volume is not none else '' }}">{% if item.volume is not none %}{{ item.volume | count_eu }}{% else %}—{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-avail ph-jita{% if item.jita_available is none %} text-muted{% endif %}" data-v="{{ item.jita_available if item.jita_available is not none else '' }}">{% if item.jita_available is not none %}{{ item.jita_available | count_eu }}{% else %}—{% endif %}</td>{% set ihubs = item.get('hubs') or {} %}{% for h in downloaded_hubs %}{% set hd = ihubs.get(h.region_id) %}<td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-sell ph-{{ h.region_id }}{% if hd and hd.sell is none %} text-muted{% endif %}" data-v="{{ hd.sell if hd and hd.sell is not none else '' }}">{% if hd and hd.sell is not none %}{{ hd.sell | price_eu }}{% else %}—{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-buy ph-{{ h.region_id }}{% if hd and hd.buy is none %} text-muted{% endif %}" data-v="{{ hd.buy if hd and hd.buy is not none else '' }}">{% if hd and hd.buy is not none %}{{ hd.buy | price_eu }}{% else %}—{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-vol ph-{{ h.region_id }}{% if hd and hd.volume is none %} text-muted{% endif %}" data-v="{{ hd.volume if hd and hd.volume is not none else '' }}">{% if hd and hd.volume is not none %}{{ hd.volume | count_eu }}{% else %}—{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-avail ph-{{ h.region_id }}{% if hd and hd.available is none %} text-muted{% endif %}" data-v="{{ hd.available if hd and hd.available is not none else '' }}">{% if hd and hd.available is not none %}{{ hd.available | count_eu }}{% else %}—{% endif %}</td>{% endfor %}<td class="text-end py-1 align-middle font-monospace small station-col station-sell-cell text-muted" style="display:none">—</td><td class="text-end py-1 align-middle font-monospace small station-col station-traded-cell text-muted" style="display:none">—</td><td class="text-end py-1 align-middle font-monospace small station-col station-avail-cell text-muted" style="display:none">—</td></tr>
+<tr data-name="{{ item.name | lower }}" data-id="{{ item.type_id }}" data-jita-sell="{{ item.sell_price if item.sell_price is not none else '' }}"><td class="py-1"><img src="https://images.evetech.net/types/{{ item.type_id }}/icon?size=32" width="24" height="24" class="rounded-1" loading="lazy" onerror="this.style.visibility='hidden'"></td><td class="py-1 align-middle item-hist" role="button" tabindex="0" title="Show price history">{{ item.name }}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-sell ph-jita{% if item.sell_price is none %} text-muted{% endif %}" data-v="{{ item.sell_price if item.sell_price is not none else '' }}">{% if item.sell_price is not none %}{{ item.sell_price | price_eu }}{% else %}—{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-buy ph-jita{% if item.buy_price is none %} text-muted{% endif %}" data-v="{{ item.buy_price if item.buy_price is not none else '' }}">{% if item.buy_price is not none %}{{ item.buy_price | price_eu }}{% else %}—{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-vol ph-jita{% if item.volume is none %} text-muted{% endif %}" data-v="{{ item.volume if item.volume is not none else '' }}">{% if item.volume is not none %}{{ item.volume | count_eu }}{% else %}—{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-avail ph-jita{% if item.jita_available is none %} text-muted{% endif %}" data-v="{{ item.jita_available if item.jita_available is not none else '' }}">{% if item.jita_available is not none %}{{ item.jita_available | count_eu }}{% else %}—{% endif %}</td>{% set ihubs = item.get('hubs') or {} %}{% for h in downloaded_hubs %}{% set hd = ihubs.get(h.region_id) %}<td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-sell ph-{{ h.region_id }}{% if hd and hd.sell is none %} text-muted{% endif %}" data-v="{{ hd.sell if hd and hd.sell is not none else '' }}">{% if hd and hd.sell is not none %}{{ hd.sell | price_eu }}{% else %}—{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-buy ph-{{ h.region_id }}{% if hd and hd.buy is none %} text-muted{% endif %}" data-v="{{ hd.buy if hd and hd.buy is not none else '' }}">{% if hd and hd.buy is not none %}{{ hd.buy | price_eu }}{% else %}—{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-vol ph-{{ h.region_id }}{% if hd and hd.volume is none %} text-muted{% endif %}" data-v="{{ hd.volume if hd and hd.volume is not none else '' }}">{% if hd and hd.volume is not none %}{{ hd.volume | count_eu }}{% else %}—{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-avail ph-{{ h.region_id }}{% if hd and hd.available is none %} text-muted{% endif %}" data-v="{{ hd.available if hd and hd.available is not none else '' }}">{% if hd and hd.available is not none %}{{ hd.available | count_eu }}{% else %}—{% endif %}</td>{% endfor %}</tr>
 {% endfor -%}
       </tbody>
     </table>
@@ -361,7 +361,11 @@
   // ── Number formatting: default (≥10k prices lose decimals, <10k keep them;
   //    counts are integers) with an optional compact K/M/B mode. Cells carry the
   //    raw value in data-v, so formatting is display-only and sorting is unaffected. ──
-  const NA_HTML = '<span class="text-muted">—</span>';
+  // Bare dash, not a <span>: applyNumberFormat() rewrites every data-v cell on
+  // init, so a span placeholder here would re-create thousands of DOM nodes that
+  // the server-side markup deliberately avoids. The muted look comes from a
+  // class toggled on the <td> instead.
+  const NA_HTML = '—';
   const compactNumbersOn = () => colPrefs.compact === true;
   const spaceThousands = s => s.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
   function fmtNum(v, isPrice, compact) {
@@ -387,7 +391,8 @@
       const v = (dv === '' || dv == null) ? null : parseFloat(dv);
       const isPrice = td.classList.contains('pm-sell') || td.classList.contains('pm-buy')
                    || td.classList.contains('station-sell-cell');
-      td.innerHTML = fmtNum(v, isPrice, compact);
+      td.classList.toggle('text-muted', v == null);
+      td.textContent = fmtNum(v, isPrice, compact);
     });
   }
   (function initCompactToggle() {
@@ -460,11 +465,29 @@
   // Persists across searches so station data survives tbody replacement
   let loadedStationData = null;
 
+  // The 3 custom-station cells are NOT server-rendered (they were ~5.8k hidden
+  // DOM elements = 25% of this page's nodes, and DOM node count is what drives
+  // its render cost). They are created here, on demand, the first time station
+  // data is loaded. They stay the LAST three cells in the row, so the
+  // positional column indices used by sorting remain correct.
+  const STN_CELL_CLS = 'text-end py-1 align-middle font-monospace small station-col ';
+  function ensureStationCells(tr) {
+    let sell = tr.querySelector('.station-sell-cell');
+    if (sell) return sell;                        // JS-rendered rows already have them
+    ['station-sell-cell', 'station-traded-cell', 'station-avail-cell'].forEach(c => {
+      const td = document.createElement('td');
+      td.className = STN_CELL_CLS + c;
+      td.textContent = '—';
+      tr.appendChild(td);
+    });
+    return tr.querySelector('.station-sell-cell');
+  }
+
   function applyStationDataToTbody() {
     applyColumnPrefs();   // re-apply metric/hub column visibility after any tbody rebuild
     if (loadedStationData && tbody) {
       tbody.querySelectorAll('tr').forEach(tr => {
-        const sellCell = tr.querySelector('.station-sell-cell');
+        const sellCell = ensureStationCells(tr);
         if (!sellCell) return;
         const tradedCell = tr.querySelector('.station-traded-cell');
         const availCell  = tr.querySelector('.station-avail-cell');
