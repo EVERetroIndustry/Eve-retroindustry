@@ -109,6 +109,13 @@
           </div>
         </div>
 
+        {# Re-login warning — shown by loadLive() when EVE rejected the refresh
+           token (invalid_grant). Until then its data is stale. #}
+        <div id="relogin-{{ c.char_id }}" class="d-none alert alert-warning py-1 px-2 mb-2" style="font-size:.72rem">
+          <i class="bi bi-shield-exclamation me-1"></i>ESI login expired —
+          <a href="/auth/login" class="alert-link">re-add this character</a> to refresh its data.
+        </div>
+
         <div class="mb-3">
           {# Location — ESI-only, filled by loadLive() #}
           <div class="d-flex align-items-center gap-2 mb-1" style="font-size:.82rem" id="loc-{{ c.char_id }}">
@@ -248,6 +255,7 @@
       if (corp) { if (c.corp_name) corp.textContent = c.corp_name; else stripSpin('corp-' + cid); }
       const loc = document.getElementById('loc-' + cid);   if (loc) loc.innerHTML = locHtml(c);
       const tr = document.getElementById('train-' + cid);  if (tr) tr.innerHTML = trainHtml(c);
+      const rl = document.getElementById('relogin-' + cid); if (rl) rl.classList.toggle('d-none', !c.needs_relogin);
       const w = worthHtml(c);
       const wl = document.getElementById('worth-' + cid);
       if (wl && w) { wl.innerHTML = w; wl.style.display = ''; }

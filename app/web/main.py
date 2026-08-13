@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.8.113"
+APP_VERSION = "0.8.114"
 
 import asyncio
 import datetime
@@ -26,6 +26,7 @@ from app.auth.token_store import (
     has_any_character,
     get_character_row,
     get_valid_token as _get_valid_token_for,
+    is_refresh_invalid,
     delete_character,
     update_corporation_id,
     update_last_sync,
@@ -1452,9 +1453,23 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
             location_name = sys_names.get(_loc["solar_system_id"]) or f"#{_loc['solar_system_id']}"
             location_state = "undocked"
 
-        # Active training: the first queue entry with a finish_date.
+        # Active training: the first queue entry still training (finish_date in
+        # the FUTURE). ESI keeps already-completed skills in the queue at
+        # position 0 (with a past finish_date) until the character next logs in,
+        # so taking _sq[0] showed a finished skill as "done" and never surfaced
+        # the one actually training now. Skip the finished ones.
         training = None
-        _act = _sq[0] if _sq else None
+        _act = None
+        for _e in _sq:
+            _fd = _e.get("finish_date")
+            if not _fd:
+                continue
+            try:
+                if _dt.datetime.fromisoformat(_fd.replace("Z", "+00:00")) > _now_utc:
+                    _act = _e
+                    break
+            except Exception:
+                continue
         if _act and _act.get("skill_id") and _act.get("finish_date"):
             # SP/hour for the skill in training. Derived straight from the queue
             # entry — SP gained over its wall-clock span — so it already reflects
@@ -1494,6 +1509,7 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
             "location_name":  location_name,
             "location_state": location_state,
             "training":       training,
+            "needs_relogin":  is_refresh_invalid(cid),
         })
 
         agg_bps += bp_count
@@ -1559,6 +1575,7 @@ async def api_dashboard_live(request: Request):
             "location_name":   c["location_name"],
             "location_state":  c["location_state"],
             "training":        c["training"],
+            "needs_relogin":   c["needs_relogin"],
         }
     return {
         "logged_in": True,

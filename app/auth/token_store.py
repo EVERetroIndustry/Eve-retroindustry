@@ -49,6 +49,22 @@ def _refresh_lock_for(character_id: int) -> threading.Lock:
         return lk
 
 
+# Characters whose refresh token EVE has rejected (invalid_grant) — the token is
+# dead and only a re-login fixes it. Tracked in-process so the UI can prompt the
+# user; self-corrects (set on a 400 invalid_grant, cleared once a valid token is
+# obtained again, e.g. after re-login). Not persisted: a restart just re-detects.
+_invalid_refresh: set[int] = set()
+
+
+def is_refresh_invalid(character_id: int) -> bool:
+    """True if this character's refresh token was rejected and needs a re-login."""
+    return int(character_id) in _invalid_refresh
+
+
+def clear_refresh_invalid(character_id: int) -> None:
+    _invalid_refresh.discard(int(character_id))
+
+
 # ---------------------------------------------------------------------------
 # JSON config (client_id only)
 # ---------------------------------------------------------------------------
@@ -265,6 +281,7 @@ def get_valid_token(conn: sqlite3.Connection, character_id: int) -> str | None:
     access = row["access_token"]
     expires = row["token_expires_at"] or 0
     if access and time.time() < expires:
+        clear_refresh_invalid(character_id)   # a valid token means it's not dead
         return access
 
     client_id = get_client_id()
@@ -304,6 +321,11 @@ def get_valid_token(conn: sqlite3.Connection, character_id: int) -> str | None:
         if r.status_code != 200:
             print(f"[token] refresh rejected for {character_id}: HTTP {r.status_code} "
                   f"{r.text[:200]}", flush=True)
+            # 400 invalid_grant = the refresh token is dead → only a re-login
+            # fixes it. Flag it so the UI can prompt. (5xx / timeouts are
+            # transient — leave the flag alone so we don't nag on a blip.)
+            if r.status_code == 400 and "invalid_grant" in r.text.lower():
+                _invalid_refresh.add(int(character_id))
             return None
 
         resp = r.json()
@@ -331,4 +353,5 @@ def get_valid_token(conn: sqlite3.Connection, character_id: int) -> str | None:
                 print(f"[token] failed to persist refreshed token for "
                       f"{character_id}: {exc!r}", flush=True)
                 break
+        clear_refresh_invalid(character_id)   # refresh succeeded → token is alive
         return new_access
