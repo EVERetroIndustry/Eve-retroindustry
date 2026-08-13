@@ -166,6 +166,30 @@
     </div>
   </div>
 
+  {# Pre-paint column visibility. The user's per-column prefs live in
+     localStorage, so the server can't know them and renders every column; this
+     runs synchronously BEFORE the table markup is parsed and installs the
+     hiding rules, so columns the user turned off are never painted (they used
+     to appear and then vanish once JS ran). Kept intentionally tiny + guarded. #}
+  <script>
+  (function () {
+    try {
+      var p = JSON.parse(localStorage.getItem('priceColPrefs')) || {};
+      var cells = p.cells || {}, rules = [];
+      for (var k in cells) {
+        if (cells[k] === false) {
+          var q = k.split(':');
+          if (q[0] && q[1]) rules.push('#price-table .pm-' + q[1] + '.ph-' + q[0] + '{display:none}');
+        }
+      }
+      var st = document.createElement('style');
+      st.id = 'colprefs-style';
+      st.textContent = rules.join('');
+      document.head.appendChild(st);
+    } catch (e) {}
+  })();
+  </script>
+
   <div style="max-height:520px; overflow-y:auto;">
     <style>
       /* Search autocomplete rows */
@@ -338,12 +362,26 @@
   const colPrefs = loadColPrefs();
   const cellKey = (h, m) => h + ':' + m;
   const cellOn  = (h, m) => colPrefs.cells[cellKey(h, m)] !== false;   // default visible
+  // Column visibility is driven by ONE <style> element (see the pre-paint script
+  // above the table), not per-cell inline styles. Two reasons: the inline
+  // version had to touch ~7,800 cells — and it could only run after the table
+  // was already painted, so hidden columns visibly flashed on every load. CSS
+  // also covers rows added later (search results) with no extra work.
   function applyColumnPrefs() {
-    document.querySelectorAll('.pricecol').forEach(el => {
-      let m = null, h = null;
-      el.classList.forEach(c => { if (c.startsWith('pm-')) m = c.slice(3); else if (c.startsWith('ph-')) h = c.slice(3); });
-      el.style.display = (h && m && !cellOn(h, m)) ? 'none' : '';
-    });
+    const rules = [];
+    for (const k in colPrefs.cells) {
+      if (colPrefs.cells[k] === false) {
+        const [h, m] = k.split(':');
+        if (h && m) rules.push(`#price-table .pm-${m}.ph-${h}{display:none}`);
+      }
+    }
+    let st = document.getElementById('colprefs-style');
+    if (!st) {
+      st = document.createElement('style');
+      st.id = 'colprefs-style';
+      document.head.appendChild(st);
+    }
+    st.textContent = rules.join('');
   }
   (function initColPicker() {
     document.querySelectorAll('.col-cb').forEach(cb => {
