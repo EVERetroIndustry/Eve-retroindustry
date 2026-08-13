@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.9.0"
+APP_VERSION = "0.9.1"
 
 import asyncio
 import datetime
@@ -5933,8 +5933,37 @@ _ICON_MISSING: set[tuple[int, int, str]] = set()  # upstream 404s — don't retr
 _ICON_MAX_BYTES = 512 * 1024                    # sanity cap per icon
 
 
-def _icon_path(type_id: int, size: int, variant: str) -> str:
-    return os.path.join(_ICON_DIR, f"{type_id}_{variant}_{size}.png")
+def _icon_base(type_id: int, size: int, variant: str) -> str:
+    return os.path.join(_ICON_DIR, f"{type_id}_{variant}_{size}")
+
+
+# Icons are PNG but renders are JPEG, so the served content-type has to follow the
+# actual bytes rather than being hard-coded. Sniffing also double-checks we only
+# ever cache real images.
+_IMG_MAGIC = ((b"\x89PNG\r\n\x1a\n", "png", "image/png"),
+              (b"\xff\xd8\xff", "jpg", "image/jpeg"),
+              (b"GIF8", "gif", "image/gif"))
+
+
+def _sniff_image(data: bytes) -> tuple[str, str] | None:
+    for magic, ext, mime in _IMG_MAGIC:
+        if data.startswith(magic):
+            return ext, mime
+    return None
+
+
+def _cached_icon(type_id: int, size: int, variant: str) -> tuple[str, str] | None:
+    """Return (path, mime) for an already-cached image, or None."""
+    base = _icon_base(type_id, size, variant)
+    for ext, mime in (("png", "image/png"), ("jpg", "image/jpeg"), ("gif", "image/gif")):
+        p = f"{base}.{ext}"
+        if os.path.isfile(p):
+            return p, mime
+    return None
+
+
+def _icon_missing_marker(type_id: int, size: int, variant: str) -> str:
+    return _icon_base(type_id, size, variant) + ".404"
 
 
 @app.get("/icon/{type_id}")
@@ -5947,16 +5976,22 @@ async def type_icon(type_id: int, size: int = 32, v: str = "icon"):
     variant = v if v in _ICON_VARIANTS else "icon"
     headers = {"Cache-Control": "public, max-age=31536000, immutable"}
 
-    path = _icon_path(type_id, size, variant)
-    if os.path.isfile(path):
-        return FileResponse(path, media_type="image/png", headers=headers)
-    if (type_id, size, variant) in _ICON_MISSING:
+    hit = _cached_icon(type_id, size, variant)
+    if hit:
+        return FileResponse(hit[0], media_type=hit[1], headers=headers)
+    # Negative results are remembered on disk too: assets rows ask for `render`
+    # first and most items have none, so without this every restart would re-ask
+    # upstream for thousands of images that will never exist.
+    if (type_id, size, variant) in _ICON_MISSING or os.path.isfile(
+            _icon_missing_marker(type_id, size, variant)):
+        _ICON_MISSING.add((type_id, size, variant))
         return Response(status_code=404)
 
     try:
         async with _ICON_SEM:
-            if os.path.isfile(path):        # filled in while we waited
-                return FileResponse(path, media_type="image/png", headers=headers)
+            hit = _cached_icon(type_id, size, variant)
+            if hit:                          # filled in while we waited
+                return FileResponse(hit[0], media_type=hit[1], headers=headers)
             async with esi_client(timeout=15, follow_redirects=True) as client:
                 r = await client.get(
                     f"https://images.evetech.net/types/{type_id}/{variant}",
@@ -5968,15 +6003,26 @@ async def type_icon(type_id: int, size: int = 32, v: str = "icon"):
         # <img onerror> handlers already hide a missing icon.
         if 400 <= r.status_code < 500:
             _ICON_MISSING.add((type_id, size, variant))
+            try:
+                os.makedirs(_ICON_DIR, exist_ok=True)
+                open(_icon_missing_marker(type_id, size, variant), "wb").close()
+            except Exception:
+                pass
             return Response(status_code=404)
         if r.status_code != 200 or not r.content or len(r.content) > _ICON_MAX_BYTES:
             return Response(status_code=502)
+        kind = _sniff_image(r.content)
+        if not kind:                         # 200 but not an image → never cache it
+            print(f"[icon] {type_id}@{size}/{variant}: non-image body, not cached", flush=True)
+            return Response(status_code=502)
+        ext, mime = kind
         os.makedirs(_ICON_DIR, exist_ok=True)
+        path = f"{_icon_base(type_id, size, variant)}.{ext}"
         tmp = f"{path}.{os.getpid()}.part"   # atomic: never serve a half-written file
         with open(tmp, "wb") as fh:
             fh.write(r.content)
         os.replace(tmp, path)
-        return Response(content=r.content, media_type="image/png", headers=headers)
+        return Response(content=r.content, media_type=mime, headers=headers)
     except Exception as exc:
         print(f"[icon] fetch failed for {type_id}@{size}: {exc}", flush=True)
         return Response(status_code=502)
