@@ -258,11 +258,16 @@ async def _fill_volumes(
 
     progress_cb(done, total) called within commits.
     """
-    from app.market.prices import _fetch_region_volume, JITA_REGION  # type: ignore
+    from app.market.prices import (  # type: ignore
+        _fetch_region_volume, JITA_REGION, load_hist_etags, flush_hist_etags,
+    )
 
     if not type_ids:
         return 0
 
+    # Load stored history ETags so unchanged types answer 304 with no body
+    # (a full history response is ~42 KB; this is the bulk of a refresh).
+    load_hist_etags(conn, JITA_REGION)
     done_holder = [0]
     total = len(type_ids)
     BATCH = 200       # commit every 200 results — keeps the open DB write short
@@ -290,6 +295,7 @@ async def _fill_volumes(
             done_holder[0] = start + len(batch)
             if progress_cb:
                 await _maybe_call(progress_cb, done_holder[0], total)
+    flush_hist_etags(conn)
     return updated
 
 
@@ -421,9 +427,12 @@ async def _fill_hub_volumes(
 ) -> int:
     """7-day region volume for a hub, stored in hub_price_cache. Mirrors
     _fill_volumes but for an arbitrary region."""
-    from app.market.prices import _fetch_region_volume  # type: ignore
+    from app.market.prices import (  # type: ignore
+        _fetch_region_volume, load_hist_etags, flush_hist_etags,
+    )
     if not type_ids:
         return 0
+    load_hist_etags(conn, region_id)
     done_holder = [0]
     total = len(type_ids)
     BATCH = 200
@@ -450,6 +459,7 @@ async def _fill_hub_volumes(
             done_holder[0] = start + len(batch)
             if progress_cb:
                 await _maybe_call(progress_cb, done_holder[0], total)
+    flush_hist_etags(conn)
     return updated
 
 
