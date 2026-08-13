@@ -28,9 +28,9 @@
           data-qty="{{ item.quantity }}"
           data-value="{{ item.total_value or 0 }}">
         <td>
-          <img src="https://images.evetech.net/types/{{ item.type_id }}/render?size=32"
+          <img src="/icon/{{ item.type_id }}?size=32&amp;v=render"
                width="32" height="32" class="rounded" alt="" loading="lazy"
-               onerror="this.onerror=function(){this.style.visibility='hidden'};this.src='https://images.evetech.net/types/{{ item.type_id }}/icon?size=32'">
+               onerror="this.onerror=function(){this.style.visibility='hidden'};this.src='/icon/{{ item.type_id }}?size=32'">
         </td>
         <td>{{ item.name }}{% if item.bp_kind == 'bpc' %}
           <span class="badge badge-bpc ms-1" title="Blueprint copy — no market value">BPC</span>{% elif item.bp_kind == 'bpo' %}
@@ -191,8 +191,8 @@
            data-bs-toggle="collapse" data-bs-target="#cont-{{ ckey }}" style="cursor:pointer">
         <span class="d-flex align-items-center gap-2">
           {% if container.type_id %}
-          <img data-render="https://images.evetech.net/types/{{ container.type_id }}/render?size=32"
-               data-icon="https://images.evetech.net/types/{{ container.type_id }}/icon?size=32"
+          <img data-render="/icon/{{ container.type_id }}?size=32&amp;v=render"
+               data-icon="/icon/{{ container.type_id }}?size=32"
                width="24" height="24" class="rounded eve-icon" alt="">
           {% else %}
           <i class="bi bi-box text-muted" style="font-size:.85em"></i>
@@ -280,8 +280,8 @@
                data-bs-toggle="collapse" data-bs-target="#ccont-{{ ck }}" style="cursor:pointer">
             <span class="d-flex align-items-center gap-2">
               {% if container.type_id %}
-              <img data-render="https://images.evetech.net/types/{{ container.type_id }}/render?size=32"
-                   data-icon="https://images.evetech.net/types/{{ container.type_id }}/icon?size=32"
+              <img data-render="/icon/{{ container.type_id }}?size=32&amp;v=render"
+                   data-icon="/icon/{{ container.type_id }}?size=32"
                    width="24" height="24" class="rounded eve-icon" alt="">
               {% else %}
               <i class="bi bi-box text-muted" style="font-size:.85em"></i>

@@ -46,3 +46,6 @@ Thumbs.db
 # Private agent/Claude context (symlinks to the eve-retroindustry-notes repo) — never in public
 /CLAUDE.md
 /AGENTS.md
+
+# Local type-icon cache (populated at runtime from images.evetech.net)
+icon_cache/

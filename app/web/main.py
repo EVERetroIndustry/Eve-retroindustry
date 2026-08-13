@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.8.123"
+APP_VERSION = "0.8.124"
 
 import asyncio
 import datetime
@@ -5915,6 +5915,71 @@ async def planets_page(request: Request):
         "total_extractors": total_extractors, "expiring_soon": expiring_soon,
         "needs_relogin": needs_relogin,
     })
+
+
+# ── Type icons: local disk cache + long-lived browser caching ────────────────
+# The Prices table alone carries ~1,900 item icons. Loading them straight from
+# images.evetech.net cost ~1s of the page's load time (measured: `load` dropped
+# from ~1300ms to ~280ms with images off) and made the app depend on the network
+# for something that never changes. Icons are keyed by (type_id, size) and are
+# immutable, so we proxy them once to disk and then answer locally with an
+# immutable Cache-Control — after the first visit the browser stops asking at all.
+
+_ICON_DIR = os.path.join(_APP_DIR, "icon_cache")
+_ICON_SIZES = {32, 64, 128, 256, 512}          # sizes the image server publishes
+_ICON_VARIANTS = {"icon", "render", "bp", "bpc", "relic"}   # type image flavours
+_ICON_SEM = asyncio.Semaphore(8)               # don't open a socket per visible row
+_ICON_MISSING: set[tuple[int, int, str]] = set()  # upstream 404s — don't retry all session
+_ICON_MAX_BYTES = 512 * 1024                    # sanity cap per icon
+
+
+def _icon_path(type_id: int, size: int, variant: str) -> str:
+    return os.path.join(_ICON_DIR, f"{type_id}_{variant}_{size}.png")
+
+
+@app.get("/icon/{type_id}")
+async def type_icon(type_id: int, size: int = 32, v: str = "icon"):
+    """Serve a type image from the local cache, fetching it once if needed.
+    `v` selects the flavour (icon / render / bp / bpc / relic)."""
+    from fastapi.responses import Response, FileResponse
+    if size not in _ICON_SIZES:
+        size = 32
+    variant = v if v in _ICON_VARIANTS else "icon"
+    headers = {"Cache-Control": "public, max-age=31536000, immutable"}
+
+    path = _icon_path(type_id, size, variant)
+    if os.path.isfile(path):
+        return FileResponse(path, media_type="image/png", headers=headers)
+    if (type_id, size, variant) in _ICON_MISSING:
+        return Response(status_code=404)
+
+    try:
+        async with _ICON_SEM:
+            if os.path.isfile(path):        # filled in while we waited
+                return FileResponse(path, media_type="image/png", headers=headers)
+            async with esi_client(timeout=15, follow_redirects=True) as client:
+                r = await client.get(
+                    f"https://images.evetech.net/types/{type_id}/{variant}",
+                    params={"size": size},
+                )
+        # Any 4xx means this image will never exist: 404 = unknown type, 400 =
+        # the type has no such flavour (most items have no `render`). Remember it
+        # so a page full of render-less items doesn't re-ask on every load; the
+        # <img onerror> handlers already hide a missing icon.
+        if 400 <= r.status_code < 500:
+            _ICON_MISSING.add((type_id, size, variant))
+            return Response(status_code=404)
+        if r.status_code != 200 or not r.content or len(r.content) > _ICON_MAX_BYTES:
+            return Response(status_code=502)
+        os.makedirs(_ICON_DIR, exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.part"   # atomic: never serve a half-written file
+        with open(tmp, "wb") as fh:
+            fh.write(r.content)
+        os.replace(tmp, path)
+        return Response(content=r.content, media_type="image/png", headers=headers)
+    except Exception as exc:
+        print(f"[icon] fetch failed for {type_id}@{size}: {exc}", flush=True)
+        return Response(status_code=502)
 
 
 # ── PI extractor alerts (dashboard tile + nav badge) ─────────────────────────
