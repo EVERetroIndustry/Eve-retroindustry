@@ -156,10 +156,11 @@
                     style="font-size:.75rem"
                     onclick="setActiveChar({{ c.char_id }})">Set active</button>
             {% endif %}
-            <a href="/auth/login" class="btn btn-sm btn-outline-secondary py-0 px-2"
-               style="font-size:.75rem" title="Re-authenticate">
+            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2"
+                    style="font-size:.75rem" title="Refresh live data"
+                    onclick="refreshDashboardData(this)">
               <i class="bi bi-arrow-clockwise"></i>
-            </a>
+            </button>
           </div>
         </div>
       </div>
@@ -288,7 +289,9 @@
     document.querySelectorAll('.dash-spin').forEach(s => s.remove());
   }
 
+  let _lastLoad = 0;
   function loadLive() {
+    _lastLoad = Date.now();
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 45000);   // last-resort cap
     fetch('/api/dashboard/live', { signal: ctrl.signal })
@@ -297,8 +300,36 @@
       .catch(() => { clearTimeout(timer); fail(); });
   }
   window.dashRetry = function () { restoreSpinners(); loadLive(); return false; };
+
+  // Keep the dashboard current instead of sitting on stale numbers: re-fetch the
+  // live data when the user comes back to it (tab/window regains focus, or a
+  // back-navigation restores it from the bfcache), and on a slow periodic tick
+  // while it's actually visible. refreshIfStale skips a fetch if one just ran.
+  function refreshIfStale(minAgeMs) {
+    if (document.visibilityState !== 'visible') return;
+    if (Date.now() - _lastLoad < (minAgeMs || 0)) return;
+    loadLive();
+  }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshIfStale(5000); });
+  window.addEventListener('focus', () => refreshIfStale(5000));
+  window.addEventListener('pageshow', (e) => { if (e.persisted) loadLive(); });   // bfcache restore
+  setInterval(() => refreshIfStale(0), 120000);   // safety net every 2 min while visible
+
   loadLive();
 })();
+
+// Manual refresh button on each character card (the ↻ icon) — refreshes the live
+// data, NOT re-authentication (that lives in the navbar's character menu).
+function refreshDashboardData(btn) {
+  const icon = btn && btn.querySelector('i');
+  if (icon) {
+    icon.style.transition = 'transform .6s ease';
+    icon.style.transform = 'rotate(360deg)';
+    setTimeout(() => { icon.style.transition = ''; icon.style.transform = ''; }, 620);
+  }
+  if (typeof window.dashRetry === 'function') window.dashRetry();
+  else location.reload();
+}
 {% endif %}
 
 // Live countdown of remaining training time (per character card).
