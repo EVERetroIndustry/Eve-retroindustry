@@ -1,0 +1,287 @@
+{# Reusable item price/market popup (chart + live order book). Include once per
+   page, then call: window.openItemMarket(typeId, name, {
+       regionId, regionName, markets:[{id,name}], startTab:'market'|'chart',
+       highlight:{price, isBuy}, locationId })
+   The Market tab shows the region's sell/buy order book (like in-game); a
+   highlight price marks the viewer's own order so they see where it sits. #}
+<style>
+  #mpModal .modal-content { background: linear-gradient(180deg,#171e28,#131922); border:1px solid var(--eve-border); }
+  #mpModal .mp-dialog { max-width: min(1400px, 94vw); width: 100%; }
+  #mp-host canvas { display:block; width:100%; }
+  #mp-host .tip {
+    position:absolute; pointer-events:none; background:#0d1117ee; border:1px solid var(--eve-border);
+    border-radius:8px; padding:.4rem .55rem; font-size:.74rem; line-height:1.5; white-space:nowrap;
+    transform:translate(-50%,-115%); opacity:0; transition:opacity .08s; z-index:5;
+  }
+  #mp-host .tip b { color:#e6edf3; } #mp-host .tip .k { color:#8b949e; }
+  #mp-host .tip .g { color:var(--eve-gold); } #mp-host .tip .v { color:#8fc3ff; }
+  #mpModal tr.mp-mine { background:rgba(230,184,74,.16); }
+  #mpModal tr.mp-mine td { font-weight:600; }
+  .mp-badge { background:var(--eve-gold); color:#0d1117; font-size:.58rem; border-radius:4px; padding:0 4px; margin-left:4px; }
+</style>
+<div class="modal fade" id="mpModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered mp-dialog">
+    <div class="modal-content">
+      <div class="modal-header py-2">
+        <div class="me-auto">
+          <h6 class="modal-title mb-0" id="mp-title">Item</h6>
+          <div class="text-muted" style="font-size:.75rem" id="mp-sub"></div>
+        </div>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between mb-2">
+          <div class="d-flex gap-2 align-items-center">
+            <div class="btn-group btn-group-sm" id="mp-tabs">
+              <button type="button" class="btn btn-outline-secondary" data-tab="market"><i class="bi bi-bar-chart-steps me-1"></i>Market</button>
+              <button type="button" class="btn btn-outline-secondary" data-tab="chart"><i class="bi bi-graph-up me-1"></i>Chart</button>
+            </div>
+            <select id="mp-market" class="form-select form-select-sm" style="width:auto;min-width:150px"></select>
+          </div>
+          <div class="btn-group btn-group-sm" id="mp-ranges">
+            <button class="btn btn-outline-secondary" data-days="7">7d</button>
+            <button class="btn btn-outline-secondary" data-days="30">30d</button>
+            <button class="btn btn-outline-secondary active" data-days="90">90d</button>
+            <button class="btn btn-outline-secondary" data-days="365">1y</button>
+          </div>
+        </div>
+
+        <div id="mp-chart-view" style="display:none">
+          <div class="position-relative" id="mp-host" style="min-height:340px">
+            <canvas id="mp-cv"></canvas>
+            <div class="tip" id="mp-tip"></div>
+            <div id="mp-loading" class="text-muted small" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center">Loading…</div>
+          </div>
+        </div>
+
+        <div id="mp-market-view">
+          <div id="mp-market-loading" class="text-muted small py-5 text-center">Loading…</div>
+          <div class="row g-3" id="mp-market-tables" style="display:none">
+            <div class="col-lg-6">
+              <div class="d-flex justify-content-between align-items-baseline mb-1">
+                <span class="text-uppercase small" style="color:#3fb950;letter-spacing:.05em"><i class="bi bi-arrow-up-circle me-1"></i>Sell orders</span>
+                <span class="text-muted small" id="mp-sell-count"></span>
+              </div>
+              <div style="max-height:52vh;overflow-y:auto">
+                <table class="table table-sm tbl-compact mb-0">
+                  <thead><tr><th class="text-end">Price</th><th class="text-end">Qty</th><th>Location</th></tr></thead>
+                  <tbody id="mp-sell-body"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="col-lg-6">
+              <div class="d-flex justify-content-between align-items-baseline mb-1">
+                <span class="text-uppercase small" style="color:var(--eve-gold);letter-spacing:.05em"><i class="bi bi-arrow-down-circle me-1"></i>Buy orders</span>
+                <span class="text-muted small" id="mp-buy-count"></span>
+              </div>
+              <div style="max-height:52vh;overflow-y:auto">
+                <table class="table table-sm tbl-compact mb-0">
+                  <thead><tr><th class="text-end">Price</th><th class="text-end">Qty</th><th>Location</th></tr></thead>
+                  <tbody id="mp-buy-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const modalEl = document.getElementById('mpModal');
+  if (!modalEl) return;
+  const cv = document.getElementById('mp-cv'), host = document.getElementById('mp-host');
+  const tip = document.getElementById('mp-tip'), loading = document.getElementById('mp-loading');
+  const ctx = cv.getContext('2d');
+  const marketSel = document.getElementById('mp-market');
+  const chartView = document.getElementById('mp-chart-view'), marketView = document.getElementById('mp-market-view');
+  const rangesEl = document.getElementById('mp-ranges');
+  const mktLoading = document.getElementById('mp-market-loading'), mktTables = document.getElementById('mp-market-tables');
+  const sellBody = document.getElementById('mp-sell-body'), buyBody = document.getElementById('mp-buy-body');
+  const sellCount = document.getElementById('mp-sell-count'), buyCount = document.getElementById('mp-buy-count');
+
+  let series = [], days = 90, hover = null, geom = null, curType = null;
+  let markets = [], activeTab = 'market', marketKey = null, refSell = null, highlight = null;
+
+  const intS = v => Math.round(v).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  const iskC = v => v >= 1e9 ? (v / 1e9).toFixed(2) + 'B' : v >= 1e6 ? (v / 1e6).toFixed(2) + 'M'
+                  : v >= 1e3 ? (v / 1e3).toFixed(2) + 'k' : Math.round(v).toString();
+  const iskF = v => (Math.round(v * 100) / 100).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  const dt = s => new Date(s).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
+  const marketName = id => { const m = markets.find(x => x.id === id); return m ? m.name : ('Region ' + id); };
+
+  function populateMarkets() {
+    marketSel.innerHTML = '';
+    markets.forEach(m => {
+      const o = document.createElement('option'); o.value = m.id; o.textContent = m.name;
+      if (m.loc) o.dataset.loc = m.loc;   // citadel: use the structure market endpoint
+      marketSel.appendChild(o);
+    });
+  }
+
+  function loadSeries() {
+    const rid = +marketSel.value;
+    document.getElementById('mp-sub').textContent = marketName(rid) + ' · region-wide daily history';
+    series = []; hover = null; tip.style.opacity = '0';
+    loading.textContent = 'Loading…'; loading.style.display = 'flex';
+    fetch('/api/prices/history?type_id=' + encodeURIComponent(curType) + '&region_id=' + rid)
+      .then(r => r.json())
+      .then(d => {
+        series = (d.series || []).filter(p => p && p.avg != null);
+        if (!series.length) { loading.textContent = 'No market history for this region.'; loading.style.display = 'flex'; return; }
+        loading.style.display = 'none'; draw();
+      })
+      .catch(() => { loading.textContent = 'Failed to load history.'; loading.style.display = 'flex'; });
+  }
+
+  function mktRows(list, isBuy) {
+    if (!list || !list.length) return '<tr><td colspan="3" class="text-muted text-center py-3">No orders</td></tr>';
+    // Highlight the viewer's own order: the first row whose price matches (same side).
+    let mineMarked = false;
+    return list.map(o => {
+      let cls = '', badge = '';
+      if (highlight && !mineMarked && highlight.isBuy === isBuy && Math.abs(o.price - highlight.price) < 0.005) {
+        cls = ' class="mp-mine"'; badge = '<span class="mp-badge">YOUR ORDER</span>'; mineMarked = true;
+      }
+      return `<tr${cls}>
+        <td class="text-end font-monospace">${iskF(o.price)}${badge}</td>
+        <td class="text-end font-monospace">${intS(o.qty)}</td>
+        <td class="text-truncate" style="max-width:240px" title="${String(o.location || '').replace(/"/g,'&quot;')}">${o.location || '—'}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function loadMarket() {
+    const rid = +marketSel.value;
+    const loc = (marketSel.selectedOptions[0] || {}).dataset ? marketSel.selectedOptions[0].dataset.loc : '';
+    const key = curType + '|' + rid + '|' + (loc || '');
+    if (key === marketKey) return;
+    marketKey = key;
+    mktTables.style.display = 'none';
+    mktLoading.textContent = 'Loading market orders…'; mktLoading.style.display = '';
+    document.getElementById('mp-sub').textContent = marketName(rid)
+      + (loc ? ' · orders at this structure' : ' · live regional market orders');
+    let url = '/api/prices/orders?type_id=' + encodeURIComponent(curType) + '&region_id=' + rid;
+    if (loc) url += '&location_id=' + encodeURIComponent(loc);
+    fetch(url)
+      .then(r => r.json())
+      .then(d => {
+        if (!d || !d.ok) { mktLoading.textContent = 'Failed to load market orders.'; marketKey = null; return; }
+        sellBody.innerHTML = mktRows(d.sell, false);
+        buyBody.innerHTML  = mktRows(d.buy, true);
+        sellCount.textContent = (d.sell_count || 0) + (d.sell_count > 150 ? ' · top 150' : '');
+        buyCount.textContent  = (d.buy_count  || 0) + (d.buy_count  > 150 ? ' · top 150' : '');
+        mktLoading.style.display = 'none'; mktTables.style.display = '';
+      })
+      .catch(() => { mktLoading.textContent = 'Failed to load market orders.'; marketKey = null; });
+  }
+
+  function draw() {
+    if (!series.length) return;
+    const v = series.slice(-days), n = v.length;
+    const cssW = host.clientWidth || 640, cssH = 340;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = cssW * dpr; cv.height = cssH * dpr; cv.style.height = cssH + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, cssW, cssH);
+    const padL = 64, padR = 14, padT = 12, padB = 22, gap = 16;
+    const priceH = (cssH - padT - padB - gap) * 0.66, volH = (cssH - padT - padB - gap) * 0.34;
+    const px0 = padL, px1 = cssW - padR, py0 = padT, py1 = padT + priceH, vy0 = py1 + gap, vy1 = py1 + gap + volH;
+    let rs = (refSell != null && refSell > 0) ? refSell : null;
+    let lo = Math.min(...v.map(p => p.low ?? p.avg)), hi = Math.max(...v.map(p => p.high ?? p.avg));
+    if (rs != null) { lo = Math.min(lo, rs); hi = Math.max(hi, rs); }
+    const rg = (hi - lo) || 1, pMin = lo - rg * 0.08, pMax = hi + rg * 0.08;
+    const vMax = Math.max(...v.map(p => p.vol || 0)) * 1.1 || 1;
+    const X = i => px0 + (px1 - px0) * (n === 1 ? 0.5 : i / (n - 1));
+    const PY = val => py1 - (py1 - py0) * (val - pMin) / (pMax - pMin);
+    const VY = val => vy1 - (vy1 - vy0) * (val / vMax);
+    const grid = 'rgba(255,255,255,0.06)', axis = '#8b949e', gold = '#e6b84a';
+    ctx.font = '11px system-ui,sans-serif'; ctx.textBaseline = 'middle';
+    for (let t = 0; t <= 4; t++) { const val = pMin + (pMax - pMin) * t / 4, y = PY(val);
+      ctx.strokeStyle = grid; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(px0, y); ctx.lineTo(px1, y); ctx.stroke();
+      ctx.fillStyle = axis; ctx.textAlign = 'right'; ctx.fillText(iskC(val), px0 - 8, y); }
+    ctx.strokeStyle = grid; ctx.beginPath(); ctx.moveTo(px0, vy1); ctx.lineTo(px1, vy1); ctx.stroke();
+    ctx.fillStyle = axis; ctx.textAlign = 'right'; ctx.fillText(iskC(vMax), px0 - 8, vy0 + 6);
+    ctx.textAlign = 'center';
+    const ticks = 5; for (let t = 0; t < ticks; t++) { const i = Math.round((n - 1) * t / (ticks - 1));
+      ctx.fillStyle = axis; ctx.fillText(dt(v[i].d), X(i), cssH - 8); }
+    ctx.fillStyle = 'rgba(230,184,74,0.12)'; ctx.beginPath();
+    v.forEach((p, i) => { const x = X(i), y = PY(p.high ?? p.avg); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    for (let i = n - 1; i >= 0; i--) ctx.lineTo(X(i), PY(v[i].low ?? v[i].avg));
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(88,140,196,0.75)';
+    const bw = Math.max(1, (px1 - px0) / n * 0.72);
+    v.forEach((p, i) => { const y = VY(p.vol || 0); ctx.fillRect(X(i) - bw / 2, y, bw, vy1 - y); });
+    ctx.strokeStyle = gold; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.beginPath();
+    v.forEach((p, i) => { const x = X(i), y = PY(p.avg); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.stroke();
+    if (rs != null) {
+      const y = PY(rs);
+      ctx.save(); ctx.strokeStyle = '#58a6ff'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
+      ctx.beginPath(); ctx.moveTo(px0, y); ctx.lineTo(px1, y); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = '#58a6ff'; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+      ctx.fillText('your order ' + iskC(rs), px0 + 4, y - 3); ctx.restore();
+    }
+    geom = { X, PY, n, px0, px1, py0, vy1, v };
+    if (hover != null) crosshair();
+  }
+  function crosshair() {
+    if (hover == null || !geom) return;
+    const p = geom.v[hover], x = geom.X(hover);
+    ctx.strokeStyle = 'rgba(255,255,255,0.28)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, geom.py0); ctx.lineTo(x, geom.vy1); ctx.stroke();
+    ctx.fillStyle = '#e6b84a'; ctx.beginPath(); ctx.arc(x, geom.PY(p.avg), 3.2, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#0b0e13'; ctx.lineWidth = 1.5; ctx.stroke();
+  }
+  host.addEventListener('mousemove', e => {
+    if (!geom) return;
+    const r = cv.getBoundingClientRect();
+    let i = Math.round((e.clientX - r.left - geom.px0) / (geom.px1 - geom.px0) * (geom.n - 1));
+    i = Math.max(0, Math.min(geom.n - 1, i)); hover = i; draw();
+    const p = geom.v[i];
+    tip.innerHTML = `<b>${dt(p.d)}</b><br><span class="k">avg</span> <span class="g">${iskF(p.avg)}</span><br>`
+      + `<span class="k">volume</span> <span class="v">${intS(p.vol || 0)}</span>`;
+    tip.style.left = geom.X(i) + 'px'; tip.style.top = geom.PY(p.avg) + 'px'; tip.style.opacity = '1';
+  });
+  host.addEventListener('mouseleave', () => { hover = null; tip.style.opacity = '0'; draw(); });
+
+  function setTab(tab) {
+    activeTab = tab;
+    document.querySelectorAll('#mp-tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+    const isChart = tab === 'chart';
+    chartView.style.display = isChart ? '' : 'none';
+    marketView.style.display = isChart ? 'none' : '';
+    rangesEl.style.visibility = isChart ? '' : 'hidden';
+    if (isChart) loadSeries(); else loadMarket();
+  }
+  document.getElementById('mp-tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setTab(b.dataset.tab); });
+  marketSel.addEventListener('change', () => { if (activeTab === 'chart') loadSeries(); else { marketKey = null; loadMarket(); } });
+  document.getElementById('mp-ranges').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    days = +b.dataset.days;
+    document.querySelectorAll('#mp-ranges button').forEach(x => x.classList.toggle('active', x === b));
+    hover = null; tip.style.opacity = '0'; draw();
+  });
+  window.addEventListener('resize', () => { if (modalEl.classList.contains('show') && activeTab === 'chart') draw(); });
+
+  window.openItemMarket = function (typeId, name, opts) {
+    opts = opts || {};
+    curType = typeId;
+    refSell = (opts.highlight && opts.highlight.price) || null;
+    highlight = opts.highlight || null;
+    // Markets: the order's region first (default), then Jita + hubs.
+    markets = [];
+    const seen = new Set();
+    if (opts.regionId) { markets.push({ id: +opts.regionId, name: opts.regionName || 'Order region', loc: opts.locationId || null }); seen.add(+opts.regionId); }
+    (opts.markets || []).forEach(m => { if (!seen.has(+m.id)) { markets.push({ id: +m.id, name: m.name }); seen.add(+m.id); } });
+    if (!markets.length) markets = [{ id: 10000002, name: 'Jita' }];
+    document.getElementById('mp-title').textContent = name || ('Type #' + typeId);
+    days = 90; marketKey = null;
+    document.querySelectorAll('#mp-ranges button').forEach(x => x.classList.toggle('active', x.dataset.days === '90'));
+    populateMarkets();
+    marketSel.selectedIndex = 0;
+    setTab(opts.startTab === 'chart' ? 'chart' : 'market');
+    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+  };
+})();
+</script>

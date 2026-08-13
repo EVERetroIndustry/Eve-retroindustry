@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.8.118"
+APP_VERSION = "0.8.119"
 
 import asyncio
 import datetime
@@ -4937,10 +4937,18 @@ def _decorate(conn, journal: list[dict], txns: list[dict],
 
 # ── Market Orders ─────────────────────────────────────────────────────────────
 
+def _market_hubs_list() -> list[dict]:
+    """Markets offered in the Orders item popup: Jita + the trade hubs."""
+    return [{"id": JITA_REGION, "name": "Jita"}] + [
+        {"id": rid, "name": info["name"]} for rid, info in TRADE_HUBS.items()]
+
+
 def _decorate_orders(orders: list[dict], type_names: dict[int, str],
-                     loc_names: dict[int, str]) -> list[dict]:
+                     loc_names: dict[int, str],
+                     loc_regions: dict[int, int] | None = None) -> list[dict]:
     """Augment orders with the item name, location, fill % and status. Sort newest
     by issue date (issued) first."""
+    loc_regions = loc_regions or {}
     import datetime as _dt
     out = []
     for o in orders:
@@ -4982,6 +4990,8 @@ def _decorate_orders(orders: list[dict], type_names: dict[int, str],
             "filled": filled,
             "filled_pct": int(round(100 * filled / total)) if total else 0,
             "location": loc_names.get(o.get("location_id"), str(o.get("location_id", ""))),
+            "location_id": o.get("location_id"),
+            "region_id": loc_regions.get(o.get("location_id")),   # for the market-book popup
             "issued": issued,
             "expiry": expiry,
             "expiry_iso": expiry_iso,
@@ -5017,6 +5027,7 @@ async def orders_page(request: Request, char: str = "", scope: str = "personal",
             "scope": "corp" if is_corp else "personal", "state": state,
             "orders_char_id": None, "all_chars": True, "orders": [],
             "error": None, "corp_error": None, "corp_name": None,
+            "market_hubs": _market_hubs_list(),
         }
         chars = list_characters(conn)
         if not chars:
@@ -5033,7 +5044,8 @@ async def orders_page(request: Request, char: str = "", scope: str = "personal",
                     raw = await orders_api.fetch_orders_history(client, cid, tok)
                 else:
                     raw = await orders_api.fetch_orders(client, cid, tok)
-                decorated = await _finalize_orders(conn, raw, _type_names, tok)
+                decorated = await _finalize_orders(conn, raw, _type_names, tok,
+                                                   resolve_regions=(state != "history"))
             for o in decorated:
                 o["party_id"], o["party_name"], o["party_kind"] = cid, cname, "char"
             return decorated
@@ -5045,7 +5057,8 @@ async def orders_page(request: Request, char: str = "", scope: str = "personal",
                 else:
                     raw, _err = await orders_api.fetch_corp_orders(client, corp_id, tok)
                     raw = raw or []
-                decorated = await _finalize_orders(conn, raw, _type_names, tok)
+                decorated = await _finalize_orders(conn, raw, _type_names, tok,
+                                                   resolve_regions=(state != "history"))
             for o in decorated:
                 o["party_id"], o["party_name"], o["party_kind"] = corp_id, corp_name, "corp"
             return decorated
@@ -5098,6 +5111,7 @@ async def orders_page(request: Request, char: str = "", scope: str = "personal",
         "scope": scope, "state": state, "orders_char_id": plan_char_id,
         "all_chars": False,
         "orders": [], "error": None, "corp_error": None, "corp_name": None,
+        "market_hubs": _market_hubs_list(),
     }
     if not plan_char_id:
         ctx["error"] = "You are not signed in."
@@ -5132,13 +5146,15 @@ async def orders_page(request: Request, char: str = "", scope: str = "personal",
                         raw_orders, err = await orders_api.fetch_corp_orders(client, corp_id, token)
                         ctx["corp_error"] = err
                         raw_orders = raw_orders or []
-                    ctx["orders"] = await _finalize_orders(conn, raw_orders, _type_names, token)
+                    ctx["orders"] = await _finalize_orders(conn, raw_orders, _type_names, token,
+                                                           resolve_regions=(state != "history"))
             else:
                 if state == "history":
                     raw_orders = await orders_api.fetch_orders_history(client, plan_char_id, token)
                 else:
                     raw_orders = await orders_api.fetch_orders(client, plan_char_id, token)
-                ctx["orders"] = await _finalize_orders(conn, raw_orders, _type_names, token)
+                ctx["orders"] = await _finalize_orders(conn, raw_orders, _type_names, token,
+                                                       resolve_regions=(state != "history"))
     except Exception as exc:
         ctx["error"] = f"Error loading orders: {exc}"
 
@@ -5146,7 +5162,8 @@ async def orders_page(request: Request, char: str = "", scope: str = "personal",
     return _tr("orders.html", request, ctx)
 
 
-async def _finalize_orders(conn, raw_orders: list[dict], type_names_fn, token: str) -> list[dict]:
+async def _finalize_orders(conn, raw_orders: list[dict], type_names_fn, token: str,
+                           resolve_regions: bool = True) -> list[dict]:
     type_names = type_names_fn({o.get("type_id") for o in raw_orders})
     loc_ids = list({o.get("location_id") for o in raw_orders if o.get("location_id")})
     loc_names: dict[int, str] = {}
@@ -5155,7 +5172,19 @@ async def _finalize_orders(conn, raw_orders: list[dict], type_names_fn, token: s
             loc_names = await resolve_station_names_bulk(loc_ids, token=token, conn=conn)
         except Exception:
             loc_names = load_location_names_from_db(conn)
-    return _decorate_orders(raw_orders, type_names, loc_names)
+    # Region per order location — so clicking an order can open the region-wide
+    # order book it competes in (cached; failures → None, popup falls back to Jita).
+    # Skipped for history (those items aren't clickable) to avoid wasted lookups.
+    loc_regions: dict[int, int] = {}
+    if loc_ids and resolve_regions:
+        _regs = await asyncio.gather(
+            *[get_region_for_location(conn, lid, token) for lid in loc_ids],
+            return_exceptions=True,
+        )
+        for lid, reg in zip(loc_ids, _regs):
+            if isinstance(reg, int):
+                loc_regions[lid] = reg
+    return _decorate_orders(raw_orders, type_names, loc_names, loc_regions)
 
 
 # ── Contracts (personal / corporate) ───────────────────────────────────────────

@@ -2,6 +2,11 @@
 {% block title %}Market Orders — EVE Retroindustry{% endblock %}
 {% block content %}
 
+<style>
+  .item-mkt { cursor: pointer; }
+  .item-mkt:hover { color: var(--eve-gold); text-decoration: underline; text-underline-offset: 2px; }
+</style>
+
 <div class="row mb-3 align-items-center">
   <div class="col">
     <h4 class="mb-0"><i class="bi bi-bag me-2 text-primary"></i>Market Orders</h4>
@@ -114,7 +119,18 @@
           <td>
             <span class="d-inline-flex align-items-center gap-2">
               <img loading="lazy" src="https://images.evetech.net/types/{{ o.type_id }}/icon?size=32" width="24" height="24" class="rounded">
+              {% if state != 'history' %}
+              <span class="item-mkt" role="button" tabindex="0"
+                    data-type-id="{{ o.type_id }}"
+                    data-region-id="{{ o.region_id or '' }}"
+                    data-region-name="{{ o.location }}"
+                    data-location-id="{{ o.location_id or '' }}"
+                    data-price="{{ o.price }}"
+                    data-is-buy="{{ '1' if o.is_buy else '0' }}"
+                    title="Show the market order book &amp; price chart">{{ o.item }}</span>
+              {% else %}
               {{ o.item }}
+              {% endif %}
             </span>
           </td>
           <td class="text-muted text-truncate" style="max-width:260px;font-size:.78rem">{{ o.location }}</td>
@@ -178,9 +194,35 @@
 
 {% endif %}
 
+{% include '_market_popup.html' %}
+
 {% endblock %}
 
 {% block scripts %}
+<script>
+// Click an order's item → market order book (with your order highlighted) + chart.
+(function () {
+  const MARKET_HUBS = {{ (market_hubs or []) | tojson }};
+  function open(el) {
+    const price = parseFloat(el.dataset.price);
+    window.openItemMarket(el.dataset.typeId, el.textContent.trim(), {
+      regionId: el.dataset.regionId ? +el.dataset.regionId : null,
+      regionName: el.dataset.regionName || 'Order region',
+      locationId: el.dataset.locationId || null,
+      markets: MARKET_HUBS,
+      startTab: 'market',
+      highlight: isFinite(price) ? { price: price, isBuy: el.dataset.isBuy === '1' } : null,
+    });
+  }
+  document.addEventListener('click', e => {
+    const el = e.target.closest('.item-mkt'); if (el) open(el);
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const el = e.target.closest('.item-mkt'); if (el) { e.preventDefault(); open(el); }
+  });
+})();
+</script>
 <script>
 // Live "days / hours" countdown for active-order expiry, like the in-game market.
 (function () {
