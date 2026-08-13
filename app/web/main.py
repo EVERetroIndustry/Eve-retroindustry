@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.8.122"
+APP_VERSION = "0.8.123"
 
 import asyncio
 import datetime
@@ -5923,6 +5923,9 @@ async def planets_page(request: Request):
 # expiry times in the DB so the count can be shown cheaply on every page (nav
 # badge) without hitting ESI; the dashboard tile refreshes the cache live.
 
+_PI_CACHE_TTL = 900.0   # 15 min — extractor programs run for days, so this is plenty
+
+
 def _ensure_pi_cache_tables(conn: sqlite3.Connection) -> None:
     conn.execute("""CREATE TABLE IF NOT EXISTS pi_extractor_cache (
         char_id INTEGER, char_name TEXT, planet_id INTEGER, planet_name TEXT,
@@ -6059,6 +6062,10 @@ def _pi_alert_summary(conn: sqlite3.Connection, limit: int = 8) -> dict:
     rows = conn.execute(
         "SELECT char_name, planet_name, product, expiry_iso FROM pi_extractor_cache"
     ).fetchall()
+    # Age of the cache itself, so callers can decide whether an ESI refresh is
+    # worth it (None = nothing cached yet).
+    _age_row = conn.execute("SELECT MAX(cached_at) FROM pi_extractor_cache").fetchone()
+    cache_age = (_time.time() - _age_row[0]) if (_age_row and _age_row[0]) else None
     items = []
     n_soon = n_expired = 0
     for cname, pname, prod, iso in rows:
@@ -6084,22 +6091,33 @@ def _pi_alert_summary(conn: sqlite3.Connection, limit: int = 8) -> dict:
         "total": len(items),
         "items": alerts[:limit] if limit else [],
         "soonest_secs": items[0]["secs"] if items else None,
+        "age": cache_age,
     }
 
 
 @app.get("/api/dashboard/pi-alerts")
-async def api_pi_alerts():
-    """Live-refresh the PI cache (all chars) and return the alert summary.
-    Used by the dashboard tile; also keeps the nav badge fresh."""
+async def api_pi_alerts(force: int = 0):
+    """Alert summary for the dashboard tile. Cache-first: a live refresh costs
+    one colony-list call per character plus one detail call per planet (80+ ESI
+    calls on a 12-character account), and it used to run on EVERY dashboard
+    load. Extractor programs last days, so serving a cache younger than
+    _PI_CACHE_TTL is just as accurate — the countdowns are computed against the
+    current time anyway. `force=1` refreshes regardless."""
     conn = get_conn()
     try:
         chars = list_characters(conn)
-        if chars:
+        summary = _pi_alert_summary(conn)
+        age = summary.get("age")
+        fresh = (age is not None and age < _PI_CACHE_TTL)
+        if chars and (force or not fresh):
             try:
                 await _pi_fetch_and_cache(conn, chars)
+                summary = _pi_alert_summary(conn)
             except Exception as exc:
                 print(f"[pi-alerts] refresh failed: {exc}", flush=True)
-        return _pi_alert_summary(conn)
+        else:
+            summary["from_cache"] = True
+        return summary
     finally:
         conn.close()
 
