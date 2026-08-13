@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.8.116"
+APP_VERSION = "0.8.117"
 
 import asyncio
 import datetime
@@ -4949,10 +4949,13 @@ def _decorate_orders(orders: list[dict], type_names: dict[int, str],
         filled = total - remain
         issued = o.get("issued", "")
         expiry = ""
+        expiry_iso = ""
         try:
             if issued and o.get("duration"):
                 base = _dt.datetime.fromisoformat(issued.replace("Z", "+00:00"))
-                expiry = (base + _dt.timedelta(days=o["duration"])).strftime("%Y-%m-%d")
+                exp_dt = base + _dt.timedelta(days=o["duration"])
+                expiry = exp_dt.strftime("%Y-%m-%d")
+                expiry_iso = exp_dt.isoformat()   # exact — for the live d/h countdown
         except Exception:
             pass
         price = o.get("price", 0.0) or 0.0
@@ -4981,6 +4984,7 @@ def _decorate_orders(orders: list[dict], type_names: dict[int, str],
             "location": loc_names.get(o.get("location_id"), str(o.get("location_id", ""))),
             "issued": issued,
             "expiry": expiry,
+            "expiry_iso": expiry_iso,
             "state": o.get("state", ""),   # history only: expired / cancelled
             "status_label": status_label,  # completed / expired / cancelled
         })

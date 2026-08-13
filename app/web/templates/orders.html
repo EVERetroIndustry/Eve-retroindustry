@@ -76,6 +76,10 @@
 {% endif %}
 
 {% macro orders_table(rows) %}
+{# Active orders show the ISK still on the market (remaining units × price); the
+   footer sums it → "how much ISK I have tied up in orders". History keeps the
+   full order value. #}
+{% set total_attr = 'order_total' if state == 'history' else 'remain_total' %}
 <div class="card mb-3">
   <div class="table-responsive">
     <table class="table table-hover tbl-compact table-sm mb-0 align-middle">
@@ -85,7 +89,7 @@
           <th>Item</th><th>Location</th>
           <th class="text-end">Price/unit (ISK)</th>
           <th class="text-end">{% if state == 'history' %}Filled{% else %}Remaining{% endif %}</th>
-          <th class="text-end">Order total (ISK)</th>
+          <th class="text-end">{% if state == 'history' %}Order total (ISK){% else %}On market (ISK){% endif %}</th>
           <th class="text-end">Issued</th>
           {% if state == 'history' %}<th>State</th>{% else %}<th class="text-end">Expires</th>{% endif %}
         </tr>
@@ -125,12 +129,14 @@
               </div>
             {% endif %}
           </td>
-          <td class="text-end fw-semibold" style="white-space:nowrap">{{ o.order_total | isk }}</td>
+          <td class="text-end fw-semibold" style="white-space:nowrap">{{ o[total_attr] | isk }}</td>
           <td class="text-end text-muted" style="white-space:nowrap;font-size:.78rem">{{ o.issued | replace('T',' ') | replace('Z','') | truncate(10,true,'') }}</td>
           {% if state == 'history' %}
           <td><span class="badge {% if o.status_label == 'completed' %}bg-success{% elif o.status_label == 'cancelled' %}bg-danger{% else %}bg-secondary{% endif %}" style="font-size:.65rem">{{ o.status_label | upper }}</span></td>
           {% else %}
-          <td class="text-end text-muted" style="white-space:nowrap;font-size:.78rem">{{ o.expiry }}</td>
+          <td class="text-end text-muted" style="white-space:nowrap;font-size:.78rem">
+            <span class="order-expiry" data-expiry="{{ o.expiry_iso }}">{{ o.expiry }}</span>
+          </td>
           {% endif %}
         </tr>
         {% endfor %}
@@ -138,7 +144,7 @@
       <tfoot>
         <tr style="border-top:2px solid #30363d">
           <td colspan="{{ 5 if all_chars else 4 }}" class="text-end text-muted small">Total</td>
-          <td class="text-end fw-bold text-isk" style="white-space:nowrap">{{ (rows | map(attribute='order_total') | sum) | isk }}</td>
+          <td class="text-end fw-bold text-isk" style="white-space:nowrap">{{ (rows | map(attribute=total_attr) | sum) | isk }}</td>
           <td colspan="2"></td>
         </tr>
       </tfoot>
@@ -172,4 +178,32 @@
 
 {% endif %}
 
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Live "days / hours" countdown for active-order expiry, like the in-game market.
+(function () {
+  function fmt(iso) {
+    const t = Date.parse((iso || '').replace('Z', '+00:00'));
+    if (isNaN(t)) return '';
+    let s = Math.floor((t - Date.now()) / 1000);
+    if (s <= 0) return 'expired';
+    const d = Math.floor(s / 86400); s -= d * 86400;
+    const h = Math.floor(s / 3600);  s -= h * 3600;
+    const m = Math.floor(s / 60);
+    if (d) return d + 'd ' + h + 'h';
+    if (h) return h + 'h ' + m + 'm';
+    return m + 'm';
+  }
+  function tick() {
+    document.querySelectorAll('.order-expiry').forEach(function (el) {
+      const out = fmt(el.dataset.expiry);
+      if (out) el.textContent = out;
+    });
+  }
+  tick();
+  setInterval(tick, 60000);
+})();
+</script>
 {% endblock %}
