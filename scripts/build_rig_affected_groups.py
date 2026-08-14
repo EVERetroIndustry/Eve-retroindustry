@@ -13,7 +13,7 @@ positives) with data derived from EVE Ref reference-data:
     groups (cargo containers) the rig lists.
 
 Output: app/web/rig_affected_groups.py  (committed; runtime is fully offline).
-Regenerate after an SDE rebuild or when CCP adds rig sets / product groups.
+Regenerate after an SDE rebuild or when the developer adds rig sets / product groups.
 
 Usage:  venv/bin/python scripts/build_rig_affected_groups.py
 Requires network access to ref-data.everef.net.

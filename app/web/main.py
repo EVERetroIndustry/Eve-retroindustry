@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.9.10"
+APP_VERSION = "0.9.11"
 
 import asyncio
 import datetime
@@ -2067,7 +2067,7 @@ async def plan_result(
                     eiv = sum(adj_prices.get(inp["type_id"], 0.0) * inp["quantity"]
                               for inp in job["inputs"])
 
-                # CCP formula: TIF = EIV × ((SCI × (1 - structure_cost_bonus)) + tax + SCC)
+                # Official formula: TIF = EIV × ((SCI × (1 - structure_cost_bonus)) + tax + SCC)
                 job_fee = eiv * (sci * (1.0 - cost_bonus) + tax_rate + _SCC)
                 job["eiv"] = eiv
                 job["sci"] = sci
@@ -3156,7 +3156,7 @@ async def assets_distances(request: Request):
     unique_sys = list(set(loc_to_sys.values()))
 
     # Jump counts are static: stargates don't move, so a route's length only ever
-    # changes when CCP edits the map. Without a cache this endpoint fired one ESI
+    # changes when the developer edits the map. Without a cache this endpoint fired one ESI
     # call per unique destination system (482 on this account) EVERY time it ran.
     # The pair is stored normalised (low, high) because the gate network is
     # undirected — the shortest path is the same in both directions.

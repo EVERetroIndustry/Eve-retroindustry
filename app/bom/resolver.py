@@ -83,7 +83,7 @@ class BOMResolver:
         self.conn.row_factory = sqlite3.Row
         # Per-job install-fee inputs (optional). When adjusted_prices is given,
         # each node gets job_fee = EIV × rate, where EIV = Σ(adjusted_price ×
-        # BASE material qty × runs) — the same CCP formula used for the displayed
+        # BASE material qty × runs) — the same Fenris Creations formula used for the displayed
         # fee total. rate_mfg / rate_rxn already fold in SCI×(1-bonus)+tax+SCC.
         self._adj_prices = adjusted_prices
         self._rate_mfg = rate_mfg
@@ -199,19 +199,19 @@ class BOMResolver:
         Selection rules — resolves cases where the SDE carries several recipes for the same product:
 
         1. Excludes blueprints with "TEST" / "Test " / "QA " / "Tournament" in the name
-           — these are tutorial / internal CCP blueprints (e.g. the "Test Reaction
+           — these are tutorial / internal developer blueprints (e.g. the "Test Reaction
            Blueprint" produces Tungsten Carbide with a 500x lower yield than the
            real recipe; the bug propagated to 43 other T2 products).
         2. Prefers the recipe with the highest output per cycle (`p.quantity DESC`)
            — real recipes tend to have a larger yield than legacy/test versions.
         3. On a yield tie, prefers the higher `blueprint_type_id` (the newer
-           SDE record; CCP occasionally renames a BP and leaves the old one in the data).
+           SDE record; the developer occasionally renames a BP and leaves the old one in the data).
         """
         cached = self._bp_cache.get(product_type_id, _MISSING)
         if cached is not _MISSING:
             return cached  # type: ignore[return-value]
         # GLOB is case-sensitive in SQLite (LIKE is not, so 'Protest' would
-        # match '%TEST%'). Patterns target only the known CCP-internal BP
+        # match '%TEST%'). Patterns target only the known developer-internal BP
         # naming conventions.
         row = self.conn.execute("""
             SELECT p.blueprint_type_id, p.quantity AS product_qty, p.activity,
@@ -334,7 +334,7 @@ class BOMResolver:
         )
 
         # Per-job install fee (EIV × rate) — EIV uses BASE (ME 0) quantities,
-        # not the ME-reduced ones, matching CCP's job-cost formula.
+        # not the ME-reduced ones, matching the official job-cost formula.
         if self._adj_prices is not None:
             rate = self._rate_rxn if activity == "reaction" else self._rate_mfg
             if rate:
@@ -364,7 +364,7 @@ class BOMResolver:
 
     def _apply_me(self, base_qty: int, runs: int, me: float, facility_multiplier: float = 1.0) -> int:
         """
-        EVE formula (per CCP) for ONE job with R runs:
+        EVE formula (per Fenris Creations) for ONE job with R runs:
             max(R, ceil(round(base × R × (1-ME/100) × fac_mult, 2)))
         where fac_mult is the already multiplicatively-combined multiplier of the
         structure and rigs. round(..., 2) before ceil prevents floating-point drift.

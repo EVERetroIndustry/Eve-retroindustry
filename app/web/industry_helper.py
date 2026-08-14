@@ -372,7 +372,7 @@ def get_station_facility(conn: sqlite3.Connection, location_id: int):
 def get_station_me_multiplier(conn: sqlite3.Connection, location_id: int) -> float:
     """Return the station's combined ME multiplier (e.g. 0.87 = 13 % savings).
 
-    Bonuses stack multiplicatively (per CCP):
+    Bonuses stack multiplicatively (per Fenris Creations):
         m = (1 − struct_role/100) × (1 − rig1×sec/100) × (1 − rig2×sec/100) × …
     where struct_role is 1 % for engineering complexes and 0 % for refineries,
     and sec is 1.0 / 1.9 / 2.1 depending on the system's security status.

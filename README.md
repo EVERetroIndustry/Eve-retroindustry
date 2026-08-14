@@ -186,9 +186,9 @@ I develop this in my spare time, primarily for my own EVE career, and share it p
 
 ## Legal
 
-EVE Online and the EVE logo are the registered trademarks of CCP hf. All rights are reserved worldwide. This application is not endorsed by or affiliated with CCP hf.
+EVE Online® and Fenris Creations™ and all related logos and other elements are trademarks of Fenris Creations (formerly CCP Games). All rights are reserved worldwide. This application is not endorsed by or affiliated with Fenris Creations.
 
-Market data and character information are fetched from the [EVE Swagger Interface (ESI)](https://esi.evetech.net) under CCP's developer license.
+Market data and character information are fetched from the [EVE Swagger Interface (ESI)](https://esi.evetech.net) under the EVE Online developer license.
 
 ---
 

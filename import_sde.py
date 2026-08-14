@@ -1,5 +1,5 @@
 """
-Import CCP SDE data into a SQLite database.
+Import the EVE Online SDE into a SQLite database.
 Parses fsd/blueprints.yaml and fsd/types.yaml.
 Usage: python import_sde.py
 """
@@ -22,7 +22,7 @@ _BONUS_RE = re.compile(
 console = Console()
 
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-# The new CCP SDE (build 3417089+) has files in the zip root, not in fsd/. Support
+# The new SDE layout (build 3417089+) has files in the zip root, not in fsd/. Support
 # both layouts — data/fsd/ (older) and data/ (new).
 SDE_DIR = os.path.join(_DATA_DIR, "fsd") \
     if os.path.exists(os.path.join(_DATA_DIR, "fsd", "types.yaml")) else _DATA_DIR

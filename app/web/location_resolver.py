@@ -101,7 +101,7 @@ def get_cached_security(conn: sqlite3.Connection, system_id: int) -> float | Non
 
 
 def security_multiplier(sec_status: float | None, is_reaction: bool = False) -> float:
-    """Per CCP: rig bonuses scale with security, but DIFFERENTLY for
+    """Per Fenris Creations: rig bonuses scale with security, but DIFFERENTLY for
     manufacturing and for reactions:
 
       manufacturing: highsec ×1.0, lowsec ×1.9, null/WH ×2.1
