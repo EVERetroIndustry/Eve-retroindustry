@@ -2,6 +2,32 @@
 {% block title %}Wallet — EVE Retroindustry{% endblock %}
 {% block content %}
 
+{# Dropdown of checkboxes, one per distinct value in the table below it. The
+   options are built client-side from the rendered rows, so no extra round trip
+   and no server-side state to keep in sync. #}
+{% macro value_filter(key, label, icon) %}
+<div class="d-flex align-items-center gap-2 px-2 py-2 value-filter" data-filter-key="{{ key }}"
+     style="border-bottom:1px solid #30363d">
+  <div class="dropdown">
+    <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button"
+            data-bs-toggle="dropdown" data-bs-auto-close="outside">
+      <i class="bi {{ icon }} me-1"></i><span class="vf-label">{{ label }}</span>
+    </button>
+    <div class="dropdown-menu p-2" style="min-width:280px;max-height:360px;overflow-y:auto">
+      <input type="text" class="form-control form-control-sm mb-2 vf-search"
+             placeholder="Search {{ label | lower }}…" autocomplete="off">
+      <div class="d-flex gap-3 mb-2 px-1">
+        <button type="button" class="btn btn-link btn-sm p-0 vf-all" style="font-size:.75rem">Select all</button>
+        <button type="button" class="btn btn-link btn-sm p-0 vf-none" style="font-size:.75rem">Clear</button>
+      </div>
+      <div class="vf-options"></div>
+    </div>
+  </div>
+  <span class="text-muted small vf-count"></span>
+</div>
+{% endmacro %}
+
+
 <div class="row mb-3 align-items-center">
   <div class="col">
     <h4 class="mb-0"><i class="bi bi-wallet2 me-2 text-primary"></i>Wallet</h4>
@@ -97,8 +123,9 @@
 {# Journal #}
 <div class="tab-pane fade show active" id="tab-journal">
 <div class="card" style="border-top:none;border-radius:0 0 6px 6px">
+  {{ value_filter("journal", "Type", "bi-funnel") }}
   <div class="table-responsive">
-    <table class="table table-hover tbl-compact table-sm mb-0 align-middle">
+    <table class="table table-hover tbl-compact table-sm mb-0 align-middle" id="tbl-journal">
       <thead>
         <tr>
           <th>Date</th><th>Type</th><th>Parties</th>
@@ -107,7 +134,7 @@
       </thead>
       <tbody>
         {% for j in journal %}
-        <tr>
+        <tr data-fval="{{ j.ref_type }}">
           <td class="text-muted" style="white-space:nowrap;font-size:.78rem">{{ j.date | replace('T',' ') | replace('Z','') | truncate(16,true,'') }}</td>
           <td>{{ j.ref_type }}</td>
           <td class="text-muted" style="font-size:.78rem">
@@ -132,8 +159,9 @@
 {# Transactions #}
 <div class="tab-pane fade" id="tab-txns">
 <div class="card" style="border-top:none;border-radius:0 0 6px 6px">
+  {{ value_filter("txns", "Item", "bi-funnel") }}
   <div class="table-responsive">
-    <table class="table table-hover tbl-compact table-sm mb-0 align-middle">
+    <table class="table table-hover tbl-compact table-sm mb-0 align-middle" id="tbl-txns">
       <thead>
         <tr>
           <th>Date</th><th></th><th>Item</th><th class="text-end">Qty</th>
@@ -143,7 +171,7 @@
       </thead>
       <tbody>
         {% for t in transactions %}
-        <tr>
+        <tr data-fval="{{ t.item }}">
           <td class="text-muted" style="white-space:nowrap;font-size:.78rem">{{ t.date | replace('T',' ') | replace('Z','') | truncate(16,true,'') }}</td>
           <td>
             <span class="badge" style="background:{% if t.is_buy %}#3d2c00;color:#e3b341{% else %}#0d2818;color:#3fb950{% endif %};font-size:.65rem">
@@ -175,4 +203,87 @@
 <div class="text-muted p-3">No wallet data.</div>
 {% endif %}
 
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Checkbox filter over an already-rendered table. Both tables ship every row to
+// the browser, so filtering here is instant and needs no server round trip; the
+// options are derived from the rows themselves, which means a ref_type or item
+// that never occurs simply never appears in the list.
+(function () {
+  function build(box) {
+    const table = document.getElementById('tbl-' + box.dataset.filterKey);
+    if (!table) return;
+    const rows = Array.from(table.querySelectorAll('tbody tr[data-fval]'));
+    if (!rows.length) { box.style.display = 'none'; return; }
+
+    const optWrap = box.querySelector('.vf-options');
+    const countEl = box.querySelector('.vf-count');
+    const labelEl = box.querySelector('.vf-label');
+    const baseLabel = labelEl.textContent;
+    const search = box.querySelector('.vf-search');
+
+    const counts = new Map();
+    rows.forEach(r => {
+      const v = r.dataset.fval || '—';
+      counts.set(v, (counts.get(v) || 0) + 1);
+    });
+    const values = Array.from(counts.keys()).sort((a, b) => a.localeCompare(b, 'cs'));
+
+    values.forEach((v, i) => {
+      const id = 'vf-' + box.dataset.filterKey + '-' + i;
+      const row = document.createElement('div');
+      row.className = 'form-check vf-opt';
+      row.dataset.value = v.toLowerCase();
+      row.innerHTML =
+        '<input class="form-check-input" type="checkbox" id="' + id + '" checked>' +
+        '<label class="form-check-label d-flex justify-content-between w-100" for="' + id + '"' +
+        ' style="font-size:.8rem;cursor:pointer">' +
+        '<span></span><span class="text-muted ms-3">' + counts.get(v) + '</span></label>';
+      row.querySelector('label > span').textContent = v;   // textContent: never trust a name as markup
+      row.querySelector('input').value = v;
+      optWrap.appendChild(row);
+    });
+
+    function apply() {
+      const on = new Set(
+        Array.from(optWrap.querySelectorAll('input:checked')).map(i => i.value)
+      );
+      let shown = 0;
+      rows.forEach(r => {
+        const hit = on.has(r.dataset.fval || '—');
+        r.style.display = hit ? '' : 'none';
+        if (hit) shown++;
+      });
+      const all = shown === rows.length;
+      countEl.textContent = all ? '' : shown + ' of ' + rows.length + ' shown';
+      // Say so on the button itself: a filter left on and forgotten is the classic
+      // way to end up staring at a table that is quietly hiding half its rows.
+      labelEl.textContent = all ? baseLabel : baseLabel + ' (' + on.size + '/' + values.length + ')';
+      box.querySelector('.dropdown-toggle').classList.toggle('btn-eve', !all);
+      box.querySelector('.dropdown-toggle').classList.toggle('btn-outline-secondary', all);
+    }
+
+    optWrap.addEventListener('change', apply);
+    box.querySelector('.vf-all').addEventListener('click', () => {
+      optWrap.querySelectorAll('input').forEach(i => { i.checked = true; }); apply();
+    });
+    box.querySelector('.vf-none').addEventListener('click', () => {
+      optWrap.querySelectorAll('input').forEach(i => { i.checked = false; }); apply();
+    });
+    search.addEventListener('input', () => {
+      const q = search.value.trim().toLowerCase();
+      optWrap.querySelectorAll('.vf-opt').forEach(o => {
+        o.style.display = o.dataset.value.includes(q) ? '' : 'none';
+      });
+    });
+    // Typing in the search box must not toggle anything or close the menu.
+    search.addEventListener('click', e => e.stopPropagation());
+    apply();
+  }
+
+  document.querySelectorAll('.value-filter').forEach(build);
+})();
+</script>
 {% endblock %}
