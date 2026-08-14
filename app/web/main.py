@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.9.5"
+APP_VERSION = "0.9.6"
 
 import asyncio
 import datetime
@@ -6395,11 +6395,17 @@ async def api_version_check():
     has_update = bool(latest_tag) and _ver(latest_tag) > _ver(APP_VERSION)
 
     plat = "win64" if _sys.platform == "win32" else "linux"
-    asset_name = f"EVE_Retroindustry-v{latest_tag}-{plat}.zip"
-    download_url = next(
-        (a["browser_download_url"] for a in data.get("assets", []) if a["name"] == asset_name),
-        None,
-    )
+    # The portable archive is still published as "-win64.zip" because every
+    # already-installed copy builds exactly that name for whatever the newest
+    # release turns out to be — renaming it outright would break in-app updates
+    # for existing users. Accepting a "-portable" name too means the asset can be
+    # renamed in a later release without stranding anyone.
+    asset_names = [
+        f"EVE_Retroindustry-v{latest_tag}-{plat}-portable.zip",
+        f"EVE_Retroindustry-v{latest_tag}-{plat}.zip",
+    ]
+    by_name = {a["name"]: a["browser_download_url"] for a in data.get("assets", [])}
+    download_url = next((by_name[n] for n in asset_names if n in by_name), None)
 
     result = {
         "current": APP_VERSION,

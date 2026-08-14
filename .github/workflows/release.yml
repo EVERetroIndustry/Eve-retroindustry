@@ -72,16 +72,30 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # Keep the artifact flat: listing a path inside installer/ makes
           # upload-artifact preserve that folder, and the release job's
-          # artifacts/*setup.exe glob would then miss it.
+          # artifacts/* globs would then miss it.
           Move-Item installer\*setup.exe . -Force
           Get-ChildItem *setup.exe | ForEach-Object { Write-Host "built: $($_.Name) ($([math]::Round($_.Length/1MB,1)) MB)" }
+
+      # The installer ships inside a ZIP: browsers flag a downloaded .exe as
+      # "not commonly downloaded", but not an archive. It does NOT remove the
+      # warning entirely — Windows propagates Mark-of-the-Web to extracted files,
+      # so SmartScreen can still prompt when setup.exe is launched — but it keeps
+      # the download itself clean and gets through proxies that block .exe.
+      # (Zipping gains no size: Inno already LZMA2-compressed the payload.)
+      - name: Wrap installer in a ZIP
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem *setup.exe)[0]
+          $zip = "EVE_Retroindustry-${{ github.ref_name }}-win64-setup.zip"
+          Compress-Archive -Path $exe.FullName -DestinationPath $zip -Force
+          Write-Host "packed: $zip ($([math]::Round((Get-Item $zip).Length/1MB,1)) MB)"
 
       - uses: actions/upload-artifact@v4
         with:
           name: win64
           path: |
             EVE_Retroindustry-${{ github.ref_name }}-win64.zip
-            EVE_Retroindustry-*-setup.exe
+            EVE_Retroindustry-${{ github.ref_name }}-win64-setup.zip
 
   build-linux:
     needs: test
@@ -273,14 +287,12 @@ jobs:
             --title "EVE Retroindustry ${{ github.ref_name }}" \
             --generate-notes \
             artifacts/*.zip \
-            artifacts/*setup.exe \
             artifacts/*.AppImage \
             artifacts/EveRetroindustry.apk \
             artifacts/version.json \
             sde_base.db \
           || gh release upload ${{ github.ref_name }} \
             artifacts/*.zip \
-            artifacts/*setup.exe \
             artifacts/*.AppImage \
             artifacts/EveRetroindustry.apk \
             artifacts/version.json \

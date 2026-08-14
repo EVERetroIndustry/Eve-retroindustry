@@ -48,11 +48,14 @@ A local industry calculator for EVE Online. Runs as a web app on your machine �
 
 ### Windows
 
-Grab `EVE_Retroindustry-vX.Y.Z-win64-setup.exe` from [**Releases**](https://github.com/ScoopEMPRetro/Eve-retroindustry/releases/latest) and run it.
+Two Windows downloads in every [**release**](https://github.com/ScoopEMPRetro/Eve-retroindustry/releases/latest):
 
-It installs **per user** (into `%LOCALAPPDATA%\Programs`), so there's **no admin prompt**, it adds Start Menu (and optionally desktop) shortcuts, and it appears in *Apps & features* with a proper uninstaller. Re-running a newer installer upgrades in place; in-app updates keep working too.
+| Asset | What it is |
+|---|---|
+| `…-win64-setup.zip` | **Installer.** Extract it and run the `setup.exe` inside |
+| `…-win64.zip` | **Portable.** Extract anywhere and run `EVE_Retroindustry.exe` |
 
-Prefer not to install? The `-win64.zip` is fully portable — extract it anywhere and run `EVE_Retroindustry.exe`.
+The installer sets the app up **per user** (into `%LOCALAPPDATA%\Programs`), so there's **no admin prompt**, it adds Start Menu (and optionally desktop) shortcuts, and it appears in *Apps & features* with a proper uninstaller. Re-running a newer installer upgrades in place; in-app updates keep working too. Uninstalling leaves your characters, prices and projects alone — they live outside the install directory.
 
 **Requires Windows 10 (1809) or newer** — the bundled Qt/Chromium runtime doesn't support Windows 7/8.1. The installer checks this and tells you rather than failing at launch.
 
@@ -69,7 +72,7 @@ Prefer not to install? The `-win64.zip` is fully portable — extract it anywher
 
 No Python and no dependencies to install.
 
-> **Note:** Windows may show a SmartScreen warning because the installer is unsigned (code-signing certificates aren't practical for a hobby project). Click *More info → Run anyway*.
+> **Note:** the app is unsigned, so Windows SmartScreen may warn you the first time you run it — click *More info → Run anyway*. Nothing hides this short of a code-signing certificate, which isn't practical for a hobby project; the releases publish SHA256 checksums so you can verify what you downloaded.
 
 ### Android (experimental)
 
@@ -120,7 +123,7 @@ git tag v0.x.y && git push origin v0.x.y
 
 The workflow builds Windows, Linux and Android binaries and creates a GitHub Release with:
 
-- `EVE_Retroindustry-vX.Y.Z-win64-setup.exe` (Windows installer, per-user)
+- `EVE_Retroindustry-vX.Y.Z-win64-setup.zip` (Windows installer, per-user)
 - `EVE_Retroindustry-vX.Y.Z-win64.zip` (Windows portable)
 - `EVE_Retroindustry-vX.Y.Z-linux.zip` + `EVE_Retroindustry-vX.Y.Z-linux.AppImage`
 - `EveRetroindustry.apk` (Android, arm64 sideload)
