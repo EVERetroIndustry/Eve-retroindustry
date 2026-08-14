@@ -43,7 +43,7 @@ jobs:
 
       - name: Create ZIP (portable)
         shell: pwsh
-        run: Compress-Archive -Path dist/EVE_Retroindustry -DestinationPath EVE_Retroindustry-${{ github.ref_name }}-win64.zip
+        run: Compress-Archive -Path dist/EVE_Retroindustry -DestinationPath EVE_Retroindustry-${{ github.ref_name }}-win64-portable.zip
 
       # Inno Setup is not pre-installed on the windows-2025 runner image, so pull
       # it in. This only affects the machine that COMPILES the installer — the
@@ -94,7 +94,7 @@ jobs:
         with:
           name: win64
           path: |
-            EVE_Retroindustry-${{ github.ref_name }}-win64.zip
+            EVE_Retroindustry-${{ github.ref_name }}-win64-portable.zip
             EVE_Retroindustry-${{ github.ref_name }}-win64-setup.zip
 
   build-linux:
@@ -132,7 +132,7 @@ jobs:
         run: ./dist/EVE_Retroindustry/EVE_Retroindustry --smoke
 
       - name: Create ZIP
-        run: cd dist && zip -r ../EVE_Retroindustry-${{ github.ref_name }}-linux.zip EVE_Retroindustry
+        run: cd dist && zip -r ../EVE_Retroindustry-${{ github.ref_name }}-linux-portable.zip EVE_Retroindustry
 
       - name: Build AppImage
         run: |
@@ -193,7 +193,7 @@ jobs:
         with:
           name: linux
           path: |
-            EVE_Retroindustry-${{ github.ref_name }}-linux.zip
+            EVE_Retroindustry-${{ github.ref_name }}-linux-portable.zip
             EVE_Retroindustry-${{ github.ref_name }}-linux.AppImage
 
   build-android:

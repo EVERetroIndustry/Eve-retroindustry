@@ -335,7 +335,8 @@ function _applyUpdateData(d) {
     _show('update-notbundled');
     document.getElementById('update-download-btn').style.display = 'none';
   } else if (!d.download_url) {
-    document.getElementById('update-bundled-note').textContent = 'No binary for this platform in release';
+    document.getElementById('update-bundled-note').textContent =
+      "Couldn't find a matching download in that release — use the release link above to grab it manually.";
     document.getElementById('update-download-btn').disabled = true;
   }
 }

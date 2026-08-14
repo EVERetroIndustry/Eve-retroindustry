@@ -6395,11 +6395,10 @@ async def api_version_check():
     has_update = bool(latest_tag) and _ver(latest_tag) > _ver(APP_VERSION)
 
     plat = "win64" if _sys.platform == "win32" else "linux"
-    # The portable archive is still published as "-win64.zip" because every
-    # already-installed copy builds exactly that name for whatever the newest
-    # release turns out to be — renaming it outright would break in-app updates
-    # for existing users. Accepting a "-portable" name too means the asset can be
-    # renamed in a later release without stranding anyone.
+    # Portable archives are named "-portable.zip" (v0.9.7 onwards). The old
+    # "-<plat>.zip" name is still accepted so a copy installed before the rename
+    # can still find its update: an installed build constructs this filename
+    # itself for whatever the newest release turns out to be.
     asset_names = [
         f"EVE_Retroindustry-v{latest_tag}-{plat}-portable.zip",
         f"EVE_Retroindustry-v{latest_tag}-{plat}.zip",

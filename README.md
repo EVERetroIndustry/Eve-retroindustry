@@ -53,7 +53,7 @@ Two Windows downloads in every [**release**](https://github.com/ScoopEMPRetro/Ev
 | Asset | What it is |
 |---|---|
 | `…-win64-setup.zip` | **Installer.** Extract it and run the `setup.exe` inside |
-| `…-win64.zip` | **Portable.** Extract anywhere and run `EVE_Retroindustry.exe` |
+| `…-win64-portable.zip` | **Portable.** Extract anywhere and run `EVE_Retroindustry.exe` |
 
 The installer sets the app up **per user** (into `%LOCALAPPDATA%\Programs`), so there's **no admin prompt**, it adds Start Menu (and optionally desktop) shortcuts, and it appears in *Apps & features* with a proper uninstaller. Re-running a newer installer upgrades in place; in-app updates keep working too. Uninstalling leaves your characters, prices and projects alone — they live outside the install directory.
 
@@ -62,7 +62,7 @@ The installer sets the app up **per user** (into `%LOCALAPPDATA%\Programs`), so 
 ### Linux
 
 1. Download the latest release from [**Releases**](https://github.com/ScoopEMPRetro/Eve-retroindustry/releases/latest)
-2. Extract the ZIP anywhere, or use the single-file `.AppImage`
+2. Extract the `-linux-portable.zip` anywhere, or use the single-file `.AppImage`
 3. Run `EVE_Retroindustry`
 
 ### First run (both platforms)
@@ -124,8 +124,8 @@ git tag v0.x.y && git push origin v0.x.y
 The workflow builds Windows, Linux and Android binaries and creates a GitHub Release with:
 
 - `EVE_Retroindustry-vX.Y.Z-win64-setup.zip` (Windows installer, per-user)
-- `EVE_Retroindustry-vX.Y.Z-win64.zip` (Windows portable)
-- `EVE_Retroindustry-vX.Y.Z-linux.zip` + `EVE_Retroindustry-vX.Y.Z-linux.AppImage`
+- `EVE_Retroindustry-vX.Y.Z-win64-portable.zip` (Windows portable)
+- `EVE_Retroindustry-vX.Y.Z-linux-portable.zip` + `EVE_Retroindustry-vX.Y.Z-linux.AppImage`
 - `EveRetroindustry.apk` (Android, arm64 sideload)
 - `sde_base.db` (game data, downloaded by the app on first run)
 - `version.json` (used by the in-app updater)
