@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.9.11"
+APP_VERSION = "0.9.12"
 
 import asyncio
 import datetime
@@ -47,7 +47,10 @@ from app.db.type_resolver import resolve_names_bulk
 from app.esi.client import search_type_by_name
 from app.cache.blueprint_cache import resolve_type
 from app.db.database import get_session
-from app.manufacturing.planner import build_plan, find_blueprint_for_product, calc_job_time, format_duration
+from app.manufacturing.planner import (
+    build_plan, find_blueprint_for_product, calc_job_time, format_duration,
+    MFG_IMPLANTS, MFG_IMPLANT_PCTS,
+)
 from app.bom.resolver import BOMResolver
 from app.market.prices import ensure_price_table, fetch_station_volumes, get_cached_station_volumes, get_station_volumes_any_age, fetch_structure_market, TRADE_HUBS, JITA_REGION
 from app.web.prices_helper import (
@@ -1644,6 +1647,8 @@ async def plan_form(request: Request, char: str = "", station: str = ""):
         "form_station_name": prefill_station_name,
         "form_industry":     str(char_skills.get(3380, 0)),
         "form_adv_industry": str(char_skills.get(3388, 0)),
+        "form_implant_mfg":  "0",
+        "mfg_implant_options": _MFG_IMPLANT_OPTIONS,
         "plan_char_id": plan_char_id,
     })
 
@@ -1707,6 +1712,22 @@ def _resolve_product_local(conn: sqlite3.Connection, query: str) -> tuple[int, s
     return _pick(sub)
 
 
+# Dropdown entries for the manufacturing implant, cheapest bonus first. Built from
+# planner.MFG_IMPLANTS so the UI can never drift from what calc_job_time accepts.
+_MFG_IMPLANT_OPTIONS: list[dict] = [
+    {"pct": f"{pct:g}", "label": f"{name} (−{pct:g}%)"}
+    for _tid, (name, pct) in sorted(MFG_IMPLANTS.items(), key=lambda kv: kv[1][1])
+]
+
+
+def _implant_name_for_pct(pct: float) -> str | None:
+    """Name of the BX implant matching a reduction, or None when no implant."""
+    for name, p in MFG_IMPLANTS.values():
+        if p == pct:
+            return name
+    return None
+
+
 @app.post("/plan", response_class=HTMLResponse)
 async def plan_result(
     request: Request,
@@ -1728,9 +1749,19 @@ async def plan_result(
     runs_per_job: str = Form("1"),
     stock_stations: str = Form(""),
     input_basis: str = Form("sell"),
+    implant_mfg: str = Form("0"),
 ):
     conn = get_conn()
     input_basis = "buy" if input_basis == "buy" else "sell"
+    # Zainou 'Beancounter' Industry implant — the UI sends the reduction in %.
+    # Anything not in the real BX-80x set collapses to 0 (no implant).
+    try:
+        implant_mfg_pct = float(implant_mfg.replace(",", "."))
+    except (ValueError, AttributeError):
+        implant_mfg_pct = 0.0
+    if implant_mfg_pct not in MFG_IMPLANT_PCTS:
+        implant_mfg_pct = 0.0
+    implant_mfg = f"{implant_mfg_pct:g}"
     error = None
     plan_data = None
     # Selection of stations the stock level is computed from. Empty = default
@@ -1939,6 +1970,11 @@ async def plan_result(
             rate_mfg=rate_mfg,
             rate_rxn=rate_rxn,
             input_basis=input_basis,
+            # Hand over the SAME root ME/TE used for `root` above, so the Materials
+            # tab and the Manufacturing steps cannot disagree (they are two separate
+            # BOM resolutions of the same product).
+            me_override=me,
+            te_override=te,
         )
         plan_data = _plan_to_dict(plan, prices, type_name, conn=conn, input_basis=input_basis)
         # Override ME/TE in plan_data if entered manually
@@ -2099,6 +2135,7 @@ async def plan_result(
                             facility_te_multiplier=prod_te_mult,
                             is_reaction=is_rxn,
                             science_skill_mult=sci_mult,
+                            implant_time_pct=implant_mfg_pct,
                         )
                         job["facility_te_mult"] = prod_te_mult
                         job["job_duration_seconds"] = job_secs
@@ -2179,6 +2216,8 @@ async def plan_result(
             "total_job_fee":       total_job_fee,
             "total_time_s":        total_time_s,
             "total_time":          format_duration(total_time_s) if total_time_s else None,
+            "implant_mfg_pct":     implant_mfg_pct,
+            "implant_mfg_name":    _implant_name_for_pct(implant_mfg_pct),
             "mfg_te_pct":          round((1 - mfg_te_mult) * 100, 1),
             "rxn_te_pct":          round((1 - rxn_te_mult) * 100, 1) if sep_rxn_station else None,
             "mfg_me_pct":          round((1 - mfg_me_mult) * 100, 2),
@@ -2248,6 +2287,8 @@ async def plan_result(
         "form_selling_station_name": selling_station_name if selling_station else "",
         "form_industry":     form_industry,
         "form_adv_industry": form_adv_industry,
+        "form_implant_mfg":  implant_mfg,
+        "mfg_implant_options": _MFG_IMPLANT_OPTIONS,
         "plan_char_id":      plan_char_id_int,
     })
 

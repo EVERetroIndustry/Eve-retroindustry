@@ -91,7 +91,7 @@
         </select>
       </div>
           <div>
-            <label class="form-label" title="How many runs one blueprint copy has. EVE rounds ME per job, so this changes material totals: 1 = parallel single-run copies (safe default, never short on materials); e.g. 10 = ten-run BPC copies, quantity is split into jobs of 10 runs + a smaller remainder job; empty = everything in ONE batched job (matches the in-game industry window for a multi-run job).">Runs/job</label>
+            <label class="form-label" title="How many runs one blueprint copy has. EVE rounds ME per job, so this changes material totals: 1 = parallel single-run copies (safe default, never short on materials); e.g. 10 = ten-run BPC copies, quantity is split into jobs of 10 runs + a smaller remainder job; 0 or empty = everything in ONE batched job (matches the in-game industry window for a multi-run job).">Runs/job</label>
         <input type="number" name="runs_per_job" class="form-control form-control-sm me-te-mini"
                min="0" placeholder="all" value="{{ form_runs_per_job if form_runs_per_job is defined else '1' }}">
       </div>
@@ -193,6 +193,19 @@
                 <option value="raitaru">Raitaru (M-Set)</option>
                 <option value="azbel">Azbel (L-Set)</option>
                 <option value="sotiyo">Sotiyo (XL-Set)</option>
+              </select>
+            </div>
+            <div style="width:165px">
+              <label class="form-label" for="implant-mfg-select">
+                <i class="bi bi-cpu me-1"></i>Implant
+                <span class="text-muted" style="font-size:.7rem;opacity:.6">— time</span>
+              </label>
+              <select name="implant_mfg" id="implant-mfg-select" class="form-select form-select-sm"
+                      title="Zainou 'Beancounter' Industry implant (slot 8). Shortens manufacturing jobs only — it does not change materials, job fees or profit, and reactions are unaffected.">
+                <option value="0" {% if (form_implant_mfg|default('0')) == '0' %}selected{% endif %}>— none —</option>
+                {% for opt in mfg_implant_options %}
+                <option value="{{ opt.pct }}" {% if (form_implant_mfg|default('0')) == opt.pct %}selected{% endif %}>{{ opt.label }}</option>
+                {% endfor %}
               </select>
             </div>
             <span id="sci-display" class="d-none" style="font-size:.7rem;color:#8b949e;line-height:1.9rem">SCI
@@ -357,6 +370,7 @@ function switchPlanChar(charId) {
     const teIn = form.querySelector('#te-input');
     if (meIn) meIn.value = '';
     if (teIn) teIn.value = '';
+    normalizeRunsPerJob();
     form.submit();
   } else {
     window.location.href = '/plan?char=' + encodeURIComponent(charId);
@@ -407,6 +421,7 @@ function switchPlanChar(charId) {
           {% set aind_req = result.adv_industry_required or 0 %}
           <span {% if aind_have < aind_req %}class="text-danger fw-semibold" title="Required L{{ aind_req }}, you have L{{ aind_have }}"{% endif %}>Adv. Industry {{ aind_have }}{% if aind_have < aind_req %}/{{ aind_req }}{% endif %}</span>
           {% if result.all_science_skills %}{% for sname, slevel, spct, sreq in result.all_science_skills %} &nbsp;·&nbsp; <span {% if slevel < sreq %}class="text-danger fw-semibold" title="Required L{{ sreq }}, you have L{{ slevel }}"{% endif %}>{{ sname }} {{ slevel }}{% if slevel < sreq %}/{{ sreq }}{% endif %}</span>{% endfor %}{% endif %}
+          {% if result.fees and result.fees.implant_mfg_name %} &nbsp;·&nbsp; <span title="Zainou 'Beancounter' Industry {{ result.fees.implant_mfg_name }} — manufacturing time only">{{ result.fees.implant_mfg_name }} −{{ result.fees.implant_mfg_pct | round(0) | int }}%</span>{% endif %}
         </span>
         {% if result.fees and result.fees.total_time %}
         <span class="badge bg-secondary ms-2" style="font-size:.7rem">
@@ -1209,6 +1224,7 @@ const _FORM_FIELD_NAMES = [
   'station','reaction_station','selling_station',
   'facility_tax','reaction_facility_tax',
   'facility_me_bonus','reaction_me_bonus',
+  'implant_mfg',      // Beancounter Industry implant — a character constant, keep it across plans
   'stock_stations',   // stock source station selection (hidden input) — keep it preserved
 ];
 
@@ -1254,6 +1270,17 @@ function restoreUiState() {
   }
 }
 
+// An EMPTY form field never reaches the backend as "" — FastAPI treats a blank value
+// as missing and substitutes the field default ("1"), so "empty = one batched job"
+// silently became "1 run per job" and inflated material totals. 0 is the documented
+// batch signal the backend does see, so send that instead.
+// Must be called before EVERY submit: form.submit() does NOT fire the submit event,
+// so the listener alone would miss the switch-character and restore-last-plan paths.
+function normalizeRunsPerJob() {
+  const rpj = document.querySelector('[name="runs_per_job"]');
+  if (rpj && !rpj.value.trim()) rpj.value = '0';
+}
+
 function restoreAndSubmitPlan() {
   const raw = localStorage.getItem('eve_plan_state');
   if (!raw) return;
@@ -1270,6 +1297,7 @@ function restoreAndSubmitPlan() {
   if (sd && data._station_display)     sd.value = data._station_display;
   if (rd && data._rxn_station_display) rd.value = data._rxn_station_display;
   if (ld && data._sell_station_display) ld.value = data._sell_station_display;
+  normalizeRunsPerJob();
   form.submit();
 }
 
@@ -1674,6 +1702,7 @@ makeStationSelector({
 
 // Submit fallback — if hidden is empty and display contains a number
 document.getElementById('plan-form')?.addEventListener('submit', () => {
+  normalizeRunsPerJob();
   ['station-display|station-id', 'rxn-station-display|rxn-station-id', 'sell-station-display|sell-station-id'].forEach(pair => {
     const [dId, hId] = pair.split('|');
     const d = document.getElementById(dId), h = document.getElementById(hId);

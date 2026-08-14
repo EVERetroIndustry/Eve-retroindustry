@@ -21,6 +21,18 @@ PlanMode = Literal["full", "components", "optimal"]
 _SKILL_INDUSTRY        = 3380  # -4 % time/level
 _SKILL_ADV_INDUSTRY    = 3388  # -3 % time/level
 
+# Zainou 'Beancounter' Industry implants (slot 8, group "Cyber Production").
+# {type_id: (name, manufacturing time reduction in %)} — verified against the
+# ESI "Manufacturing Time Bonus" dogma attribute, not from memory. There is no
+# BX-805: the family stops at -4 %, unlike other Beancounter lines.
+MFG_IMPLANTS: dict[int, tuple[str, float]] = {
+    27170: ("BX-801", 1.0),
+    27167: ("BX-802", 2.0),
+    27171: ("BX-804", 4.0),
+}
+# Reductions accepted from the UI, so a hand-crafted form cannot invent a value.
+MFG_IMPLANT_PCTS: frozenset[float] = frozenset(pct for _n, pct in MFG_IMPLANTS.values())
+
 
 def calc_job_time(
     base_time: int,
@@ -31,26 +43,46 @@ def calc_job_time(
     facility_te_multiplier: float = 1.0,
     is_reaction: bool = False,
     science_skill_mult: float = 1.0,
+    implant_time_pct: float = 0.0,
 ) -> int:
-    """Return the total job time in seconds (runs × time/run after bonuses).
+    """Return the total job time in seconds.
 
-    EVE Online formula:
-      time/run = base_time
+    EVE Online formula — every modifier and the run count form ONE product:
+      time = base_time × runs
         × (1 − te × 0.01)               # Blueprint TE (0–20)
         × (1 − industry × 0.04)         # Industry skill (manufacturing only)
         × (1 − adv_industry × 0.03)     # Advanced Industry skill (manufacturing only)
+        × (1 − implant_pct / 100)       # Zainou 'Beancounter' Industry BX-80x (manufacturing only)
         × science_skill_mult             # science skills required by the blueprint (precomputed)
         × facility_te_multiplier         # structure + rigs (precomputed)
-    Reactions: Industry/AdvIndustry do not apply.
+    Reactions: Industry/AdvIndustry and the BX implant do not apply — the implant's
+    attribute is "Manufacturing Time Bonus" and reactions are a separate activity.
+
+    Rounding happens ONCE, on the total — NOT per run. Rounding per run and then
+    multiplying inflates the error by the run count: a 17 s/run job with 5625 runs
+    lost a whole second per run to rounding, i.e. ~1.5 h on one job, and small
+    bonuses (BX-801's 1 %) vanished entirely because they could not tip the
+    per-run rounding. Sources agree the run count sits inside the product:
+      - Qoi, "Formulas for EVE Industry" v2.2:
+        productionTime = baseProductionTime * timeModifier * skillModifier * runs
+        (the same document spells out ceil(round(...)) for MATERIALS and gives the
+        time formula no rounding at all)
+      - CCP/Fenris support, "Time Efficiency Research": "Job time = Blueprint
+        manufacturing run time * number of production runs * Time Efficiency
+        Reduction factor"
+    Note: per-JOB rounding of MATERIAL quantities is a real and separate mechanic —
+    that is what BOMResolver.runs_per_job models. Do not conflate the two.
+    No source states whether the fractional final second is floored, ceiled or
+    rounded; that is a ≤1 s question on a whole job, so round() is used.
     """
     mult = 1.0 - min(te, 20) * 0.01
     if not is_reaction:
         mult *= 1.0 - min(industry_level, 5) * 0.04
         mult *= 1.0 - min(adv_industry_level, 5) * 0.03
+        mult *= 1.0 - max(0.0, min(implant_time_pct, 100.0)) / 100.0
     mult *= max(0.01, science_skill_mult)
     mult *= max(0.01, facility_te_multiplier)
-    time_per_run = max(1, round(base_time * mult))
-    return time_per_run * max(1, runs)
+    return max(1, round(base_time * max(1, runs) * mult))
 
 
 def format_duration(seconds: int) -> str:
@@ -160,12 +192,19 @@ def build_plan(
     rate_mfg: float = 0.0,
     rate_rxn: float = 0.0,
     input_basis: str = "sell",
+    me_override: float | None = None,
+    te_override: int | None = None,
 ) -> ManufacturingPlan:
     db_conn = sqlite3.connect(db_path)
 
     bp = find_blueprint_for_product(blueprints, product_type_id, db_conn)
-    me = bp.material_efficiency if bp else 0
-    te = bp.time_efficiency     if bp else 0
+    # me_override/te_override carry the ROOT ME/TE the caller already settled on
+    # (a value typed into the form, or the blueprint's own). Without them this
+    # function re-derived ME from the owned blueprint only, so a manually entered
+    # ME never reached `materials` — the Materials tab then disagreed with the
+    # Manufacturing steps, which are built from the caller's own resolved tree.
+    me = me_override if me_override is not None else (bp.material_efficiency if bp else 0)
+    te = te_override if te_override is not None else (bp.time_efficiency     if bp else 0)
 
     resolver = BOMResolver(db_path, blueprints=blueprints, runs_per_job=runs_per_job,
                            adjusted_prices=adjusted_prices,

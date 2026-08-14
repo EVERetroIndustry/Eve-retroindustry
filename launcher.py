@@ -241,6 +241,122 @@ def _smoke_test() -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Webview browser profile
+# ---------------------------------------------------------------------------
+
+def _describe_path(path: str | None) -> str:
+    """Facts about a path, for the log. Enough to tell the failure modes apart:
+    a leftover file, a broken junction, a stat that is denied, or nothing there."""
+    if not path:
+        return "path=None"
+    try:
+        os.lstat(path)
+    except OSError as exc:
+        return f"lexists=0 lstat={exc!r}"
+    try:
+        return (f"lexists=1 isdir={os.path.isdir(path)} islink={os.path.islink(path)}"
+                f" exists={os.path.exists(path)} w_ok={os.access(path, os.W_OK)}")
+    except OSError as exc:
+        return f"lexists=1 stat_failed={exc!r}"
+
+
+def _is_storage_path_error(exc: BaseException, storage_dir: str | None) -> bool:
+    """True for pywebview's storage-path rejection, and nothing else.
+
+    It raises WebViewException("Storage path <path> is not writable") — matching
+    on both the wording and our own path keeps the retry from swallowing an
+    unrelated GUI failure.
+    """
+    if not storage_dir:
+        return False
+    msg = str(exc)
+    return "storage path" in msg.lower() and storage_dir in msg
+
+
+def _prepare_webview_storage(app_dir: str) -> str | None:
+    """Return a directory pywebview will accept for its browser profile, or None.
+
+    pywebview re-validates storage_path itself: it stats the path, calls
+    os.makedirs() UNGUARDED when the stat fails, and rewrites any resulting
+    OSError into "Storage path ... is not writable" — throwing the real error
+    away. A Windows user hit exactly that and the app died before its first
+    window: os.path.exists() reported the directory missing while
+    CreateDirectory reported it already there (WinError 183). Since our own
+    makedirs(exist_ok=True) had just succeeded, that pair means the directory
+    was in a transient state (a delete pending from a killed
+    QtWebEngineProcess, an antivirus holding the name, a second instance
+    starting) rather than plainly broken.
+
+    So: run pywebview's own two checks here first, prove writability with a real
+    write, move a poisoned name aside instead of deleting anything, and fall
+    back to a private profile rather than failing to start.
+    """
+    import tempfile
+
+    candidates = [
+        os.path.join(app_dir, "webview_data"),
+        os.path.join(app_dir, "webview_data-2"),
+        os.path.join(tempfile.gettempdir(), "eve-retroindustry-webview"),
+    ]
+    for path in candidates:
+        try:
+            # A name that exists but is not a directory (leftover file, broken
+            # junction) can never be made usable — rename it aside, never delete:
+            # a real profile directory must survive even if we misjudge it.
+            if os.path.lexists(path) and not os.path.isdir(path):
+                aside = f"{path}.broken"
+                for n in range(1, 20):
+                    if not os.path.lexists(aside):
+                        break
+                    aside = f"{path}.broken{n}"
+                print(f"[webview] {path} is not a directory "
+                      f"({_describe_path(path)}) — moving it to {aside}")
+                os.rename(path, aside)
+
+            os.makedirs(path, exist_ok=True)
+            # os.access(W_OK) is unreliable for directories on Windows, so
+            # actually write something.
+            probe = os.path.join(path, ".write_probe")
+            with open(probe, "w", encoding="utf-8") as fh:
+                fh.write("ok")
+            os.remove(probe)
+
+            # The exact two conditions pywebview will check in start().
+            if os.path.exists(path) and os.access(path, os.W_OK):
+                return path
+            print(f"[webview] {path} would fail pywebview's own check: "
+                  f"{_describe_path(path)}")
+        except Exception as exc:
+            print(f"[webview] storage path unusable: {path}: {exc!r}"
+                  f" — {_describe_path(path)}")
+    print("[webview] no usable profile directory — running with the default "
+          "profile (saved form state will not persist)")
+    return None
+
+
+def _start_webview(webview, storage_dir: str | None) -> None:
+    """Run the GUI, surviving a profile directory that goes bad under us.
+
+    _prepare_webview_storage already ran pywebview's checks, but they can still
+    fail a moment later — that is exactly what the Windows report showed, where
+    our makedirs had just succeeded and pywebview's stat then said the directory
+    was missing. pywebview validates storage_path before it touches the GUI or
+    the window list, so retrying without a profile is safe here; the only cost is
+    that localStorage stops persisting.
+    """
+    try:
+        webview.start(gui="qt", private_mode=False, storage_path=storage_dir)
+    except Exception as exc:
+        if not _is_storage_path_error(exc, storage_dir):
+            raise
+        print(f"[webview] {exc!r}")
+        print(f"[webview] storage path state: {_describe_path(storage_dir)}")
+        print("[webview] starting with the default profile instead — saved form "
+              "state will not persist this session")
+        webview.start(gui="qt", private_mode=False)
+
+
 def main() -> None:
     port = 8000
     srv = _ServerThread(port)
@@ -295,16 +411,7 @@ def main() -> None:
     # exit — the plan page's "recently used stations/blueprints" and saved
     # form state silently vanished between sessions. Persist the profile
     # next to eve_cache.db (writable app dir).
-    storage_dir = os.path.join(_APP_DIR, "webview_data")
-    try:
-        os.makedirs(storage_dir, exist_ok=True)
-    except Exception:
-        storage_dir = None
-    webview.start(
-        gui="qt",
-        private_mode=False,
-        storage_path=storage_dir,
-    )
+    _start_webview(webview, _prepare_webview_storage(_APP_DIR))
 
     srv.join(timeout=3)
     os._exit(0)

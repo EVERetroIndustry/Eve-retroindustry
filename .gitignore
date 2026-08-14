@@ -49,3 +49,9 @@ Thumbs.db
 
 # Local type-icon cache (populated at runtime from images.evetech.net)
 icon_cache/
+
+# pywebview/QtWebEngine browser profile — created next to the app in dev runs.
+# Holds cookies and localStorage, so it must never be committed.
+webview_data/
+webview_data-2/
+webview_data.broken*
