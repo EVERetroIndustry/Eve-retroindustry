@@ -35,11 +35,23 @@ async def fetch_balance(client: httpx.AsyncClient, char_id: int, token: str) -> 
     return None
 
 
+# Pages are only fetched until `limit` entries are in hand, so this bound just
+# stops a runaway loop if ESI ever reports a silly x-pages.
+_MAX_JOURNAL_PAGES = 12
+
+
 async def fetch_journal(client: httpx.AsyncClient, char_id: int, token: str,
-                        pages: int = 1) -> list[dict]:
-    """Wallet journal — newest transactions first. Fetches `pages` pages."""
+                        limit: int = 2500) -> list[dict]:
+    """Wallet journal — newest first, up to `limit` entries.
+
+    Keeps pulling pages until it has `limit` entries or ESI runs out, rather than
+    assuming a page size: published sources disagree on whether a journal page
+    holds 1000 or 2500 rows, and asking for a fixed number of pages would either
+    fall short or waste calls depending on which is true. ESI keeps roughly the
+    last 30 days either way, so this is bounded in practice.
+    """
     out: list[dict] = []
-    for page in range(1, pages + 1):
+    for page in range(1, _MAX_JOURNAL_PAGES + 1):
         try:
             r = await client.get(
                 f"{ESI_BASE}/characters/{char_id}/wallet/journal/",
@@ -54,7 +66,7 @@ async def fetch_journal(client: httpx.AsyncClient, char_id: int, token: str,
             break
         out.extend(batch)
         total_pages = int(r.headers.get("x-pages", 1))
-        if page >= total_pages:
+        if page >= total_pages or len(out) >= limit:
             break
     return out
 
@@ -93,9 +105,10 @@ async def fetch_corp_wallets(client: httpx.AsyncClient, corp_id: int, token: str
 
 
 async def fetch_corp_journal(client: httpx.AsyncClient, corp_id: int, division: int,
-                             token: str, pages: int = 1) -> list[dict]:
+                             token: str, limit: int = 2500) -> list[dict]:
+    """Corp division journal — same paging rules as the character journal."""
     out: list[dict] = []
-    for page in range(1, pages + 1):
+    for page in range(1, _MAX_JOURNAL_PAGES + 1):
         try:
             r = await client.get(
                 f"{ESI_BASE}/corporations/{corp_id}/wallets/{division}/journal/",
@@ -109,7 +122,7 @@ async def fetch_corp_journal(client: httpx.AsyncClient, corp_id: int, division: 
         if not batch:
             break
         out.extend(batch)
-        if page >= int(r.headers.get("x-pages", 1)):
+        if page >= int(r.headers.get("x-pages", 1)) or len(out) >= limit:
             break
     return out
 

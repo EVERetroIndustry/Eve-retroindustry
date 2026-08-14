@@ -124,6 +124,12 @@
 <div class="tab-pane fade show active" id="tab-journal">
 <div class="card" style="border-top:none;border-radius:0 0 6px 6px">
   {{ value_filter("journal", "Type", "bi-funnel") }}
+  {% if journal | length >= row_cap %}
+  <div class="px-2 pt-2 text-muted" style="font-size:.75rem">
+    <i class="bi bi-info-circle me-1"></i>Showing the newest {{ row_cap | count_eu }} journal entries —
+    ESI keeps roughly the last 30 days.
+  </div>
+  {% endif %}
   <div class="table-responsive">
     <table class="table table-hover tbl-compact table-sm mb-0 align-middle" id="tbl-journal">
       <thead>
@@ -160,6 +166,12 @@
 <div class="tab-pane fade" id="tab-txns">
 <div class="card" style="border-top:none;border-radius:0 0 6px 6px">
   {{ value_filter("txns", "Item", "bi-funnel") }}
+  {% if transactions | length >= row_cap %}
+  <div class="px-2 pt-2 text-muted" style="font-size:.75rem">
+    <i class="bi bi-info-circle me-1"></i>Showing the newest {{ row_cap | count_eu }} transactions —
+    ESI keeps roughly the last 30 days.
+  </div>
+  {% endif %}
   <div class="table-responsive">
     <table class="table table-hover tbl-compact table-sm mb-0 align-middle" id="tbl-txns">
       <thead>
