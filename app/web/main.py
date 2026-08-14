@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.9.13"
+APP_VERSION = "0.9.14"
 
 import asyncio
 import datetime
@@ -3243,7 +3243,11 @@ def _container_display_name(custom_name: str, type_name: str, container_id: int)
     type_name = (type_name or "").strip()
     if not custom:
         return type_name or f"Container {container_id}"
-    if not type_name or type_name.lower() in custom.lower():
+    # Only drop the suffix when the name IS the type, where "(Hulk)" after "Hulk"
+    # would be pure noise. Anything looser loses the information: a substring
+    # test hid the type from every ship named Hulk1/Hulk2/…, and a whole-word
+    # test would do the same to "Hulk 1". Mild redundancy beats a missing hull.
+    if not type_name or custom.lower() == type_name.lower():
         return custom
     return f"{custom} ({type_name})"
 

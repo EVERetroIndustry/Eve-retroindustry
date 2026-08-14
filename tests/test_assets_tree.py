@@ -52,8 +52,16 @@ def test_label_keeps_both_custom_name_and_type(app_module):
     # ESI sends the literal string "None" for an unnamed item.
     assert f("None", "Megathron", 1) == "Megathron"
     assert f("none", "Megathron", 1) == "Megathron"
-    # Don't repeat a type the pilot already put in the name.
-    assert f("My Megathron", "Megathron", 1) == "My Megathron"
+    # Numbered ships are the common naming scheme and must keep the hull:
+    # a substring test used to swallow the type for every one of these.
+    assert f("Hulk1", "Hulk", 1) == "Hulk1 (Hulk)"
+    assert f("Hulk 2", "Hulk", 1) == "Hulk 2 (Hulk)"
+    assert f("Rorq", "Rorqual", 1) == "Rorq (Rorqual)"
+    # Only an exact name/type match drops the suffix — "Hulk (Hulk)" is noise.
+    assert f("Hulk", "Hulk", 1) == "Hulk"
+    assert f("  megathron  ", "Megathron", 1) == "megathron"
+    # A name that merely contains the type still gets it, redundancy and all.
+    assert f("My Megathron", "Megathron", 1) == "My Megathron (Megathron)"
     assert f("Blue Thunder", "", 1) == "Blue Thunder"
     assert f("", "", 777) == "Container 777"
 
