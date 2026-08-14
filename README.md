@@ -4,6 +4,8 @@ A local industry calculator for EVE Online. Runs as a web app on your machine �
 
 > **Note on the project.** I build this primarily for my own EVE career — features land when I need them, and priorities follow whatever I'm doing in-game. It's shared publicly as-is: if you find it useful, you're welcome to use it. There's no support commitment or roadmap promise, but bug reports and ideas are welcome via [Issues](https://github.com/ScoopEMPRetro/Eve-retroindustry/issues).
 
+**[⬇ Downloads and screenshots → scoopempretro.github.io/Eve-retroindustry](https://scoopempretro.github.io/Eve-retroindustry/)**
+
 ![Dashboard — multi-character overview](docs/screenshots/dashboard.png)
 
 ---

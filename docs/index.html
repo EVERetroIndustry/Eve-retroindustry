@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="A free, open-source EVE Online industry tool for Windows, Linux and Android: blueprint costs, market prices, assets, contracts, industry jobs and planetary colonies for every character.">
+<meta name="theme-color" content="#0d1117">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<meta property="og:title" content="EVE Retroindustry — an EVE Online industry tool">
+<meta property="og:description" content="Blueprint costs, market prices, assets, contracts, industry jobs and planetary colonies — for every character, on your own machine.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="img/dashboard.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<title>EVE Retroindustry — an EVE Online industry tool</title>
+</head>
+<body>
+<style>
+  /* ── Tokens ─────────────────────────────────────────────────────────────
+     Palette is inherited from the app itself (gold = ISK/brand, steel-blue =
+     controls, GitHub-dark ground), so the page reads as part of the product.
+     Deliberately single-theme: the app ships dark-only, and a light version of
+     this page would misrepresent it. Every colour is painted explicitly. */
+  :root {
+    --ground:  #0d1117;
+    --panel:   #12181f;
+    --panel-2: #161d26;
+    --rule:    #29313c;          /* grey with a blue bias, not a neutral default */
+    --text:    #e6edf3;
+    --muted:   #8b949e;
+    --gold:    #e6b84a;
+    --gold-dim:#c9a227;
+    --steel:   #7bb8ec;
+    --good:    #3fb950;
+
+    --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: "Segoe UI Variable Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+    --wrap: 1080px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { width: 100%; max-width: var(--wrap); margin-inline: auto; padding-inline: 24px; }
+
+  a { color: var(--steel); text-decoration-color: color-mix(in srgb, var(--steel) 40%, transparent); }
+  a:hover { color: #9fcbf2; }
+  :focus-visible { outline: 2px solid var(--steel); outline-offset: 2px; border-radius: 2px; }
+
+  /* ── Eyebrow / label type: monospace, because this app's whole subject is
+        tabular readouts. Used for every label-value pair on the page. ────── */
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: .72rem;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  /* ── Masthead ───────────────────────────────────────────────────────────── */
+  header.masthead {
+    border-bottom: 1px solid var(--rule);
+    background: linear-gradient(180deg, #101720, var(--ground));
+    position: sticky; top: 0; z-index: 10;
+    backdrop-filter: blur(6px);
+  }
+  .masthead .wrap {
+    display: flex; align-items: center; gap: 14px;
+    padding-block: 14px;
+  }
+  .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+  .brand-name {
+    font-weight: 700; letter-spacing: .04em; color: var(--gold);
+    font-size: 1.02rem; white-space: nowrap;
+  }
+  .chip {
+    font-family: var(--mono); font-size: .72rem;
+    padding: 2px 7px; border: 1px solid var(--rule); border-radius: 3px;
+    color: var(--muted); white-space: nowrap;
+  }
+  .masthead nav { margin-left: auto; display: flex; align-items: center; gap: 18px; }
+  .masthead nav a { font-size: .88rem; color: var(--muted); text-decoration: none; }
+  .masthead nav a:hover { color: var(--text); }
+
+  /* ── Hero ───────────────────────────────────────────────────────────────── */
+  .hero { padding-block: 68px 44px; }
+  .hero-grid { display: grid; gap: 44px; grid-template-columns: 1fr; }
+  @media (min-width: 900px) { .hero-grid { grid-template-columns: 1.05fr .95fr; align-items: start; } }
+
+  h1 {
+    font-size: clamp(2.1rem, 4.6vw, 3.1rem);
+    line-height: 1.08;
+    letter-spacing: -0.025em;
+    font-weight: 700;
+    margin: 12px 0 0;
+    text-wrap: balance;
+  }
+  h1 .isk { color: var(--gold); }
+  .lede { font-size: 1.06rem; color: #c3ccd6; max-width: 60ch; margin: 18px 0 0; }
+  .lede strong { color: var(--text); font-weight: 600; }
+
+  .facts { display: flex; flex-wrap: wrap; gap: 8px 10px; margin-top: 24px; }
+  .fact {
+    font-family: var(--mono); font-size: .74rem; color: var(--muted);
+    border: 1px solid var(--rule); border-radius: 3px; padding: 4px 9px;
+  }
+  .fact b { color: var(--good); font-weight: 600; }
+
+  /* ── Download panel: styled like one of the app's own readout panels ───── */
+  .dl {
+    border: 1px solid var(--rule);
+    border-top: 2px solid var(--gold);
+    background: linear-gradient(180deg, var(--panel-2), var(--panel));
+    border-radius: 4px;
+    padding: 22px;
+  }
+  .dl h2 { font-size: 1rem; margin: 0; letter-spacing: -0.01em; }
+  .rows { margin: 16px 0 20px; border-top: 1px solid var(--rule); }
+  .row {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 16px;
+    border-bottom: 1px solid var(--rule);
+    padding: 8px 0;
+    font-family: var(--mono); font-size: .8rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .row .k { color: var(--muted); letter-spacing: .08em; text-transform: uppercase; font-size: .7rem; }
+  .row .v { color: var(--text); text-align: right; }
+  .row .v.gold { color: var(--gold); }
+
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+    width: 100%;
+    background: var(--gold); color: #0d1117;
+    font-weight: 650; font-size: .98rem;
+    border: 0; border-radius: 4px;
+    padding: 13px 18px;
+    text-decoration: none; cursor: pointer;
+    transition: background .15s ease, transform .15s ease;
+  }
+  .btn:hover { background: #f0c65e; color: #0d1117; transform: translateY(-1px); }
+  .btn:active { transform: translateY(0); }
+  .btn-note { font-family: var(--mono); font-size: .72rem; color: var(--muted); margin-top: 10px; text-align: center; }
+
+  .alts { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--rule); }
+  .alt {
+    display: flex; justify-content: space-between; gap: 14px; align-items: baseline;
+    font-family: var(--mono); font-size: .78rem;
+    padding: 6px 0;
+    font-variant-numeric: tabular-nums;
+  }
+  .alt a { text-decoration: none; }
+  .alt a:hover { text-decoration: underline; }
+  .alt .sz { color: var(--muted); white-space: nowrap; }
+
+  /* ── Sections ───────────────────────────────────────────────────────────── */
+  section { padding-block: 56px; border-top: 1px solid var(--rule); }
+  .sec-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 26px; }
+  .sec-head h2 { font-size: 1.35rem; margin: 0; letter-spacing: -0.02em; }
+  .sec-head p { margin: 0; color: var(--muted); font-size: .92rem; }
+
+  /* Screenshots — the product is the pitch, so give them real room. */
+  .shots { display: grid; gap: 30px; }
+  figure { margin: 0; }
+  figure img {
+    display: block; width: 100%; height: auto;
+    border: 1px solid var(--rule); border-radius: 4px;
+    background: var(--panel);
+  }
+  figcaption { font-family: var(--mono); font-size: .75rem; color: var(--muted); margin-top: 9px; }
+  figcaption b { color: var(--text); font-weight: 600; }
+
+  /* Features as hairline-ruled rows — the same dense-table logic the app uses,
+     rather than a grid of rounded cards. */
+  .feat { display: grid; gap: 0; grid-template-columns: 1fr; }
+  @media (min-width: 760px) { .feat { grid-template-columns: 1fr 1fr; column-gap: 40px; } }
+  .feat > div {
+    border-top: 1px solid var(--rule);
+    padding: 15px 0;
+  }
+  .feat h3 { font-size: .95rem; margin: 0 0 5px; letter-spacing: -0.01em; }
+  .feat p { margin: 0; color: var(--muted); font-size: .89rem; }
+
+  /* Install notes */
+  .notes { display: grid; gap: 14px; }
+  .note {
+    display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: start;
+    border: 1px solid var(--rule); border-left: 2px solid var(--steel);
+    background: var(--panel); border-radius: 3px; padding: 14px 16px;
+  }
+  .note.warn { border-left-color: var(--gold); }
+  .note .t { font-weight: 600; font-size: .93rem; }
+  .note p { margin: 4px 0 0; color: var(--muted); font-size: .88rem; }
+  .note .mark {
+    font-family: var(--mono); font-size: .68rem; color: var(--muted);
+    letter-spacing: .1em; text-transform: uppercase;
+    white-space: nowrap; padding-top: 3px;
+  }
+  .note p.aside { font-size: .83rem; color: #6e7781; }
+  code {
+    font-family: var(--mono); font-size: .85em;
+    background: #1b2230; border: 1px solid var(--rule); border-radius: 3px;
+    padding: 1px 5px; color: #c3ccd6;
+  }
+
+  /* Support block: visible enough to notice, quiet enough not to nag. Uses the
+     app's own gold cup treatment rather than Ko-fi red, which would fight the
+     download button for attention. */
+  .kofi {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 18px 28px;
+    border: 1px solid var(--rule); border-radius: 4px;
+    background: var(--panel);
+    padding: 20px 22px;
+  }
+  .kofi > div { flex: 1 1 340px; min-width: 0; }
+  .kofi-t { font-weight: 600; font-size: .98rem; }
+  .kofi p { margin: 5px 0 0; color: var(--muted); font-size: .89rem; max-width: 58ch; }
+  .btn-kofi {
+    display: inline-flex; align-items: center; gap: 9px;
+    border: 1px solid var(--gold-dim); border-radius: 4px;
+    background: color-mix(in srgb, var(--gold) 10%, transparent);
+    color: var(--gold);
+    font-weight: 600; font-size: .92rem;
+    padding: 11px 18px;
+    text-decoration: none; white-space: nowrap;
+    transition: background .15s ease, color .15s ease, border-color .15s ease;
+  }
+  .btn-kofi:hover { background: var(--gold); border-color: var(--gold); color: #0d1117; }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-block: 32px 44px;
+    color: var(--muted); font-size: .86rem;
+  }
+  footer .wrap { display: flex; flex-wrap: wrap; gap: 12px 26px; align-items: center; }
+  footer .sep { margin-left: auto; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+    .btn:hover { transform: none; }
+  }
+</style>
+
+<header class="masthead">
+  <div class="wrap">
+    <span class="brand">
+      <svg width="26" height="26" viewBox="0 0 100 100" aria-hidden="true" style="flex-shrink:0">
+        <polygon points="50,3 95,26.5 95,73.5 50,97 5,73.5 5,26.5" fill="#0d1117" stroke="#e3b341" stroke-width="5"></polygon>
+        <polygon points="50,14 86,33 86,67 50,86 14,67 14,33" fill="none" stroke="#c9a227" stroke-width="1.2" opacity="0.35"></polygon>
+        <rect x="26" y="32" width="13" height="32" fill="#e3b341"></rect>
+        <rect x="62" y="40" width="12" height="24" fill="#e3b341"></rect>
+        <rect x="18" y="62" width="64" height="23" fill="#e3b341"></rect>
+        <rect x="18" y="60" width="64" height="4" fill="#c9a227"></rect>
+        <rect x="43" y="68" width="14" height="17" fill="#0d1117"></rect>
+        <circle cx="32" cy="24" r="5" fill="#e3b341" opacity="0.45"></circle>
+        <circle cx="38" cy="15" r="3.5" fill="#e3b341" opacity="0.25"></circle>
+        <circle cx="67" cy="33" r="4" fill="#e3b341" opacity="0.35"></circle>
+      </svg>
+      <span class="brand-name">EVE Retroindustry</span>
+    </span>
+    <span class="chip" id="chip-ver">v0.9.8</span>
+    <nav>
+      <a href="https://github.com/ScoopEMPRetro/Eve-retroindustry">Source on GitHub</a>
+      <a href="https://github.com/ScoopEMPRetro/Eve-retroindustry/releases">All releases</a>
+      <a href="https://github.com/ScoopEMPRetro/Eve-retroindustry/issues">Report a bug</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <div class="hero-grid">
+      <div>
+        <span class="eyebrow">Free · open source · Windows, Linux, Android</span>
+        <h1>An <span class="isk">EVE Online</span> industry tool</h1>
+        <p class="lede">
+          Blueprint costs down to raw materials, live market prices, the assets and blueprints
+          your alts are sitting on, industry jobs, market orders, contracts, wallets and
+          planetary colonies — for <strong>every character</strong>, on your own machine.
+        </p>
+        <div class="facts">
+          <span class="fact"><b>Free</b> &amp; open source (MIT)</span>
+          <span class="fact">Windows · Linux · Android</span>
+          <span class="fact">No account, no cloud</span>
+        </div>
+      </div>
+
+      <div class="dl">
+        <h2 id="dl-title">Download for Windows</h2>
+        <div class="rows">
+          <div class="row"><span class="k">Version</span><span class="v gold" id="dl-ver">v0.9.8</span></div>
+          <div class="row"><span class="k">Released</span><span class="v" id="dl-date">14 Aug 2026</span></div>
+          <div class="row"><span class="k">File</span><span class="v" id="dl-size">130.7 MB · installer</span></div>
+          <div class="row"><span class="k">Requires</span><span class="v" id="dl-req">Windows 10 (1809) or newer</span></div>
+        </div>
+        <a class="btn" id="dl-btn"
+           href="https://github.com/ScoopEMPRetro/Eve-retroindustry/releases/latest">
+          <svg width="17" height="17" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <path d="M8 1.5a.75.75 0 0 1 .75.75v6.44l2.22-2.22a.75.75 0 1 1 1.06 1.06l-3.5 3.5a.75.75 0 0 1-1.06 0l-3.5-3.5a.75.75 0 1 1 1.06-1.06l2.22 2.22V2.25A.75.75 0 0 1 8 1.5Z"></path>
+            <path d="M2.75 12.5a.75.75 0 0 1 .75.75v.25h9v-.25a.75.75 0 0 1 1.5 0v.5A1.25 1.25 0 0 1 12.75 15h-9.5A1.25 1.25 0 0 1 2 13.75v-.5a.75.75 0 0 1 .75-.75Z"></path>
+          </svg>
+          <span id="dl-btn-label">Download installer</span>
+        </a>
+        <div class="btn-note" id="dl-hint">Unzip, then run the setup — no admin rights needed</div>
+
+        <div class="alts">
+          <span class="eyebrow">Other downloads</span>
+          <div id="alt-list" style="margin-top:8px">
+            <div class="alt"><a href="https://github.com/ScoopEMPRetro/Eve-retroindustry/releases/latest">Windows portable</a><span class="sz">189.0 MB</span></div>
+            <div class="alt"><a href="https://github.com/ScoopEMPRetro/Eve-retroindustry/releases/latest">Linux AppImage</a><span class="sz">210.8 MB</span></div>
+            <div class="alt"><a href="https://github.com/ScoopEMPRetro/Eve-retroindustry/releases/latest">Linux portable</a><span class="sz">328.7 MB</span></div>
+            <div class="alt"><a href="https://github.com/ScoopEMPRetro/Eve-retroindustry/releases/latest">Android (experimental)</a><span class="sz">32.7 MB</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <section>
+    <div class="wrap">
+      <div class="sec-head">
+        <h2>What it looks like</h2>
+        <p>Screenshots from a live install (pilot names anonymised).</p>
+      </div>
+      <div class="shots">
+        <figure>
+          <img src="img/dashboard.jpg" alt="Dashboard listing every character with location, training and net worth" loading="lazy">
+          <figcaption><b>Dashboard.</b> Every alt at a glance — where they're docked, what they're training, wallet and asset value, plus a warning when planetary extractors are about to run dry.</figcaption>
+        </figure>
+        <figure>
+          <img src="img/production-plan.jpg" alt="Production plan for a Raven showing bill of materials, fees and profit" loading="lazy">
+          <figcaption><b>Production planner.</b> Full bill of materials with stock coverage, structure and rig bonuses, job install fees, and profit against market or contract prices.</figcaption>
+        </figure>
+        <figure>
+          <img src="img/prices.jpg" alt="Price table comparing Jita and secondary trade hubs" loading="lazy">
+          <figcaption><b>Prices.</b> Jita plus Amarr, Dodixie, Rens, Hek and any citadel you care about, side by side. Click an item for its price history and the live order book.</figcaption>
+        </figure>
+        <figure>
+          <img src="img/planets.jpg" alt="Planetary interaction colonies with extractor expiry countdowns" loading="lazy">
+          <figcaption><b>Planetary interaction.</b> Every colony's extractor timers counting down, the factory chains they feed, and what's sitting in storage.</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="sec-head">
+        <h2>What's in it</h2>
+        <p>Built for a multi-character industry career, not a single pilot.</p>
+      </div>
+      <div class="feat">
+        <div>
+          <h3>Blueprints to raw materials</h3>
+          <p>Recursive expansion through components and reactions, with your own ME/TE per blueprint.</p>
+        </div>
+        <div>
+          <h3>Make-vs-buy that counts fees</h3>
+          <p>Only builds a component when materials plus the job install fee actually beat buying it.</p>
+        </div>
+        <div>
+          <h3>Real market data</h3>
+          <p>Live ESI prices for Jita, the trade hubs and any station or citadel, cached locally.</p>
+        </div>
+        <div>
+          <h3>Your assets counted in</h3>
+          <p>Character and corporation hangars, containers and divisions — so the shopping list is what you're actually missing.</p>
+        </div>
+        <div>
+          <h3>Structures and rigs</h3>
+          <p>Raitaru to Sotiyo, Athanor to Tatara, with per-slot rigs and the right security multiplier.</p>
+        </div>
+        <div>
+          <h3>Jobs, orders, contracts, wallet</h3>
+          <p>Industry slots in use, open orders with what's still on the market, and a searchable public contract index.</p>
+        </div>
+        <div>
+          <h3>Planetary interaction</h3>
+          <p>Extractor countdowns, factory chains and an estimated value per day, with alerts before a program expires.</p>
+        </div>
+        <div>
+          <h3>Projects</h3>
+          <p>Save a plan, tick off finished jobs, and keep one shopping list across a multi-stage build.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="sec-head">
+        <h2>Before you install</h2>
+        <p>Two things worth knowing before you start.</p>
+      </div>
+      <div class="notes">
+        <div class="note warn">
+          <span class="mark">First&nbsp;run</span>
+          <div>
+            <div class="t">Windows shows a blue warning screen — that's expected</div>
+            <p>
+              You'll see <em>“Windows protected your PC”</em>. It isn't a virus alert: Windows says
+              this about any program from a small developer who hasn't bought an expensive
+              certificate. Click <strong>More info</strong>, then <strong>Run anyway</strong> — just
+              the once, not every time.
+            </p>
+            <p class="aside">
+              Want to check the file first? Each download on the release page lists a checksum you
+              can compare, and the whole source code is public.
+            </p>
+          </div>
+        </div>
+        <div class="note">
+          <span class="mark">Privacy</span>
+          <div>
+            <div class="t">Nothing is uploaded anywhere</div>
+            <p>
+              Your characters, prices and projects stay in a file on your own computer — there's no
+              account to create and no server of mine involved. The app talks only to EVE's own
+              servers, to read your game data and to log you in. Uninstalling leaves your data
+              untouched.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<section id="support">
+  <div class="wrap">
+    <div class="kofi">
+      <div>
+        <div class="kofi-t">Free, and staying that way</div>
+        <p>
+          Built for my own EVE career and shared as-is. If it saves you ISK or an evening of
+          spreadsheets, a coffee is a nice way to say so — entirely optional.
+        </p>
+      </div>
+      <a class="btn-kofi" href="https://ko-fi.com/retrovisor" target="_blank" rel="noopener noreferrer">
+        <svg width="17" height="17" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+          <path d="M1.5 3.5A1.5 1.5 0 0 1 3 2h7.5a1.5 1.5 0 0 1 1.5 1.5V4h.75A2.75 2.75 0 0 1 15.5 6.75 2.75 2.75 0 0 1 12.75 9.5H12v.25A3.25 3.25 0 0 1 8.75 13h-4A3.25 3.25 0 0 1 1.5 9.75v-6.25Zm10.5 2V8h.75A1.25 1.25 0 0 0 14 6.75 1.25 1.25 0 0 0 12.75 5.5H12Z"></path>
+          <path d="M2 14.25a.75.75 0 0 1 .75-.75h8.5a.75.75 0 0 1 0 1.5h-8.5a.75.75 0 0 1-.75-.75Z"></path>
+        </svg>
+        Support me on Ko-fi
+      </a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>MIT licensed · built by Retrovisor</span>
+    <a href="https://github.com/ScoopEMPRetro/Eve-retroindustry">GitHub</a>
+    <a href="https://github.com/ScoopEMPRetro/Eve-retroindustry/issues">Issues</a>
+    <span class="sep">Not affiliated with CCP Games. EVE Online is a trademark of CCP hf.</span>
+  </div>
+</footer>
+
+<script>
+/* Downloads come straight from the latest GitHub release, so the page never
+   needs editing when a version ships. If the request fails — offline, rate
+   limited, blocked — the values baked into the markup above stay put and the
+   buttons still lead to the releases page. */
+(function () {
+  var REPO = "ScoopEMPRetro/Eve-retroindustry";
+  var RELEASES = "https://github.com/" + REPO + "/releases/latest";
+
+  var ua = navigator.userAgent || "";
+  var os = /Android/i.test(ua) ? "android"
+         : /Macintosh|Mac OS X/i.test(ua) ? "mac"
+         : /Linux|X11|CrOS/i.test(ua) && !/Windows/i.test(ua) ? "linux"
+         : "windows";
+
+  var mb = function (b) { return (b / 1048576).toFixed(1) + " MB"; };
+
+  function pick(assets, re) {
+    for (var i = 0; i < assets.length; i++) if (re.test(assets[i].name)) return assets[i];
+    return null;
+  }
+
+  fetch("https://api.github.com/repos/" + REPO + "/releases/latest")
+    .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(function (rel) {
+      var a = rel.assets || [];
+      var winSetup = pick(a, /win64-setup\.zip$/),
+          winPort  = pick(a, /win64-portable\.zip$/),
+          appimg   = pick(a, /\.AppImage$/),
+          linPort  = pick(a, /linux-portable\.zip$/),
+          apk      = pick(a, /\.apk$/i);
+
+      var targets = {
+        windows: { title: "Download for Windows", label: "Download installer", asset: winSetup,
+                   kind: "installer", req: "Windows 10 (1809) or newer",
+                   hint: "Unzip, then run the setup — no admin rights needed" },
+        linux:   { title: "Download for Linux", label: "Download AppImage", asset: appimg,
+                   kind: "AppImage", req: "64-bit Linux with a desktop session",
+                   hint: "Mark it executable and run it — nothing to install" },
+        android: { title: "Download for Android", label: "Download APK", asset: apk,
+                   kind: "APK, arm64", req: "arm64 device, install from unknown sources",
+                   hint: "Experimental — the interface isn't tuned for phones yet" },
+        /* There is no packaged macOS build — pretending otherwise would hand a
+           Mac visitor a Windows installer. Point at running it from source. */
+        mac:     { title: "No macOS build yet", label: "Run it from source", asset: null,
+                   kind: "—", req: "Python 3.11+",
+                   hint: "Windows and Linux builds are below",
+                   href: "https://github.com/ScoopEMPRetro/Eve-retroindustry#development-setup" }
+      };
+      var t = targets[os] || targets.windows;
+      var ver = rel.tag_name || "";
+
+      var set = function (id, text) { var el = document.getElementById(id); if (el) el.textContent = text; };
+      set("chip-ver", ver);
+      set("dl-ver", ver);
+      set("dl-title", t.title);
+      set("dl-btn-label", t.label);
+      set("dl-req", t.req);
+      set("dl-hint", t.hint);
+
+      if (rel.published_at) {
+        set("dl-date", new Date(rel.published_at).toLocaleDateString("en-GB",
+          { day: "2-digit", month: "short", year: "numeric" }));
+      }
+      if (t.asset) {
+        set("dl-size", mb(t.asset.size) + " · " + t.kind);
+        document.getElementById("dl-btn").href = t.asset.browser_download_url;
+      } else if (t.href) {
+        set("dl-size", "—");
+        document.getElementById("dl-btn").href = t.href;
+      }
+
+      /* Everything except the primary target, so nothing is listed twice. */
+      var others = [
+        { name: "Windows installer",   asset: winSetup, skip: os === "windows" },
+        { name: "Windows portable",    asset: winPort },
+        { name: "Linux AppImage",      asset: appimg,   skip: os === "linux" },
+        { name: "Linux portable",      asset: linPort },
+        { name: "Android (experimental)",  asset: apk,      skip: os === "android" }
+      ];
+      var html = "";
+      others.forEach(function (o) {
+        if (o.skip || !o.asset) return;
+        html += '<div class="alt"><a href="' + o.asset.browser_download_url + '">' + o.name +
+                '</a><span class="sz">' + mb(o.asset.size) + "</span></div>";
+      });
+      if (html) document.getElementById("alt-list").innerHTML = html;
+    })
+    .catch(function () {
+      /* Keep the baked-in numbers; just make sure every link is usable. */
+      var btn = document.getElementById("dl-btn");
+      if (btn) btn.href = RELEASES;
+    });
+})();
+</script>
+</body>
+</html>
