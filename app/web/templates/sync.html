@@ -14,9 +14,15 @@
       </div>
       <h5 class="mb-2">Loading your character data</h5>
       <p class="text-muted small mb-4">
-        Fetching blueprints and assets from ESI.<br>This usually takes a few seconds.
+        Fetching blueprints, assets and skills from ESI.<br>
+        With many characters this takes a while — the bar below is real progress.
       </p>
-      <div id="status-line" class="text-muted small mb-3">Connecting to ESI...</div>
+
+      <div class="progress mb-2" style="height:6px">
+        <div id="sync-bar" class="progress-bar bg-warning" style="width:2%"></div>
+      </div>
+      <div id="status-line" class="text-muted small mb-1">Connecting to ESI…</div>
+      <div id="sync-elapsed" class="text-muted small mb-3" style="opacity:.6"></div>
       <a href="/" class="btn btn-outline-secondary btn-sm">Skip — go to dashboard</a>
     </div>
 
@@ -61,22 +67,45 @@
 {% block scripts %}
 <script>
 // ── Phase 1: poll ESI sync status ──────────────────────────────────────────
-let syncAttempts = 0;
-
+// The status line reports what the server is actually waiting on. It used to
+// cycle three canned messages off the poll counter and then sit on
+// "Almost done..." forever, so a long sync was indistinguishable from a hung one.
+// The elapsed counter keeps ticking even while a single slow fetch holds the bar
+// still, which is the difference between "working" and "frozen".
 async function pollSync() {
+  const bar = document.getElementById('sync-bar');
+  const statusEl = document.getElementById('status-line');
+  const elapsedEl = document.getElementById('sync-elapsed');
   try {
     const r = await fetch('/api/sync-status');
     const d = await r.json();
     if (d.done) {
+      bar.style.width = '100%';
       showPhase('prices');
       return;
     }
-    syncAttempts++;
-    const msgs = ['Fetching blueprints...', 'Loading assets...', 'Almost done...'];
-    document.getElementById('status-line').textContent =
-      msgs[Math.min(Math.floor(syncAttempts / 3), msgs.length - 1)];
-    setTimeout(pollSync, 2500);
+    bar.style.width = Math.max(2, d.pct || 2) + '%';
+
+    let line;
+    if (d.phase === 'locations') {
+      line = 'Resolving station and structure names…';
+    } else if (d.total > 1 && d.index) {
+      line = `Character ${d.index} of ${d.total}`
+           + (d.char ? ` — ${d.char}` : '')
+           + (d.step ? ` · ${d.step}` : '');
+    } else if (d.step) {
+      line = `Fetching ${d.step}…`;
+    } else {
+      line = 'Connecting to ESI…';
+    }
+    if (d.failed) line += ` · ${d.failed} skipped`;
+    statusEl.textContent = line;
+
+    elapsedEl.textContent = d.elapsed ? `${d.elapsed}s elapsed` : '';
+    setTimeout(pollSync, 1500);
   } catch {
+    // Server not answering yet (or restarting) — say so instead of pretending.
+    statusEl.textContent = 'Waiting for the app to respond…';
     setTimeout(pollSync, 3000);
   }
 }

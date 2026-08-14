@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.9.15"
+APP_VERSION = "0.9.16"
 
 import asyncio
 import datetime
@@ -129,8 +129,51 @@ SDE_DOWNLOAD_URL = (
 # Set to True once SDE tables are confirmed present. Guards the setup gate.
 _SDE_READY: list[bool] = [False]
 
-# Tracks post-login ESI sync state.
-_sync_state: dict = {"running": False, "done": False}
+# Tracks post-login ESI sync state. Everything past running/done exists so the
+# loading screen can report REAL progress: it used to cycle three canned messages
+# off the poll counter and sit on "Almost done…" indefinitely, which told a tester
+# nothing about whether the app was still working.
+_SYNC_STEPS: tuple[str, ...] = ("blueprints", "assets", "skills", "corp assets")
+
+_sync_state: dict = {
+    "running": False,
+    "done": False,
+    "total": 0,       # characters to sync
+    "index": 0,       # 1-based character being fetched right now
+    "char": "",       # its name
+    "step": "",       # which of _SYNC_STEPS is in flight
+    "phase": "",      # "characters" | "locations"
+    "started_at": 0.0,
+    "failed": 0,      # characters skipped or errored
+}
+
+
+def _sync_reset() -> None:
+    _sync_state.update({
+        "running": True, "done": False, "total": 0, "index": 0,
+        "char": "", "step": "", "phase": "", "started_at": _time.time(), "failed": 0,
+    })
+
+
+def _sync_pct() -> int:
+    """Honest completion estimate, 0–100.
+
+    Characters share 92 % between them, split again across the four fetches per
+    character, so the bar advances several times per character instead of jumping.
+    The trailing station-name resolution owns the last few percent.
+    """
+    if _sync_state["done"]:
+        return 100
+    if _sync_state.get("phase") == "locations":
+        return 96
+    total = _sync_state.get("total") or 0
+    if not total:
+        return 2
+    step = _sync_state.get("step") or ""
+    step_i = _SYNC_STEPS.index(step) if step in _SYNC_STEPS else 0
+    done_chars = max(0, (_sync_state.get("index") or 1) - 1)
+    frac = (done_chars + step_i / len(_SYNC_STEPS)) / total
+    return max(2, min(95, int(2 + 92 * frac)))
 
 app = FastAPI(title="EVE Retroindustry")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -1063,9 +1106,15 @@ async def _bg_initial_sync():
 
         all_loc_ids: set[int] = set()
         any_token: str | None = None
+        _sync_state["total"] = len(chars)
+        _sync_state["phase"] = "characters"
 
         async with esi_client() as client:
-            for char_id, _name in chars:
+            for _n, (char_id, _name) in enumerate(chars, start=1):
+                # Published before each fetch so the loading screen can name the
+                # character and the step it is waiting on, which is the difference
+                # between "slow" and "stuck" for whoever is watching.
+                _sync_state.update({"index": _n, "char": _name, "step": ""})
                 try:
                     # Off the event loop + serialized with the dashboard's token
                     # fetch (shared per-char refresh lock) so the two can't
@@ -1073,14 +1122,20 @@ async def _bg_initial_sync():
                     token = await _valid_token_async(char_id)
                 except Exception as exc:
                     print(f"[sync] token refresh failed for {char_id}: {exc}", flush=True)
+                    _sync_state["failed"] += 1
                     continue
                 if not token:
+                    _sync_state["failed"] += 1
                     continue
                 any_token = token
                 try:
+                    _sync_state["step"] = "blueprints"
                     await fetch_blueprints(client, char_id, token, conn)
+                    _sync_state["step"] = "assets"
                     personal = await fetch_assets(client, char_id, token, conn)
+                    _sync_state["step"] = "skills"
                     await fetch_skills(client, char_id, token, conn)
+                    _sync_state["step"] = "corp assets"
                     try:
                         corp_id, corp = await fetch_corp_assets(client, char_id, token, conn)
                         if corp_id:
@@ -1093,9 +1148,11 @@ async def _bg_initial_sync():
                     update_last_sync(conn, char_id)
                 except Exception as exc:
                     print(f"[sync] character {char_id} sync failed: {exc}", flush=True)
+                    _sync_state["failed"] += 1
                     continue
 
         if all_loc_ids and any_token:
+            _sync_state.update({"phase": "locations", "step": "", "char": ""})
             try:
                 await resolve_station_names_bulk(list(all_loc_ids), token=any_token, conn=conn)
             except Exception as exc:
@@ -1123,15 +1180,26 @@ async def auth_sync(request: Request):
     finally:
         conn.close()
     if not _sync_state["running"] and not _sync_state["done"]:
-        _sync_state["running"] = True
-        _sync_state["done"] = False
+        _sync_reset()
         asyncio.create_task(_bg_initial_sync())
     return _tr("sync.html", request, {})
 
 
 @app.get("/api/sync-status")
 async def api_sync_status():
-    return {"done": _sync_state["done"], "running": _sync_state["running"]}
+    started = _sync_state.get("started_at") or 0.0
+    return {
+        "done":    _sync_state["done"],
+        "running": _sync_state["running"],
+        "pct":     _sync_pct(),
+        "total":   _sync_state.get("total") or 0,
+        "index":   _sync_state.get("index") or 0,
+        "char":    _sync_state.get("char") or "",
+        "step":    _sync_state.get("step") or "",
+        "phase":   _sync_state.get("phase") or "",
+        "failed":  _sync_state.get("failed") or 0,
+        "elapsed": int(_time.time() - started) if started else 0,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1173,8 +1241,7 @@ async def api_sync_start():
     """Manually trigger an ESI sync for all characters."""
     if _sync_state["running"]:
         return {"ok": False, "error": "Already running"}
-    _sync_state["running"] = True
-    _sync_state["done"] = False
+    _sync_reset()
     asyncio.create_task(_bg_initial_sync())
     return {"ok": True}
 

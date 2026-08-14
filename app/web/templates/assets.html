@@ -2,6 +2,17 @@
 {% block title %}Assets — EVE Retroindustry{% endblock %}
 {% block content %}
 
+<style>
+  /* Separates one slot group from the next inside a ship, so highs read as a
+     block, lows as a block, rigs as a block. Steel-tinted to match the group
+     bands; only ever applied while the table is actually in slot order, since
+     after sorting by name the groups are interleaved and the lines would be
+     noise. Added by paintSlotDividers(). */
+  .loc-table tbody tr.slot-group-start > td {
+    border-top: 1px solid rgba(123, 184, 236, .28);
+  }
+</style>
+
 {# === Macro for the assets table === #}
 {% macro asset_table(items, table_id, show_badge=False, show_slot=False) %}
 <div class="table-responsive">
@@ -350,6 +361,26 @@ document.getElementById('add-loc-btn')?.addEventListener('click', async function
   }
 });
 
+// Draw a line wherever the slot changes, so each group reads as a block. Only
+// meaningful while the rows are in slot order — sorted by name or value the
+// groups interleave and every other row would get a line, so the caller clears
+// them instead.
+function paintSlotDividers(table, on = true) {
+  const rows = Array.from(table.querySelectorAll('tbody tr'));
+  let prev = null;
+  rows.forEach((row, i) => {
+    const slot = row.dataset.slot;
+    // Never on the first row: that edge is the header, not a group boundary.
+    row.classList.toggle('slot-group-start', on && i > 0 && slot !== prev);
+    prev = slot;
+  });
+}
+
+// Tables that carry a Slot column start out in slot order, straight from the server.
+document.querySelectorAll('.loc-table').forEach(t => {
+  if (t.querySelector('th[data-col="slot"]')) paintSlotDividers(t);
+});
+
 document.querySelectorAll('.sort-col').forEach(th => {
   th.addEventListener('click', () => {
     const table = th.closest('table');
@@ -384,6 +415,11 @@ document.querySelectorAll('.sort-col').forEach(th => {
       }
     });
     rows.forEach(r => tbody.appendChild(r));
+    // Group lines only make sense while the rows are grouped: keep them when
+    // sorting by slot, drop them for any other column.
+    if (table.querySelector('th[data-col="slot"]')) {
+      paintSlotDividers(table, col === 'slot');
+    }
   });
 });
 

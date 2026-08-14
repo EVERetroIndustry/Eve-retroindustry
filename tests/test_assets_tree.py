@@ -421,7 +421,9 @@ def test_plain_container_renders_no_slot_column(app_module, client, monkeypatch)
     try:
         html = _text(client, f"/assets?view={CHAR}")
         assert "Minerals (Small Secure Container)" in html
-        assert ">Slot " not in html and "data-col=\"slot\"" not in html
+        # Match the rendered header cell, not any mention of the string: the
+        # divider JS references th[data-col="slot"] as a selector on every page.
+        assert 'class="sort-col" data-col="slot"' not in html
     finally:
         conn = app_module.get_conn()
         conn.execute("DELETE FROM char_assets_cache WHERE character_id=?", (CHAR,))
@@ -429,3 +431,13 @@ def test_plain_container_renders_no_slot_column(app_module, client, monkeypatch)
             conn.execute("INSERT INTO char_assets_cache (character_id, data_json, cached_at)"
                          " VALUES (?,?,?)", (CHAR, original[0], original[1]))
         conn.commit(); conn.close()
+
+
+def test_slot_dividers_are_rendered_and_scoped_to_slot_order(app_module, client, monkeypatch):
+    """Group lines exist and are only drawn while the rows are in slot order."""
+    html = _text(client, "/assets")
+    assert "slot-group-start" in html
+    assert "function paintSlotDividers" in html
+    # Never on the first row (that edge is the header) and cleared for other sorts.
+    assert "i > 0 && slot !== prev" in html
+    assert "paintSlotDividers(table, col === 'slot')" in html
