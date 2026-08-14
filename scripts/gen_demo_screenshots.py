@@ -28,6 +28,12 @@ from fastapi import Request  # module-level so FastAPI can resolve the route ann
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC_DB = os.path.join(REPO, "eve_cache.db")
+
+# Viewport width for the screenshots. The navbar collapses to icon-only as soon as
+# the full labels would overflow (measured: it flips between 1700 and 1800 px), and
+# a screenshot of unlabelled icons is hard to read. 1920 keeps the labels with room
+# to spare for a longer character name.
+SHOT_WIDTH = 1920
 OUT_DIR = os.path.join(REPO, "docs", "screenshots")
 PORT = 8899
 
@@ -381,7 +387,7 @@ def main() -> None:
             ["chromium", "--headless=new", "--disable-gpu", "--no-sandbox",
              "--no-first-run", f"--user-data-dir={prof}",
              "--hide-scrollbars", "--force-device-scale-factor=2",
-             f"--virtual-time-budget={vtb}", f"--window-size=1600,{h}",
+             f"--virtual-time-budget={vtb}", f"--window-size={SHOT_WIDTH},{h}",
              f"--screenshot={out}", url],
             check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["magick", out, "-fuzz", "3%", "-trim", "+repage", out],
