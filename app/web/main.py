@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.9.2"
+APP_VERSION = "0.9.3"
 
 import asyncio
 import datetime
@@ -5776,27 +5776,10 @@ async def planets_page(request: Request):
             f"WHERE type_id IN ({ph}) AND sell_price IS NOT NULL", list(type_ids)
         ).fetchall()}
 
-    # Planet names ("Jita IV", already includes the system) — one public call per
-    # planet (few per character), concurrently.
-    planet_names: dict[int, str] = {}
-    if planet_ids:
-        async def _pname(client, pid):
-            try:
-                r = await client.get(
-                    f"https://esi.evetech.net/latest/universe/planets/{pid}/",
-                    params={"datasource": "tranquility"}, timeout=8)
-                if r.status_code == 200:
-                    return pid, r.json().get("name")
-            except Exception:
-                pass
-            return pid, None
-        try:
-            async with esi_client(timeout=8) as client:
-                for pid, nm in await asyncio.gather(*[_pname(client, p) for p in planet_ids]):
-                    if nm:
-                        planet_names[pid] = nm
-        except Exception:
-            pass
+    # Planet names ("Jita IV", already includes the system). Resolved through the
+    # shared cache: names never change, so only ids we've never seen cost an ESI
+    # call — this page used to re-fetch every planet on every visit.
+    planet_names = await _resolve_planet_names(conn, planet_ids)
 
     def _rem(iso: str):
         try:

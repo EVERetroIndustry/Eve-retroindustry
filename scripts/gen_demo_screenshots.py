@@ -284,6 +284,20 @@ def main() -> None:
     m.planets_api.fetch_planets = fake_planets
     m.planets_api.fetch_planet_detail = fake_planet_detail
 
+    # Planet names come from ESI at runtime and are cached in planet_name_cache.
+    # Seed the demo DB so the screenshot reads "Ashab VII" instead of "Planet #40009082".
+    def _seed_planet_names(db_path: str) -> None:
+        import sqlite3 as _sq
+        names = {40009082: "Ashab VII", 40009077: "Ashab IV",
+                 40139389: "Ourapheh V", 40009090: "Ashab IX"}
+        c = _sq.connect(db_path)
+        c.execute("CREATE TABLE IF NOT EXISTS planet_name_cache (planet_id INTEGER PRIMARY KEY, name TEXT)")
+        c.executemany("INSERT OR REPLACE INTO planet_name_cache (planet_id, name) VALUES (?,?)",
+                      list(names.items()))
+        c.commit(); c.close()
+
+    _seed_planet_names(demo_db)
+
     @m.app.get("/demo/assetsshot")
     async def _assetsshot(request: Request):
         # Render the real assets page, then expand the first station + its hangar
