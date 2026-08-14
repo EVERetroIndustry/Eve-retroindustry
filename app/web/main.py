@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.9.7"
+APP_VERSION = "0.9.8"
 
 import asyncio
 import datetime
@@ -6423,6 +6423,12 @@ async def api_version_check():
 @app.get("/api/version/download")
 async def api_version_download(url: str):
     """SSE stream: downloads and extracts update zip to update_staging/ next to the exe."""
+    # Version being installed, taken from the asset filename
+    # (…-v1.2.3-win64-portable.zip). Only used to keep the Windows uninstall entry
+    # in step; None simply means that touch-up is skipped.
+    import re as _re
+    _m = _re.search(r"-v(\d+\.\d+\.\d+)-", url)
+    new_version = _m.group(1) if _m else None
     if not (url.startswith("https://github.com/") or url.startswith("https://objects.githubusercontent.com/")):
         async def _err():
             yield f"data: {json.dumps({'error': 'Invalid download URL'})}\n\n"
@@ -6495,9 +6501,10 @@ async def api_version_download(url: str):
                     # otherwise leave it showing the version we just replaced. The
                     # `reg query` guard matters: without it, `reg add` would create
                     # the key and give portable (ZIP) users a bogus uninstall entry.
-                    f'reg query "{_UNINSTALL_KEY}" >nul 2>&1 && '
-                    f'reg add "{_UNINSTALL_KEY}" /v DisplayVersion /t REG_SZ '
-                    f'/d {latest_tag} /f >nul 2>&1\r\n'
+                    + (f'reg query "{_UNINSTALL_KEY}" >nul 2>&1 && '
+                       f'reg add "{_UNINSTALL_KEY}" /v DisplayVersion /t REG_SZ '
+                       f'/d {new_version} /f >nul 2>&1\r\n' if new_version else '')
+                    +
                     f'rmdir /S /Q "{staging}" >nul 2>&1\r\n'
                     f'start "" "{app_dir}\\EVE_Retroindustry.exe"\r\n'
                     'del "%~f0"\r\n',
