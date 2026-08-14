@@ -3231,24 +3231,30 @@ async def _resolve_corp_container_names(
 def _container_display_name(custom_name: str, type_name: str, container_id: int) -> str:
     """Label for a container or an assembled ship: "custom name (Type)".
 
-    An assembled ship reports its custom name, and that name used to replace the
-    type outright — a fitted Megathron showed up as just "Blue Thunder", so you
-    could not tell which hull it was and searching for "Megathron" never found
-    it. Keep both. ESI returns the literal string "None" for an unnamed item, so
-    that is treated as no name rather than printed.
+    The bracket is a SIGNAL, not decoration: only assembled ships and in-use
+    containers reach this function, because a row here exists solely for
+    something holding other items. Repacked hulls are ordinary stack rows
+    elsewhere showing the plain type name. So bracket = assembled, no bracket =
+    repacked, readable at a glance.
+
+    That is why the type is appended unconditionally — even for a ship named
+    exactly "Hulk", which becomes "Hulk (Hulk)". Every attempt to suppress the
+    "redundant" case has been wrong: a substring test hid the hull from every
+    ship named Hulk1/Hulk2/…, and a whole-word test would do the same to
+    "Hulk 1". No inspection of the name's content, no guessing.
+
+    The one row without a bracket is an item nobody named, where the label is the
+    bare type and there is nothing to disambiguate it from. ESI reports the
+    literal string "None" for such an item, which is treated as no name.
     """
     custom = (custom_name or "").strip()
     if custom.lower() == "none":
         custom = ""
     type_name = (type_name or "").strip()
+    if not type_name:
+        return custom or f"Container {container_id}"
     if not custom:
-        return type_name or f"Container {container_id}"
-    # Only drop the suffix when the name IS the type, where "(Hulk)" after "Hulk"
-    # would be pure noise. Anything looser loses the information: a substring
-    # test hid the type from every ship named Hulk1/Hulk2/…, and a whole-word
-    # test would do the same to "Hulk 1". Mild redundancy beats a missing hull.
-    if not type_name or custom.lower() == type_name.lower():
-        return custom
+        return type_name
     return f"{custom} ({type_name})"
 
 

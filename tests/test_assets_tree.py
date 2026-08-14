@@ -49,19 +49,22 @@ def test_label_keeps_both_custom_name_and_type(app_module):
     assert f("Blue Thunder", "Megathron", 1) == "Blue Thunder (Megathron)"
     # No custom name → the type is the label.
     assert f("", "Megathron", 1) == "Megathron"
-    # ESI sends the literal string "None" for an unnamed item.
+    # Nothing was named → the bare type, the only bracket-less case. ESI sends
+    # the literal string "None" for an unnamed item.
     assert f("None", "Megathron", 1) == "Megathron"
     assert f("none", "Megathron", 1) == "Megathron"
-    # Numbered ships are the common naming scheme and must keep the hull:
-    # a substring test used to swallow the type for every one of these.
+    # The bracket marks a named item as assembled/in use, so it is appended
+    # unconditionally — no test against the name's content, which is what broke
+    # twice (a substring test hid the hull on Hulk1/Hulk2, a whole-word test
+    # would do the same to "Hulk 1").
     assert f("Hulk1", "Hulk", 1) == "Hulk1 (Hulk)"
     assert f("Hulk 2", "Hulk", 1) == "Hulk 2 (Hulk)"
     assert f("Rorq", "Rorqual", 1) == "Rorq (Rorqual)"
-    # Only an exact name/type match drops the suffix — "Hulk (Hulk)" is noise.
-    assert f("Hulk", "Hulk", 1) == "Hulk"
-    assert f("  megathron  ", "Megathron", 1) == "megathron"
-    # A name that merely contains the type still gets it, redundancy and all.
     assert f("My Megathron", "Megathron", 1) == "My Megathron (Megathron)"
+    # Even when the name IS the type: the bracket still says "assembled", which a
+    # repacked stack row (plain "Hulk", never routed through here) never shows.
+    assert f("Hulk", "Hulk", 1) == "Hulk (Hulk)"
+    assert f("  hulk  ", "Hulk", 1) == "hulk (Hulk)"
     assert f("Blue Thunder", "", 1) == "Blue Thunder"
     assert f("", "", 777) == "Container 777"
 
