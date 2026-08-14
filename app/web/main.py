@@ -2742,8 +2742,10 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
             owner_name = char_name_by_id.get(owner_id, "")
             for a in assets_list:
                 item_name = names.get(a.type_id, f"Unknown ({a.type_id})")
-                if search and search.lower() not in item_name.lower():
-                    continue
+                # NOT filtered here: `search` is applied once the tree is built,
+                # by _prune_by_search. Dropping rows this early also dropped
+                # everything inside a container, which is what left a searched-for
+                # ship as a bare hull with nothing to expand.
                 sid, cid = _hierarchy(a)
                 st = _get_st(sid)
                 bucket = st["hangar"] if cid is None else st["containers"].setdefault(cid, {})
@@ -2845,8 +2847,7 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                 if a.location_flag == "OfficeFolder":
                     continue  # office container itself — structural, not inventory
                 item_name = names.get(a.type_id, f"Unknown ({a.type_id})")
-                if search and search.lower() not in item_name.lower():
-                    continue
+                # Filtered later by _prune_by_search — see the personal loop above.
                 sid, div_flag, cid = _corp_hierarchy(a)
                 div = _get_corp_div(sid, div_flag)
                 bucket = div["hangar"] if cid is None else div["containers"].setdefault(cid, {})
@@ -2945,51 +2946,12 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
         def _sort_items(bucket: dict) -> list:
             return sorted(bucket.values(), key=lambda x: x["name"])
 
-        def _fold_ships_into_containers(
-            sd: dict,
-            type_map: dict[int, int],
-            owner_map: dict[int, tuple[int, str]],
-        ) -> None:
-            """If some container is actually a ship (its item_id has a ship type
-            in `type_map` that matches an item in the hangar), move one copy of
-            the ship from the hangar INTO that container — as its "hull" row.
-            That way the ship is shown only once, as an expandable item whose
-            total value includes fit + cargo + hull.
-            """
-            hangar = sd["hangar"]
-            for cid, items in sd["containers"].items():
-                ship_type = type_map.get(cid)
-                if not ship_type:
-                    continue
-                owner = owner_map.get(cid)
-                if not owner:
-                    continue
-                owner_id = owner[0]
-                hangar_key = (ship_type, owner_id)
-                entry = hangar.get(hangar_key)
-                if not entry or entry.get("quantity", 0) <= 0:
-                    continue
-                entry["quantity"] -= 1
-                unit_p = entry.get("unit_price")
-                # Update hangar entry's total_value after decrement (or
-                # mark for removal if we consumed all of them).
-                if entry["quantity"] > 0 and unit_p is not None:
-                    entry["total_value"] = unit_p * entry["quantity"]
-                items[("_hull", cid)] = {
-                    "type_id": ship_type,
-                    "name": entry["name"],
-                    "quantity": 1,
-                    "is_blueprint_copy": False,
-                    "character_id": owner_id,
-                    "character_name": owner[1],
-                    "unit_price": unit_p,
-                    "total_value": unit_p,  # hull = 1 unit
-                }
-                if entry["quantity"] == 0:
-                    del hangar[hangar_key]
-
+        # Labels first (the search matches against them), then fold the hulls in,
+        # then filter — a ship's own label has to exist before it can be matched.
+        container_labels = {cid: info[0] for cid, info in container_info.items()}
         for sd in station_data.values():
-            _fold_ships_into_containers(sd, container_type_map, container_owner_map)
+            _fold_ship_hulls(sd, container_type_map, container_owner_map)
+            _prune_by_search(sd, container_labels, search)
 
         for sid, sd in station_data.items():
             containers = []
@@ -3009,6 +2971,9 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                 })
             containers.sort(key=lambda c: c["name"])
             hangar_items = _sort_items(sd["hangar"])
+            # A search can empty a station out completely; don't render the header.
+            if not hangar_items and not containers:
+                continue
             hangar_value = sum(i.get("total_value") or 0 for i in hangar_items)
             containers_value = sum(c["total_value"] for c in containers)
             total_items = len(hangar_items) + sum(len(c["assets"]) for c in containers)
@@ -3043,38 +3008,14 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                 corp_id, token, all_corp_container_ids, corp_assets_raw
             ) if all_corp_container_ids else {}
 
-            def _fold_ships_into_containers_corp(
-                dv: dict,
-                type_map: dict[int, int],
-            ) -> None:
-                """Same as _fold_ships_into_containers, but corp buckets
-                are keyed by type_id only (no owner)."""
-                hangar = dv["hangar"]
-                for cid, items in dv["containers"].items():
-                    ship_type = type_map.get(cid)
-                    if not ship_type:
-                        continue
-                    entry = hangar.get(ship_type)
-                    if not entry or entry.get("quantity", 0) <= 0:
-                        continue
-                    entry["quantity"] -= 1
-                    unit_p = entry.get("unit_price")
-                    if entry["quantity"] > 0 and unit_p is not None:
-                        entry["total_value"] = unit_p * entry["quantity"]
-                    items[("_hull", cid)] = {
-                        "type_id": ship_type,
-                        "name": entry["name"],
-                        "quantity": 1,
-                        "is_blueprint_copy": False,
-                        "unit_price": unit_p,
-                        "total_value": unit_p,
-                    }
-                    if entry["quantity"] == 0:
-                        del hangar[ship_type]
-
+            corp_container_labels = {
+                cid: info[0] for cid, info in corp_container_info.items()
+            }
             for sid_data in corp_sd.values():
                 for dv in sid_data.values():
-                    _fold_ships_into_containers_corp(dv, corp_container_type_map)
+                    # No owner_map: corp rows carry no character.
+                    _fold_ship_hulls(dv, corp_container_type_map)
+                    _prune_by_search(dv, corp_container_labels, search)
 
             def _build_corp_container(cid, items, sid):
                 container_assets = _sort_items(items)
@@ -3140,6 +3081,9 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                     for d in divisions
                 )
                 total_value = sum(d["total_value"] for d in divisions)
+                # A search can prune every division away; skip the empty header.
+                if not divisions:
+                    continue
                 corp_stations.append({
                     "loc_id": sid,
                     "name": loc_names.get(sid, str(sid)),
@@ -3276,11 +3220,131 @@ async def _resolve_corp_container_names(
         if not asset:
             continue
         parent_loc = asset["location_id"]
-        raw_name = custom_names.get(cid, "")
-        display = raw_name if raw_name else type_names.get(asset["type_id"], f"Container {cid}")
+        display = _container_display_name(
+            custom_names.get(cid, ""), type_names.get(asset["type_id"], ""), cid
+        )
         result[cid] = (display, parent_loc)
 
     return result
+
+
+def _container_display_name(custom_name: str, type_name: str, container_id: int) -> str:
+    """Label for a container or an assembled ship: "custom name (Type)".
+
+    An assembled ship reports its custom name, and that name used to replace the
+    type outright — a fitted Megathron showed up as just "Blue Thunder", so you
+    could not tell which hull it was and searching for "Megathron" never found
+    it. Keep both. ESI returns the literal string "None" for an unnamed item, so
+    that is treated as no name rather than printed.
+    """
+    custom = (custom_name or "").strip()
+    if custom.lower() == "none":
+        custom = ""
+    type_name = (type_name or "").strip()
+    if not custom:
+        return type_name or f"Container {container_id}"
+    if not type_name or type_name.lower() in custom.lower():
+        return custom
+    return f"{custom} ({type_name})"
+
+
+def _find_hangar_ship(hangar: dict, ship_type: int, owner_id: int | None) -> tuple:
+    """Find the hangar row holding `ship_type`, whatever the bucket is keyed by.
+
+    Deliberately matches on each row's own fields instead of rebuilding the
+    bucket key: the key gained an is_copy element in v0.8.60 and both hull folds
+    below, which reconstructed the old key shape, silently stopped matching. Ships
+    were then never folded into their own container and their value excluded the
+    hull. Matching on fields cannot break that way again.
+    """
+    for key, entry in hangar.items():
+        if entry.get("type_id") != ship_type:
+            continue
+        if entry.get("is_blueprint_copy"):
+            continue
+        if owner_id is not None and entry.get("character_id") != owner_id:
+            continue
+        if (entry.get("quantity") or 0) <= 0:
+            continue
+        return key, entry
+    return None, None
+
+
+def _fold_ship_hulls(
+    node: dict,
+    type_map: dict[int, int],
+    owner_map: dict[int, tuple[int, str]] | None = None,
+) -> None:
+    """Move a ship's hull row out of the hangar and into its own container row.
+
+    A container whose item_id is itself an asset with a ship type IS that ship —
+    its "contents" are the fit and cargo. Folding the hull in makes the ship one
+    expandable row totalling hull + fit + cargo, which is the number that
+    matters, and stops the same ship being listed twice (once as a hangar row,
+    once as a container).
+
+    `owner_map` is passed for personal assets, where rows carry a character; corp
+    buckets have no owner, so pass None.
+    """
+    hangar = node["hangar"]
+    for cid, items in node["containers"].items():
+        ship_type = type_map.get(cid)
+        if not ship_type:
+            continue
+        owner_id: int | None = None
+        owner_name = ""
+        if owner_map is not None:
+            owner = owner_map.get(cid)
+            if not owner:
+                continue
+            owner_id, owner_name = owner
+        key, entry = _find_hangar_ship(hangar, ship_type, owner_id)
+        if entry is None:
+            continue
+        entry["quantity"] -= 1
+        unit_p = entry.get("unit_price")
+        if entry["quantity"] > 0 and unit_p is not None:
+            entry["total_value"] = unit_p * entry["quantity"]
+        hull = {
+            "type_id": ship_type,
+            "name": entry["name"],
+            "quantity": 1,
+            "is_blueprint_copy": False,
+            "unit_price": unit_p,
+            "total_value": unit_p,   # hull = 1 unit
+        }
+        if owner_map is not None:
+            hull["character_id"] = owner_id
+            hull["character_name"] = owner_name
+        items[("_hull", cid)] = hull
+        if entry["quantity"] == 0:
+            del hangar[key]
+
+
+def _prune_by_search(node: dict, container_labels: dict[int, str], query: str) -> None:
+    """Filter one hangar/containers node by `query`, container-aware.
+
+    Matching individual rows only threw away everything inside a container, so a
+    fitted ship survived as a bare hull row with nothing left to expand. A
+    container whose own label matches keeps ALL of its contents (you asked for
+    that ship, you want its fit); otherwise it keeps just the rows that match and
+    disappears when none do.
+    """
+    q = query.strip().lower()
+    if not q:
+        return
+    node["hangar"] = {
+        k: v for k, v in node["hangar"].items() if q in (v.get("name") or "").lower()
+    }
+    kept: dict = {}
+    for cid, items in node["containers"].items():
+        if q in (container_labels.get(cid) or "").lower():
+            kept[cid] = items
+            continue
+        sub = {k: v for k, v in items.items() if q in (v.get("name") or "").lower()}
+        if sub:
+            kept[cid] = sub
+    node["containers"] = kept
 
 
 async def _resolve_container_names(
@@ -3330,11 +3394,9 @@ async def _resolve_container_names(
         if not asset:
             continue
         parent_loc = asset["location_id"]
-        raw_name = custom_names.get(cid, "")
-        if raw_name:
-            display = raw_name
-        else:
-            display = type_names.get(asset["type_id"], f"Container {cid}")
+        display = _container_display_name(
+            custom_names.get(cid, ""), type_names.get(asset["type_id"], ""), cid
+        )
         result[cid] = (display, parent_loc)
 
     return result
