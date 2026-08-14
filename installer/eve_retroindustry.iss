@@ -50,7 +50,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 
 OutputDir=.
-OutputBaseFilename=EVE_Retroindustry-v{#AppVersion}-setup
+OutputBaseFilename=EVE_Retroindustry-v{#AppVersion}-win64-setup
 SetupIconFile=..\assets\icon.ico
 UninstallDisplayIcon={app}\{#AppExeName}
 UninstallDisplayName={#AppName}

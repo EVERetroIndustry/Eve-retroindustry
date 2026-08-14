@@ -48,7 +48,7 @@ A local industry calculator for EVE Online. Runs as a web app on your machine â€
 
 ### Windows
 
-Grab `EVE_Retroindustry-vX.Y.Z-setup.exe` from [**Releases**](https://github.com/ScoopEMPRetro/Eve-retroindustry/releases/latest) and run it.
+Grab `EVE_Retroindustry-vX.Y.Z-win64-setup.exe` from [**Releases**](https://github.com/ScoopEMPRetro/Eve-retroindustry/releases/latest) and run it.
 
 It installs **per user** (into `%LOCALAPPDATA%\Programs`), so there's **no admin prompt**, it adds Start Menu (and optionally desktop) shortcuts, and it appears in *Apps & features* with a proper uninstaller. Re-running a newer installer upgrades in place; in-app updates keep working too.
 
@@ -120,7 +120,7 @@ git tag v0.x.y && git push origin v0.x.y
 
 The workflow builds Windows, Linux and Android binaries and creates a GitHub Release with:
 
-- `EVE_Retroindustry-vX.Y.Z-setup.exe` (Windows installer, per-user)
+- `EVE_Retroindustry-vX.Y.Z-win64-setup.exe` (Windows installer, per-user)
 - `EVE_Retroindustry-vX.Y.Z-win64.zip` (Windows portable)
 - `EVE_Retroindustry-vX.Y.Z-linux.zip` + `EVE_Retroindustry-vX.Y.Z-linux.AppImage`
 - `EveRetroindustry.apk` (Android, arm64 sideload)
