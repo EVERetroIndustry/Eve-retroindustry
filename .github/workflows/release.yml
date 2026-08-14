@@ -55,8 +55,20 @@ jobs:
       - name: Build installer
         shell: pwsh
         run: |
+          # Tag runs give "v1.2.3"; a manual workflow_dispatch gives a branch name,
+          # which VersionInfoVersion can't parse — fall back so the compile can
+          # still be validated.
           $ver = "${{ github.ref_name }}".TrimStart('v')
-          & "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe" /DAppVersion=$ver installer\eve_retroindustry.iss
+          if ($ver -notmatch '^\d+\.\d+\.\d+$') {
+            Write-Host "ref '${{ github.ref_name }}' is not a version tag - building as 0.0.0"
+            $ver = '0.0.0'
+          }
+          # Braces are required around the variable name: "$env:ProgramFiles(x86)"
+          # parses as $env:ProgramFiles followed by a literal "(x86)".
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = "$env:ProgramFiles\Inno Setup 6\ISCC.exe" }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found after installing Inno Setup" }
+          & $iscc /DAppVersion=$ver installer\eve_retroindustry.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-ChildItem installer\*setup.exe | ForEach-Object { Write-Host "built: $($_.Name) ($([math]::Round($_.Length/1MB,1)) MB)" }
 

@@ -46,17 +46,30 @@ A local industry calculator for EVE Online. Runs as a web app on your machine �
 
 ## Installation
 
-### Desktop (Windows / Linux)
+### Windows
+
+Grab `EVE_Retroindustry-vX.Y.Z-setup.exe` from [**Releases**](https://github.com/ScoopEMPRetro/Eve-retroindustry/releases/latest) and run it.
+
+It installs **per user** (into `%LOCALAPPDATA%\Programs`), so there's **no admin prompt**, it adds Start Menu (and optionally desktop) shortcuts, and it appears in *Apps & features* with a proper uninstaller. Re-running a newer installer upgrades in place; in-app updates keep working too.
+
+Prefer not to install? The `-win64.zip` is fully portable — extract it anywhere and run `EVE_Retroindustry.exe`.
+
+**Requires Windows 10 (1809) or newer** — the bundled Qt/Chromium runtime doesn't support Windows 7/8.1. The installer checks this and tells you rather than failing at launch.
+
+### Linux
 
 1. Download the latest release from [**Releases**](https://github.com/ScoopEMPRetro/Eve-retroindustry/releases/latest)
-2. Extract the ZIP anywhere (Linux also ships a single-file `.AppImage`)
-3. Run `EVE_Retroindustry.exe` (Windows) or `EVE_Retroindustry` (Linux)
-4. On first launch the app downloads ~5 MB of game data automatically
-5. Open the system tray icon → **Open App**, then click **Log In** in the top right and authenticate with your EVE character. Add more alts by clicking **+ Add Character** in the character dropdown.
+2. Extract the ZIP anywhere, or use the single-file `.AppImage`
+3. Run `EVE_Retroindustry`
 
-No Python, no dependencies, no installation wizard.
+### First run (both platforms)
 
-> **Note:** Windows may show a SmartScreen warning on first launch because the executable is unsigned. Click *More info → Run anyway*.
+1. On first launch the app downloads ~5 MB of game data automatically
+2. Open the system tray icon → **Open App**, then click **Log In** in the top right and authenticate with your EVE character. Add more alts by clicking **+ Add Character** in the character dropdown.
+
+No Python and no dependencies to install.
+
+> **Note:** Windows may show a SmartScreen warning because the installer is unsigned (code-signing certificates aren't practical for a hobby project). Click *More info → Run anyway*.
 
 ### Android (experimental)
 
@@ -107,7 +120,8 @@ git tag v0.x.y && git push origin v0.x.y
 
 The workflow builds Windows, Linux and Android binaries and creates a GitHub Release with:
 
-- `EVE_Retroindustry-vX.Y.Z-win64.zip`
+- `EVE_Retroindustry-vX.Y.Z-setup.exe` (Windows installer, per-user)
+- `EVE_Retroindustry-vX.Y.Z-win64.zip` (Windows portable)
 - `EVE_Retroindustry-vX.Y.Z-linux.zip` + `EVE_Retroindustry-vX.Y.Z-linux.AppImage`
 - `EveRetroindustry.apk` (Android, arm64 sideload)
 - `sde_base.db` (game data, downloaded by the app on first run)
