@@ -3,14 +3,12 @@
 {% block content %}
 
 <style>
-  /* Separates one slot group from the next inside a ship, so highs read as a
-     block, lows as a block, rigs as a block. Steel-tinted to match the group
-     bands; only ever applied while the table is actually in slot order, since
-     after sorting by name the groups are interleaved and the lines would be
-     noise. Added by paintSlotDividers(). */
-  .loc-table tbody tr.slot-group-start > td {
-    border-top: 1px solid rgba(123, 184, 236, .28);
-  }
+  /* Section bands inside an assembled ship — High power / Medium power / Low
+     power / Rig Slot / Drones / Cargo, in the order the in-game fitting window
+     uses. They only make sense while the rows are in that order, so sorting by
+     any column hides them (see the sort handler). */
+  .loc-table tbody tr.slot-section > td { border-top: 1px solid rgba(123,184,236,.22); }
+  .loc-table tbody tr.slot-section:hover > td { background: rgba(123,184,236,.10); }
 </style>
 
 {# === Macro for the assets table === #}
@@ -24,12 +22,6 @@
           Item <span class="sort-icon text-muted ms-1">⇅</span>
         </th>
         {% if show_badge %}<th style="width:28px"></th>{% endif %}
-        {% if show_slot %}
-        <th class="sort-col" data-col="slot" style="cursor:pointer;width:110px"
-            title="Where it sits in the ship — sorts in fitting-window order">
-          Slot <span class="sort-icon text-muted ms-1">⇅</span>
-        </th>
-        {% endif %}
         <th class="text-end sort-col" data-col="1" style="cursor:pointer" title="Sort by quantity">
           Quantity <span class="sort-icon text-muted ms-1">⇅</span>
         </th>
@@ -41,6 +33,13 @@
     </thead>
     <tbody>
       {% for item in items %}
+      {% if show_slot and item.slot and item.slot != (items[loop.index0 - 1].slot if not loop.first else None) %}
+      <tr class="slot-section" data-slot="{{ item.slot_order or 0 }}">
+        <td colspan="{{ 6 if show_badge else 5 }}" class="fw-semibold"
+            style="background:rgba(123,184,236,.10);color:#9fcbf2;font-size:.74rem;
+                   letter-spacing:.04em;height:1.6rem">{{ item.slot }}</td>
+      </tr>
+      {% endif %}
       <tr data-name="{{ item.name | lower }}"
           data-qty="{{ item.quantity }}"
           data-slot="{{ item.slot_order or 0 }}"
@@ -63,9 +62,6 @@
           {% endif %}
         </td>
         {% endif %}
-        {% if show_slot %}
-        <td class="text-muted" style="font-size:.8rem">{{ item.slot or "—" }}</td>
-        {% endif %}
         <td class="text-end fw-semibold">{{ item.quantity | int | format_number }}</td>
         <td class="text-end text-muted">
           {% if item.unit_price %}{{ item.unit_price | isk0 }}{% else %}<span class="text-muted opacity-50">—</span>{% endif %}
@@ -78,8 +74,7 @@
     </tbody>
     <tfoot>
       <tr style="border-top:2px solid #30363d">
-        <td colspan="{{ 2 + (1 if show_badge else 0) + (1 if show_slot else 0) }}"
-            class="text-muted small">{{ items | length }} types</td>
+        <td colspan="{{ 3 if show_badge else 2 }}" class="text-muted small">{{ items | length }} types</td>
         <td></td>
         <td class="text-end text-muted small">Total</td>
         <td class="text-end fw-bold text-isk">
@@ -361,26 +356,6 @@ document.getElementById('add-loc-btn')?.addEventListener('click', async function
   }
 });
 
-// Draw a line wherever the slot changes, so each group reads as a block. Only
-// meaningful while the rows are in slot order — sorted by name or value the
-// groups interleave and every other row would get a line, so the caller clears
-// them instead.
-function paintSlotDividers(table, on = true) {
-  const rows = Array.from(table.querySelectorAll('tbody tr'));
-  let prev = null;
-  rows.forEach((row, i) => {
-    const slot = row.dataset.slot;
-    // Never on the first row: that edge is the header, not a group boundary.
-    row.classList.toggle('slot-group-start', on && i > 0 && slot !== prev);
-    prev = slot;
-  });
-}
-
-// Tables that carry a Slot column start out in slot order, straight from the server.
-document.querySelectorAll('.loc-table').forEach(t => {
-  if (t.querySelector('th[data-col="slot"]')) paintSlotDividers(t);
-});
-
 document.querySelectorAll('.sort-col').forEach(th => {
   th.addEventListener('click', () => {
     const table = th.closest('table');
@@ -396,18 +371,14 @@ document.querySelectorAll('.sort-col').forEach(th => {
     icon.textContent = asc ? '▲' : '▼';
     icon.dataset.dir = asc ? 'asc' : 'desc';
 
-    const rows = Array.from(tbody.querySelectorAll('tr'));
+    // Section bands are layout, not data: never sort them, and hide them once the
+    // rows leave fitting order, where a band would be labelling the wrong block.
+    tbody.querySelectorAll('tr.slot-section').forEach(b => { b.style.display = 'none'; });
+    const rows = Array.from(tbody.querySelectorAll('tr[data-name]'));
     rows.sort((a, b) => {
       if (col === '0') {
         const va = a.dataset.name, vb = b.dataset.name;
         return asc ? va.localeCompare(vb, 'cs') : vb.localeCompare(va, 'cs');
-      } else if (col === 'slot') {
-        // Fitting-window order, not alphabetical — "High" before "Mid" before
-        // "Low" is the useful order, A-Z is not. Ties fall back to the name so
-        // the modules inside one slot group stay in a stable order.
-        const va = parseFloat(a.dataset.slot) || 0, vb = parseFloat(b.dataset.slot) || 0;
-        if (va !== vb) return asc ? va - vb : vb - va;
-        return a.dataset.name.localeCompare(b.dataset.name, 'cs');
       } else {
         const va = parseFloat(col === '1' ? a.dataset.qty : a.dataset.value) || 0;
         const vb = parseFloat(col === '1' ? b.dataset.qty : b.dataset.value) || 0;
@@ -415,11 +386,6 @@ document.querySelectorAll('.sort-col').forEach(th => {
       }
     });
     rows.forEach(r => tbody.appendChild(r));
-    // Group lines only make sense while the rows are grouped: keep them when
-    // sorting by slot, drop them for any other column.
-    if (table.querySelector('th[data-col="slot"]')) {
-      paintSlotDividers(table, col === 'slot');
-    }
   });
 });
 

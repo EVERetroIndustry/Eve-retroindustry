@@ -305,13 +305,13 @@ def test_route_search_with_no_match_shows_nothing(client, assembled_ship):
 def test_slot_labels_cover_every_flag_esi_actually_sends(app_module):
     """Flags taken from real character data, not from the docs."""
     f = app_module._slot_info
-    assert f("HiSlot0") == ("High", 1) and f("HiSlot7") == ("High", 1)
-    assert f("MedSlot3") == ("Mid", 2)
-    assert f("LoSlot5") == ("Low", 3)
-    assert f("RigSlot2") == ("Rig", 4)
+    assert f("HiSlot0") == ("High power", 1) and f("HiSlot7") == ("High power", 1)
+    assert f("MedSlot3") == ("Medium power", 2)
+    assert f("LoSlot5") == ("Low power", 3)
+    assert f("RigSlot2") == ("Rig Slot", 4)
     assert f("SubSystemSlot1") == ("Subsystem", 5)
-    assert f("DroneBay") == ("Drone bay", 6)
-    assert f("FighterBay")[0] == "Fighter bay"
+    assert f("DroneBay") == ("Drones", 6)
+    assert f("FighterBay")[0] == "Fighters"
     assert f("FighterTube2")[0] == "Fighter tube"
     assert f("Cargo") == ("Cargo", 8)
     assert f("FleetHangar")[0] == "Fleet hangar"
@@ -384,9 +384,16 @@ def test_fitted_and_spare_copies_of_one_module_stay_apart(app_module, client, mo
             if "Tracking Computer II" in flat:
                 seen.append(flat)
         assert len(seen) == 2, seen
-        assert any(" Mid 2 " in s for s in seen), seen      # both fitted, one row
-        assert any(" Cargo 1 " in s for s in seen), seen    # the spare, its own row
-        assert "Hull" in html                                # hull row is labelled
+        # The two fitted ones collapse into a single row, the spare in cargo keeps
+        # its own — that split is the whole point of grouping by slot, and merged
+        # they used to read "x3", which says nothing about the fit.
+        qtys = sorted(int(s.split("Tracking Computer II ")[1].split()[0]) for s in seen)
+        assert qtys == [1, 2], seen
+        # Sections replace the old Slot column, in fitting-window wording. This
+        # fixture fits two mid slots and leaves a spare in cargo, so those are the
+        # bands it must produce — and no others.
+        bands = set(re.findall(r'class="slot-section".*?>\s*([^<>]+?)\s*</td>', html, re.S))
+        assert bands == {"Hull", "Medium power", "Cargo"}, bands
     finally:
         conn = app_module.get_conn()
         conn.execute("DELETE FROM char_assets_cache WHERE character_id=?", (CHAR,))
@@ -421,9 +428,8 @@ def test_plain_container_renders_no_slot_column(app_module, client, monkeypatch)
     try:
         html = _text(client, f"/assets?view={CHAR}")
         assert "Minerals (Small Secure Container)" in html
-        # Match the rendered header cell, not any mention of the string: the
-        # divider JS references th[data-col="slot"] as a selector on every page.
-        assert 'class="sort-col" data-col="slot"' not in html
+        # A plain container has no slots, so it gets no section bands either.
+        assert 'class="slot-section"' not in html
     finally:
         conn = app_module.get_conn()
         conn.execute("DELETE FROM char_assets_cache WHERE character_id=?", (CHAR,))
@@ -433,11 +439,11 @@ def test_plain_container_renders_no_slot_column(app_module, client, monkeypatch)
         conn.commit(); conn.close()
 
 
-def test_slot_dividers_are_rendered_and_scoped_to_slot_order(app_module, client, monkeypatch):
-    """Group lines exist and are only drawn while the rows are in slot order."""
+def test_sections_are_dropped_when_the_rows_leave_fitting_order(app_module, client):
+    """Sorting by any column scrambles the groups, so the bands must go with them —
+    a band left behind would be labelling the wrong block."""
     html = _text(client, "/assets")
-    assert "slot-group-start" in html
-    assert "function paintSlotDividers" in html
-    # Never on the first row (that edge is the header) and cleared for other sorts.
-    assert "i > 0 && slot !== prev" in html
-    assert "paintSlotDividers(table, col === 'slot')" in html
+    assert "tr.slot-section" in html
+    assert "b.style.display = 'none'" in html
+    # And the sort itself must skip the bands rather than sorting them as data.
+    assert "tbody.querySelectorAll('tr[data-name]')" in html

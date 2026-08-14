@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.9.17"
+APP_VERSION = "0.9.18"
 
 import asyncio
 import datetime
@@ -3320,8 +3320,8 @@ async def _resolve_corp_container_names(
 # charge loaded into it (HiSlot0 holds both "Mega Beam Laser II" and the crystal
 # in it). Ordered like the in-game fitting window so the table reads top-down.
 _SLOT_LABELS: dict[str, tuple[str, int]] = {
-    "DroneBay":        ("Drone bay", 6),
-    "FighterBay":      ("Fighter bay", 7),
+    "DroneBay":        ("Drones", 6),
+    "FighterBay":      ("Fighters", 7),
     "Cargo":           ("Cargo", 8),
     "FleetHangar":     ("Fleet hangar", 9),
     "ShipHangar":      ("Ship hangar", 10),
@@ -3329,10 +3329,11 @@ _SLOT_LABELS: dict[str, tuple[str, int]] = {
     "HiddenModifiers": ("Hidden", 13),
 }
 for _i in range(8):
-    _SLOT_LABELS[f"HiSlot{_i}"]         = ("High", 1)
-    _SLOT_LABELS[f"MedSlot{_i}"]        = ("Mid", 2)
-    _SLOT_LABELS[f"LoSlot{_i}"]         = ("Low", 3)
-    _SLOT_LABELS[f"RigSlot{_i}"]        = ("Rig", 4)
+    # Wording follows the in-game fitting window, which is what people compare against.
+    _SLOT_LABELS[f"HiSlot{_i}"]         = ("High power", 1)
+    _SLOT_LABELS[f"MedSlot{_i}"]        = ("Medium power", 2)
+    _SLOT_LABELS[f"LoSlot{_i}"]         = ("Low power", 3)
+    _SLOT_LABELS[f"RigSlot{_i}"]        = ("Rig Slot", 4)
     _SLOT_LABELS[f"SubSystemSlot{_i}"]  = ("Subsystem", 5)
     _SLOT_LABELS[f"FighterTube{_i}"]    = ("Fighter tube", 7)
 
