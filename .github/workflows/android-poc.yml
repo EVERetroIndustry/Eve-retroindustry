@@ -3,7 +3,7 @@ name: Android (test build)
 # Run MANUALLY (Actions → "Android (test build)" → Run workflow).
 # Builds the Android APK (Chaquopy + WebView over the real FastAPI app) and
 # publishes it as the "android-latest" prerelease with a direct download link:
-#   https://github.com/ScoopEMPRetro/Eve-retroindustry/releases/download/android-latest/EveRetroindustry.apk
+#   https://github.com/EVERetroIndustry/Eve-retroindustry/releases/download/android-latest/EveRetroindustry.apk
 #
 # Intentionally NOT wired into release.yml — while Android is still just a test
 # build (on-device runtime unverified, OAuth login not working yet), it does not
@@ -61,7 +61,7 @@ jobs:
           VC=$(grep -oP 'versionCode \K[0-9]+' android-poc/app/build.gradle | head -1)
           VN=$(grep -oP 'versionName "\K[^"]+' android-poc/app/build.gradle | head -1)
           cat > version.json <<EOF
-          {"versionCode": $VC, "versionName": "$VN", "apkUrl": "https://github.com/ScoopEMPRetro/Eve-retroindustry/releases/download/android-latest/EveRetroindustry.apk"}
+          {"versionCode": $VC, "versionName": "$VN", "apkUrl": "https://github.com/EVERetroIndustry/Eve-retroindustry/releases/download/android-latest/EveRetroindustry.apk"}
           EOF
           echo "version.json:"; cat version.json
 

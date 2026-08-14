@@ -251,7 +251,7 @@ jobs:
         run: |
           cp android-poc/app/build/outputs/apk/release/app-release.apk EveRetroindustry.apk
           cat > version.json <<EOF
-          {"versionCode": ${{ steps.ver.outputs.code }}, "versionName": "${{ steps.ver.outputs.name }}", "apkUrl": "https://github.com/ScoopEMPRetro/Eve-retroindustry/releases/latest/download/EveRetroindustry.apk"}
+          {"versionCode": ${{ steps.ver.outputs.code }}, "versionName": "${{ steps.ver.outputs.name }}", "apkUrl": "https://github.com/EVERetroIndustry/Eve-retroindustry/releases/latest/download/EveRetroindustry.apk"}
           EOF
           cat version.json
 

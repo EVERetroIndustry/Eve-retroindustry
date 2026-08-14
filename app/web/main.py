@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.9.9"
+APP_VERSION = "0.9.10"
 
 import asyncio
 import datetime
@@ -119,7 +119,7 @@ TEMPLATES_DIR = Path(_BUNDLE_DIR) / "app" / "web" / "templates"
 STATIC_DIR = Path(_BUNDLE_DIR) / "app" / "web" / "static"
 
 SDE_DOWNLOAD_URL = (
-    "https://github.com/ScoopEMPRetro/Eve-retroindustry"
+    "https://github.com/EVERetroIndustry/Eve-retroindustry"
     "/releases/latest/download/sde_base.db"
 )
 
@@ -6346,7 +6346,7 @@ async def api_pi_alert_count():
 
 # ── Version check / update ───────────────────────────────────────────────────
 
-_GITHUB_REPO = "ScoopEMPRetro/Eve-retroindustry"
+_GITHUB_REPO = "EVERetroIndustry/Eve-retroindustry"
 _VERSION_CACHE: dict | None = None
 _VERSION_CACHE_TS: float = 0.0
 _VERSION_CACHE_TTL = 3600.0  # 1 hour

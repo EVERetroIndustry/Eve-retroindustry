@@ -2,7 +2,7 @@
 
 A local industry calculator for EVE Online. Runs as a web app on your machine — blueprint cost analysis, bill of materials expansion, Jita market pricing, asset tracking, contract browsing, planetary interaction timers, and production project management. Multi-character support: load all your alts and switch between them per page.
 
-> **Note on the project.** I build this primarily for my own EVE career — features land when I need them, and priorities follow whatever I'm doing in-game. It's shared publicly as-is: if you find it useful, you're welcome to use it. There's no support commitment or roadmap promise, but bug reports and ideas are welcome via [Issues](https://github.com/ScoopEMPRetro/Eve-retroindustry/issues).
+> **Note on the project.** I build this primarily for my own EVE career — features land when I need them, and priorities follow whatever I'm doing in-game. It's shared publicly as-is: if you find it useful, you're welcome to use it. There's no support commitment or roadmap promise, but bug reports and ideas are welcome via [Issues](https://github.com/EVERetroIndustry/Eve-retroindustry/issues).
 
 **[⬇ Downloads and screenshots → everetroindustry.github.io](https://everetroindustry.github.io)**
 
@@ -50,7 +50,7 @@ A local industry calculator for EVE Online. Runs as a web app on your machine �
 
 ### Windows
 
-Two Windows downloads in every [**release**](https://github.com/ScoopEMPRetro/Eve-retroindustry/releases/latest):
+Two Windows downloads in every [**release**](https://github.com/EVERetroIndustry/Eve-retroindustry/releases/latest):
 
 | Asset | What it is |
 |---|---|
@@ -63,7 +63,7 @@ The installer sets the app up **per user** (into `%LOCALAPPDATA%\Programs`), so 
 
 ### Linux
 
-1. Download the latest release from [**Releases**](https://github.com/ScoopEMPRetro/Eve-retroindustry/releases/latest)
+1. Download the latest release from [**Releases**](https://github.com/EVERetroIndustry/Eve-retroindustry/releases/latest)
 2. Extract the `-linux-portable.zip` anywhere, or use the single-file `.AppImage`
 3. Run `EVE_Retroindustry`
 
@@ -80,7 +80,7 @@ No Python and no dependencies to install.
 
 An `EveRetroindustry.apk` is published with each release. It runs the full app on-device (a bundled Python server behind a native WebView). It's **arm64 only** and must be sideloaded:
 
-1. Download `EveRetroindustry.apk` from the [latest release](https://github.com/ScoopEMPRetro/Eve-retroindustry/releases/latest)
+1. Download `EveRetroindustry.apk` from the [latest release](https://github.com/EVERetroIndustry/Eve-retroindustry/releases/latest)
 2. Allow installation from unknown sources and install it manually
 3. Later updates can be applied from inside the app (**About → Check for updates**)
 
@@ -93,7 +93,7 @@ This build is experimental — treat it as a work in progress rather than a poli
 Requires Python 3.11+.
 
 ```bash
-git clone https://github.com/ScoopEMPRetro/Eve-retroindustry.git
+git clone https://github.com/EVERetroIndustry/Eve-retroindustry.git
 cd Eve-retroindustry
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt

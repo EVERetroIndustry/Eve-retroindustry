@@ -34,7 +34,7 @@ public class Updater {
     // Stable URL for the LATEST normal release (ignores prereleases like
     // android-latest). version.json is an asset of every release (from release.yml).
     private static final String VERSION_URL =
-        "https://github.com/ScoopEMPRetro/Eve-retroindustry/releases/latest/download/version.json";
+        "https://github.com/EVERetroIndustry/Eve-retroindustry/releases/latest/download/version.json";
 
     /** Runs the check in the background; shows a dialog (UI thread) if an update is available. */
     public static void check(Activity act) {

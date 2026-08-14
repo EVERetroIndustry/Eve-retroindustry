@@ -9,7 +9,7 @@ def test_support_open(client):
 
 
 @pytest.mark.parametrize("url,ok", [
-    ("https://github.com/ScoopEMPRetro/Eve-retroindustry", True),
+    ("https://github.com/EVERetroIndustry/Eve-retroindustry", True),
     ("https://esi.evetech.net/latest", True),
     ("https://ko-fi.com/retrovisor", True),
     ("https://evil.example.com/x", False),
