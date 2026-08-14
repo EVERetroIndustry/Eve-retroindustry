@@ -48,7 +48,7 @@
 {% for g in groups %}
 <div class="mb-4">
   <div class="d-flex align-items-center gap-2 mb-2">
-    <img src="https://images.evetech.net/characters/{{ g.char_id }}/portrait?size=32"
+    <img src="/portrait/characters/{{ g.char_id }}?size=32"
          width="28" height="28" class="rounded-circle">
     <span class="fw-semibold">{{ g.char_name }}</span>
     <span class="badge bg-secondary">{{ g.colonies | length }} colon{{ 'ies' if g.colonies | length != 1 else 'y' }}</span>

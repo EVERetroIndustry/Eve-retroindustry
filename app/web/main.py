@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.9.1"
+APP_VERSION = "0.9.2"
 
 import asyncio
 import datetime
@@ -3150,15 +3150,21 @@ async def assets_distances(request: Request):
     rows = conn.execute(
         "SELECT location_id, solar_system_id FROM location_name_cache WHERE solar_system_id IS NOT NULL"
     ).fetchall()
-    conn.close()
     loc_to_sys = {row[0]: row[1] for row in rows}
 
     # Deduplicate systems — one ESI call per unique destination
     unique_sys = list(set(loc_to_sys.values()))
 
+    # Jump counts are static: stargates don't move, so a route's length only ever
+    # changes when CCP edits the map. Without a cache this endpoint fired one ESI
+    # call per unique destination system (482 on this account) EVERY time it ran.
+    # The pair is stored normalised (low, high) because the gate network is
+    # undirected — the shortest path is the same in both directions.
+    ensure_route_jump_table(conn)
+    cached_jumps = load_route_jumps(conn, origin_sys, unique_sys)
+    todo = [s for s in unique_sys if s not in cached_jumps and s != origin_sys]
+
     async def _jumps(client: httpx.AsyncClient, dest: int) -> int:
-        if dest == origin_sys:
-            return 0
         try:
             resp = await client.get(
                 f"https://esi.evetech.net/latest/route/{origin_sys}/{dest}/",
@@ -3169,12 +3175,21 @@ async def assets_distances(request: Request):
         except Exception:
             return -1
 
-    async with esi_client() as client:
-        results = await asyncio.gather(*[_jumps(client, s) for s in unique_sys])
-    sys_jumps = dict(zip(unique_sys, results))
+    sys_jumps = dict(cached_jumps)
+    sys_jumps[origin_sys] = 0
+    if todo:
+        async with esi_client() as client:
+            results = await asyncio.gather(*[_jumps(client, s) for s in todo])
+        fresh = {s: j for s, j in zip(todo, results)}
+        sys_jumps.update(fresh)
+        # Only persist real answers; -1 means the lookup failed (transient) or the
+        # systems aren't connected, and we must be able to retry that.
+        save_route_jumps(conn, origin_sys, {s: j for s, j in fresh.items() if j >= 0})
+    conn.close()
 
     distances = {loc_id: sys_jumps.get(sys_id, -1) for loc_id, sys_id in loc_to_sys.items()}
-    return {"ok": True, "origin_sys": origin_sys, "distances": distances}
+    return {"ok": True, "origin_sys": origin_sys, "distances": distances,
+            "from_cache": len(unique_sys) - len(todo), "fetched": len(todo)}
 
 
 # ---------------------------------------------------------------------------
@@ -5915,6 +5930,109 @@ async def planets_page(request: Request):
         "total_extractors": total_extractors, "expiring_soon": expiring_soon,
         "needs_relogin": needs_relogin,
     })
+
+
+# ── Character portraits / corp logos: local cache with a long TTL ────────────
+# Same reasoning as type icons, but these CAN change (a player updates a portrait,
+# a corp changes its logo), so they get a long TTL instead of being immutable.
+_PORTRAIT_TTL = 30 * 86400          # 30 days on disk and in the browser
+_PORTRAIT_KINDS = {                 # url segment -> (esi path, flavour)
+    "characters":   "portrait",
+    "corporations": "logo",
+    "alliances":    "logo",
+}
+
+
+@app.get("/portrait/{kind}/{entity_id}")
+async def entity_portrait(kind: str, entity_id: int, size: int = 32):
+    """Serve a character portrait / corp or alliance logo from the local cache."""
+    from fastapi.responses import Response, FileResponse
+    flavour = _PORTRAIT_KINDS.get(kind)
+    if not flavour:
+        return Response(status_code=404)
+    if size not in _ICON_SIZES:
+        size = 32
+    headers = {"Cache-Control": f"public, max-age={_PORTRAIT_TTL}"}
+
+    variant = f"{kind}-{flavour}"
+    hit = _cached_icon(entity_id, size, variant)
+    if hit and (_time.time() - os.path.getmtime(hit[0])) < _PORTRAIT_TTL:
+        return FileResponse(hit[0], media_type=hit[1], headers=headers)
+
+    try:
+        async with _ICON_SEM:
+            async with esi_client(timeout=15, follow_redirects=True) as client:
+                r = await client.get(
+                    f"https://images.evetech.net/{kind}/{entity_id}/{flavour}",
+                    params={"size": size},
+                )
+        kind_bytes = _sniff_image(r.content) if r.status_code == 200 else None
+        if not kind_bytes:
+            # Expired copy beats no picture at all when the fetch fails.
+            if hit:
+                return FileResponse(hit[0], media_type=hit[1], headers=headers)
+            return Response(status_code=404 if 400 <= r.status_code < 500 else 502)
+        ext, mime = kind_bytes
+        os.makedirs(_ICON_DIR, exist_ok=True)
+        path = f"{_icon_base(entity_id, size, variant)}.{ext}"
+        tmp = f"{path}.{os.getpid()}.part"
+        with open(tmp, "wb") as fh:
+            fh.write(r.content)
+        os.replace(tmp, path)
+        return Response(content=r.content, media_type=mime, headers=headers)
+    except Exception as exc:
+        print(f"[portrait] {kind}/{entity_id} failed: {exc}", flush=True)
+        if hit:
+            return FileResponse(hit[0], media_type=hit[1], headers=headers)
+        return Response(status_code=502)
+
+
+# ── Static map data: jump counts between systems ─────────────────────────────
+# /route/{a}/{b}/ answers are static (stargates don't move), so they are cached
+# permanently. Pairs are stored normalised (low, high): the gate network is
+# undirected, so the shortest path is the same both ways and one row serves both.
+
+def ensure_route_jump_table(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS route_jump_cache (
+            sys_a     INTEGER NOT NULL,
+            sys_b     INTEGER NOT NULL,
+            jumps     INTEGER NOT NULL,
+            cached_at REAL,
+            PRIMARY KEY (sys_a, sys_b)
+        )
+    """)
+    conn.commit()
+
+
+def load_route_jumps(conn: sqlite3.Connection, origin: int, dests: list[int]) -> dict[int, int]:
+    """Cached jump counts from `origin` to each of `dests` ({dest: jumps})."""
+    if not dests:
+        return {}
+    out: dict[int, int] = {}
+    for chunk_start in range(0, len(dests), 900):       # stay under SQLite's var limit
+        chunk = dests[chunk_start:chunk_start + 900]
+        pairs = [(min(origin, d), max(origin, d)) for d in chunk]
+        ph = ",".join("(?,?)" * 1 for _ in pairs)
+        flat: list[int] = [v for pair in pairs for v in pair]
+        rows = conn.execute(
+            f"SELECT sys_a, sys_b, jumps FROM route_jump_cache "
+            f"WHERE (sys_a, sys_b) IN ({ph})", flat
+        ).fetchall()
+        for a, b, j in rows:
+            out[b if a == origin else a] = j
+    return out
+
+
+def save_route_jumps(conn: sqlite3.Connection, origin: int, jumps: dict[int, int]) -> None:
+    if not jumps:
+        return
+    now = _time.time()
+    conn.executemany(
+        "INSERT OR REPLACE INTO route_jump_cache (sys_a, sys_b, jumps, cached_at) VALUES (?,?,?,?)",
+        [(min(origin, d), max(origin, d), j, now) for d, j in jumps.items()],
+    )
+    conn.commit()
 
 
 # ── Type icons: local disk cache + long-lived browser caching ────────────────

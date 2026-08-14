@@ -25,7 +25,7 @@
       <a href="/orders?char={{ c[0] }}&scope={{ scope }}&state={{ state }}"
          class="btn d-inline-flex align-items-center gap-2
                 {% if is_active %}btn-eve{% else %}btn-outline-secondary{% endif %}">
-        <img src="https://images.evetech.net/characters/{{ c[0] }}/portrait?size=32"
+        <img src="/portrait/characters/{{ c[0] }}?size=32"
              width="18" height="18" class="rounded-circle">
         {{ c[1] }}
       </a>
@@ -106,10 +106,10 @@
           <td class="text-nowrap">
             <span class="d-inline-flex align-items-center gap-1">
               {% if o.party_kind == 'corp' %}
-              <img loading="lazy" src="https://images.evetech.net/corporations/{{ o.party_id }}/logo?size=32"
+              <img loading="lazy" src="/portrait/corporations/{{ o.party_id }}?size=32"
                    width="18" height="18" class="rounded">
               {% else %}
-              <img loading="lazy" src="https://images.evetech.net/characters/{{ o.party_id }}/portrait?size=32"
+              <img loading="lazy" src="/portrait/characters/{{ o.party_id }}?size=32"
                    width="18" height="18" class="rounded-circle">
               {% endif %}
               <span style="font-size:.78rem">{{ o.party_name }}</span>

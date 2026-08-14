@@ -29,7 +29,7 @@
 {% if g.jobs %}
 <div class="mb-4">
   <div class="d-flex align-items-center gap-2 mb-2">
-    <img src="https://images.evetech.net/characters/{{ g.char_id }}/portrait?size=32"
+    <img src="/portrait/characters/{{ g.char_id }}?size=32"
          width="28" height="28" class="rounded-circle">
     <span class="fw-semibold">{{ g.char_name }}</span>
     <span class="badge bg-secondary">{{ g.jobs | length }} job{{ 's' if g.jobs | length != 1 }}</span>

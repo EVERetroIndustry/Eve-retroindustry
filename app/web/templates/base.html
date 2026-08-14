@@ -277,7 +277,7 @@
              data-bs-toggle="dropdown" aria-expanded="false"
              style="padding:.25rem .5rem;border:1px solid #30363d;border-radius:.375rem">
             {% if character %}
-            <img src="https://images.evetech.net/characters/{{ character[0] }}/portrait?size=32"
+            <img src="/portrait/characters/{{ character[0] }}?size=32"
                  width="24" height="24" class="rounded-circle" style="opacity:.9">
             <span class="small nav-char-name">{{ character[1] }}</span>
             {% else %}
@@ -293,7 +293,7 @@
               <a href="#" class="dropdown-item d-flex align-items-center gap-2 py-2"
                  onclick="setActiveChar({{ c[0] }})"
                  style="color:#e6edf3">
-                <img src="https://images.evetech.net/characters/{{ c[0] }}/portrait?size=32"
+                <img src="/portrait/characters/{{ c[0] }}?size=32"
                      width="28" height="28" class="rounded-circle">
                 <span class="flex-grow-1">{{ c[1] }}</span>
                 {% if active_char_id == c[0] %}
