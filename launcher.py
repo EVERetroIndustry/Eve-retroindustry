@@ -335,6 +335,36 @@ def _prepare_webview_storage(app_dir: str) -> str | None:
     return None
 
 
+def _default_window_size(webview) -> tuple[int, int]:
+    """Startup window size: wide enough to keep the navbar labels.
+
+    The navbar drops to icon-only by measuring real overflow, not a fixed
+    breakpoint. Measured here, it keeps the labels from 1800 px up and loses them
+    at 1750 — and the old 1680 default sat just under that, so testers got
+    unlabelled icons every single time. 1880 leaves headroom above the flip,
+    which matters because the measurement is font-dependent and Windows does not
+    lay text out identically to Linux. The height is unchanged.
+
+    Clamped to the screen, because a window wider than the display is worse than
+    a few missing labels — it opens with its edges (and possibly the close
+    button) off-screen. A laptop at 1366 px simply gets the largest window that
+    fits and the icon-only navbar it would have had anyway.
+    """
+    want_w, want_h = 1880, 1000
+    try:
+        screens = list(getattr(webview, "screens", None) or [])
+        if screens:
+            # Widest screen: the user may run a portrait panel alongside a
+            # landscape one, and the window opens on the primary/largest.
+            sw = max(int(s.width) for s in screens)
+            sh = max(int(s.height) for s in screens if int(s.width) == sw)
+            want_w = max(900, min(want_w, sw - 40))
+            want_h = max(600, min(want_h, sh - 120))
+    except Exception as exc:
+        print(f"[window] screen size unavailable ({exc!r}) — using {want_w}x{want_h}")
+    return want_w, want_h
+
+
 def _start_webview(webview, storage_dir: str | None) -> None:
     """Run the GUI, surviving a profile directory that goes bad under us.
 
@@ -382,15 +412,13 @@ def main() -> None:
     import webview
 
     url = f"http://127.0.0.1:{port}"
-    # Open wide enough that the whole UI (the wide nav row especially) fits on
-    # one line with no horizontal scrollbar. The active character name is capped
-    # with an ellipsis in CSS so it can't push the nav past this width.
+    win_w, win_h = _default_window_size(webview)
     # Not maximized: keep it a normal, movable/resizable window.
     window = webview.create_window(
         title="EVE Retroindustry",
         url=url,
-        width=1680,
-        height=1000,
+        width=win_w,
+        height=win_h,
         min_size=(900, 600),
     )
 

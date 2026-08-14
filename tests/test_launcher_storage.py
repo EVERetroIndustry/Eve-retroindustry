@@ -135,3 +135,44 @@ def test_no_retry_loop_if_the_retry_also_fails(launcher):
     with pytest.raises(webview.errors.WebViewException):
         launcher._start_webview(wv, path)
     assert len(wv.calls) == 2                          # retried exactly once
+
+
+# ── default window size ───────────────────────────────────────────────────────
+
+class _Screen:
+    def __init__(self, w, h): self.width, self.height = w, h
+
+
+class _WV:
+    def __init__(self, screens): self.screens = screens
+
+
+def test_default_width_clears_the_navbar_label_threshold(launcher):
+    """The navbar keeps its labels from 1800 px up (measured); 1680 did not.
+
+    It collapses by measuring real overflow rather than a media query, so the
+    default has to sit above that with headroom — the measurement depends on the
+    font, and Windows does not lay text out exactly like Linux.
+    """
+    w, h = launcher._default_window_size(_WV([_Screen(3840, 2160)]))
+    assert w >= 1800 + 50
+    assert h == 1000
+
+
+def test_window_never_opens_wider_than_the_screen(launcher):
+    """A window off the edge of the display is worse than missing labels."""
+    for sw, sh in ((1920, 1080), (1600, 900), (1366, 768), (1280, 720)):
+        w, h = launcher._default_window_size(_WV([_Screen(sw, sh)]))
+        assert w <= sw and h <= sh, (sw, sh, w, h)
+        assert w >= 900 and h >= 600           # never below the min_size
+    # A portrait panel next to a landscape one must not shrink the window to it.
+    w, _ = launcher._default_window_size(_WV([_Screen(3840, 2160), _Screen(2160, 3840)]))
+    assert w >= 1800
+
+
+def test_falls_back_when_the_screen_size_is_unknown(launcher):
+    class _Broken:
+        @property
+        def screens(self): raise RuntimeError("no display")
+    assert launcher._default_window_size(_WV([])) == (1880, 1000)
+    assert launcher._default_window_size(_Broken()) == (1880, 1000)
