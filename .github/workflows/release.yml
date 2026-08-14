@@ -70,14 +70,18 @@ jobs:
           if (-not (Test-Path $iscc)) { throw "ISCC.exe not found after installing Inno Setup" }
           & $iscc /DAppVersion=$ver installer\eve_retroindustry.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Get-ChildItem installer\*setup.exe | ForEach-Object { Write-Host "built: $($_.Name) ($([math]::Round($_.Length/1MB,1)) MB)" }
+          # Keep the artifact flat: listing a path inside installer/ makes
+          # upload-artifact preserve that folder, and the release job's
+          # artifacts/*setup.exe glob would then miss it.
+          Move-Item installer\*setup.exe . -Force
+          Get-ChildItem *setup.exe | ForEach-Object { Write-Host "built: $($_.Name) ($([math]::Round($_.Length/1MB,1)) MB)" }
 
       - uses: actions/upload-artifact@v4
         with:
           name: win64
           path: |
             EVE_Retroindustry-${{ github.ref_name }}-win64.zip
-            installer/EVE_Retroindustry-*-setup.exe
+            EVE_Retroindustry-*-setup.exe
 
   build-linux:
     needs: test
