@@ -87,8 +87,22 @@ jobs:
         run: |
           $exe = (Get-ChildItem *setup.exe)[0]
           $zip = "EVE_Retroindustry-${{ github.ref_name }}-win64-setup.zip"
-          Compress-Archive -Path $exe.FullName -DestinationPath $zip -Force
+          # installer/SETUP_README.txt rides along as README.txt. A tester hit
+          # Inno's "Unable to execute file in the temporary directory ... Error 5",
+          # which is a %TEMP%/antivirus problem on the machine rather than a broken
+          # build — and the fix every web guide gives ("run as administrator") is
+          # wrong for a per-user installer. The note explains that and points at
+          # the portable build. Kept in a file, not inlined here: unindented
+          # here-string lines would break this YAML block scalar.
+          Copy-Item installer\SETUP_README.txt README.txt -Force
+          Compress-Archive -Path $exe.FullName, README.txt -DestinationPath $zip -Force
           Write-Host "packed: $zip ($([math]::Round((Get-Item $zip).Length/1MB,1)) MB)"
+          # Listing is informational only — never fail a release over it.
+          try {
+            $z = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $zip).Path)
+            foreach ($e in $z.Entries) { Write-Host "  entry: $($e.FullName)" }
+            $z.Dispose()
+          } catch { Write-Host "  (could not list entries: $_)" }
 
       - uses: actions/upload-artifact@v4
         with:
