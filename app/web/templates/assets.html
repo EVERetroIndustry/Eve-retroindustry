@@ -3,7 +3,7 @@
 {% block content %}
 
 {# === Macro for the assets table === #}
-{% macro asset_table(items, table_id, show_badge=False) %}
+{% macro asset_table(items, table_id, show_badge=False, show_slot=False) %}
 <div class="table-responsive">
   <table class="table table-hover tbl-compact mb-0 align-middle loc-table" id="tbl-{{ table_id }}">
     <thead>
@@ -13,6 +13,12 @@
           Item <span class="sort-icon text-muted ms-1">⇅</span>
         </th>
         {% if show_badge %}<th style="width:28px"></th>{% endif %}
+        {% if show_slot %}
+        <th class="sort-col" data-col="slot" style="cursor:pointer;width:110px"
+            title="Where it sits in the ship — sorts in fitting-window order">
+          Slot <span class="sort-icon text-muted ms-1">⇅</span>
+        </th>
+        {% endif %}
         <th class="text-end sort-col" data-col="1" style="cursor:pointer" title="Sort by quantity">
           Quantity <span class="sort-icon text-muted ms-1">⇅</span>
         </th>
@@ -26,6 +32,7 @@
       {% for item in items %}
       <tr data-name="{{ item.name | lower }}"
           data-qty="{{ item.quantity }}"
+          data-slot="{{ item.slot_order or 0 }}"
           data-value="{{ item.total_value or 0 }}">
         <td>
           <img src="/icon/{{ item.type_id }}?size=32&amp;v=render"
@@ -45,6 +52,9 @@
           {% endif %}
         </td>
         {% endif %}
+        {% if show_slot %}
+        <td class="text-muted" style="font-size:.8rem">{{ item.slot or "—" }}</td>
+        {% endif %}
         <td class="text-end fw-semibold">{{ item.quantity | int | format_number }}</td>
         <td class="text-end text-muted">
           {% if item.unit_price %}{{ item.unit_price | isk0 }}{% else %}<span class="text-muted opacity-50">—</span>{% endif %}
@@ -57,7 +67,8 @@
     </tbody>
     <tfoot>
       <tr style="border-top:2px solid #30363d">
-        <td colspan="{{ 3 if show_badge else 2 }}" class="text-muted small">{{ items | length }} types</td>
+        <td colspan="{{ 2 + (1 if show_badge else 0) + (1 if show_slot else 0) }}"
+            class="text-muted small">{{ items | length }} types</td>
         <td></td>
         <td class="text-end text-muted small">Total</td>
         <td class="text-end fw-bold text-isk">
@@ -210,7 +221,7 @@
         </span>
       </div>
       <div class="collapse" id="cont-{{ ckey }}">
-        {{ asset_table(container.assets, "cont-" ~ ckey, show_char_badge) }}
+        {{ asset_table(container.assets, "cont-" ~ ckey, show_char_badge, container.has_slots) }}
       </div>
     </div>
     {% endfor %}
@@ -294,7 +305,7 @@
             </span>
           </div>
           <div class="collapse" id="ccont-{{ ck }}">
-            {{ asset_table(container.assets, "ccont-" ~ ck) }}
+            {{ asset_table(container.assets, "ccont-" ~ ck, False, container.has_slots) }}
           </div>
         </div>
         {% endfor %}
@@ -359,6 +370,13 @@ document.querySelectorAll('.sort-col').forEach(th => {
       if (col === '0') {
         const va = a.dataset.name, vb = b.dataset.name;
         return asc ? va.localeCompare(vb, 'cs') : vb.localeCompare(va, 'cs');
+      } else if (col === 'slot') {
+        // Fitting-window order, not alphabetical — "High" before "Mid" before
+        // "Low" is the useful order, A-Z is not. Ties fall back to the name so
+        // the modules inside one slot group stay in a stable order.
+        const va = parseFloat(a.dataset.slot) || 0, vb = parseFloat(b.dataset.slot) || 0;
+        if (va !== vb) return asc ? va - vb : vb - va;
+        return a.dataset.name.localeCompare(b.dataset.name, 'cs');
       } else {
         const va = parseFloat(col === '1' ? a.dataset.qty : a.dataset.value) || 0;
         const vb = parseFloat(col === '1' ? b.dataset.qty : b.dataset.value) || 0;

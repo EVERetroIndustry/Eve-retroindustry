@@ -10,6 +10,8 @@ Covers three defects reported together for assembled ships:
 """
 from __future__ import annotations
 
+import re
+
 MEGATHRON, ANTIMATTER, TRIT = 641, 238, 34   # Megathron, Antimatter Charge L, Tritanium
 OWNER = 900000001
 
@@ -296,3 +298,134 @@ def test_route_search_with_no_match_shows_nothing(client, assembled_ship):
     html = _text(client, f"/assets?view={char}&search=zzz-no-such-item")
     assert "Blue Thunder (Megathron)" not in html
     assert "Antimatter Charge L" not in html
+
+
+# ── slot labels: which items are fitted where ─────────────────────────────────
+
+def test_slot_labels_cover_every_flag_esi_actually_sends(app_module):
+    """Flags taken from real character data, not from the docs."""
+    f = app_module._slot_info
+    assert f("HiSlot0") == ("High", 1) and f("HiSlot7") == ("High", 1)
+    assert f("MedSlot3") == ("Mid", 2)
+    assert f("LoSlot5") == ("Low", 3)
+    assert f("RigSlot2") == ("Rig", 4)
+    assert f("SubSystemSlot1") == ("Subsystem", 5)
+    assert f("DroneBay") == ("Drone bay", 6)
+    assert f("FighterBay")[0] == "Fighter bay"
+    assert f("FighterTube2")[0] == "Fighter tube"
+    assert f("Cargo") == ("Cargo", 8)
+    assert f("FleetHangar")[0] == "Fleet hangar"
+    assert f("ShipHangar")[0] == "Ship hangar"
+    assert f("SubSystemBay")[0] == "Subsystem bay"
+    assert f("HiddenModifiers")[0] == "Hidden"
+    # Specialized holds: derived, so a hold CCP adds later still reads as words.
+    assert f("SpecializedFuelBay") == ("Fuel bay", 12)
+    assert f("SpecializedOreHold") == ("Ore hold", 12)
+    assert f("SomeFutureHold")[1] == 12
+
+
+def test_container_and_hangar_flags_get_no_slot(app_module):
+    """No label → no Slot column, which is how a plain container stays plain."""
+    f = app_module._slot_info
+    for flag in ("Hangar", "AutoFit", "Unlocked", "Locked", "OfficeFolder",
+                 "CorpSAG3", "", None):
+        assert f(flag) == ("", 0), flag
+
+
+def test_fitting_order_is_the_in_game_order(app_module):
+    f = app_module._slot_info
+    order = [f(x)[1] for x in ("HiSlot0", "MedSlot0", "LoSlot0", "RigSlot0",
+                               "SubSystemSlot0", "DroneBay", "Cargo")]
+    assert order == sorted(order), "high → mid → low → rig → subsystem → drones → cargo"
+    # The hull row is added by the fold with order 0, so it sorts above all of them.
+    assert min(order) > 0
+
+
+def test_fitted_and_spare_copies_of_one_module_stay_apart(app_module, client, monkeypatch):
+    """A Tracking Computer II in a mid slot must not merge with a spare in cargo.
+
+    That distinction is the whole point: merged, the row said "x3" and told you
+    nothing about the fit.
+    """
+    import json as j, time as t
+    CHAR, SHIP = 900000002, 555009
+    TC2 = next(iter(app_module.get_conn().execute(
+        "SELECT type_id FROM sde_types WHERE name='Tracking Computer II'").fetchone()))
+    conn = app_module.get_conn()
+    row = conn.execute("SELECT data_json, cached_at FROM char_assets_cache WHERE character_id=?",
+                       (CHAR,)).fetchone()
+    original = (row[0], row[1]) if row else None
+    now = t.time()
+    assets = [
+        {"item_id": SHIP, "type_id": MEGATHRON, "quantity": 1, "location_id": 60003760,
+         "location_flag": "Hangar", "is_singleton": True},
+        {"item_id": 700001, "type_id": TC2, "quantity": 1, "location_id": SHIP,
+         "location_flag": "MedSlot0", "is_singleton": False},
+        {"item_id": 700002, "type_id": TC2, "quantity": 1, "location_id": SHIP,
+         "location_flag": "MedSlot1", "is_singleton": False},
+        {"item_id": 700003, "type_id": TC2, "quantity": 1, "location_id": SHIP,
+         "location_flag": "Cargo", "is_singleton": False},
+    ]
+    conn.execute("DELETE FROM char_assets_cache WHERE character_id=?", (CHAR,))
+    conn.execute("INSERT INTO char_assets_cache (character_id, data_json, cached_at)"
+                 " VALUES (?,?,?)", (CHAR, j.dumps(assets), now))
+    conn.commit(); conn.close()
+
+    async def _fake(char_id, token, container_ids, assets_raw):
+        return {cid: ("Fit Test (Megathron)", 60003760) for cid in container_ids}
+    monkeypatch.setattr(app_module, "_resolve_container_names", _fake)
+    try:
+        html = _text(client, f"/assets?view={CHAR}")
+        # One row for the two fitted, a separate row for the spare.
+        rows = re.findall(r'<tr[^>]*data-slot[^>]*>.*?</tr>', html, re.S)
+        seen = []
+        for r in rows:
+            flat = " ".join(re.sub(r"<[^>]+>", " ", r).split())
+            if "Tracking Computer II" in flat:
+                seen.append(flat)
+        assert len(seen) == 2, seen
+        assert any(" Mid 2 " in s for s in seen), seen      # both fitted, one row
+        assert any(" Cargo 1 " in s for s in seen), seen    # the spare, its own row
+        assert "Hull" in html                                # hull row is labelled
+    finally:
+        conn = app_module.get_conn()
+        conn.execute("DELETE FROM char_assets_cache WHERE character_id=?", (CHAR,))
+        if original:
+            conn.execute("INSERT INTO char_assets_cache (character_id, data_json, cached_at)"
+                         " VALUES (?,?,?)", (CHAR, original[0], original[1]))
+        conn.commit(); conn.close()
+
+
+def test_plain_container_renders_no_slot_column(app_module, client, monkeypatch):
+    """Only ships get the column; a container's contents have no slots."""
+    import json as j, time as t
+    CHAR, BOX = 900000002, 555010
+    conn = app_module.get_conn()
+    row = conn.execute("SELECT data_json, cached_at FROM char_assets_cache WHERE character_id=?",
+                       (CHAR,)).fetchone()
+    original = (row[0], row[1]) if row else None
+    assets = [
+        {"item_id": BOX, "type_id": 3465, "quantity": 1, "location_id": 60003760,
+         "location_flag": "Hangar", "is_singleton": True},          # Small Secure Container
+        {"item_id": 700010, "type_id": TRIT, "quantity": 500, "location_id": BOX,
+         "location_flag": "AutoFit", "is_singleton": False},
+    ]
+    conn.execute("DELETE FROM char_assets_cache WHERE character_id=?", (CHAR,))
+    conn.execute("INSERT INTO char_assets_cache (character_id, data_json, cached_at)"
+                 " VALUES (?,?,?)", (CHAR, j.dumps(assets), t.time()))
+    conn.commit(); conn.close()
+
+    async def _fake(char_id, token, container_ids, assets_raw):
+        return {cid: ("Minerals (Small Secure Container)", 60003760) for cid in container_ids}
+    monkeypatch.setattr(app_module, "_resolve_container_names", _fake)
+    try:
+        html = _text(client, f"/assets?view={CHAR}")
+        assert "Minerals (Small Secure Container)" in html
+        assert ">Slot " not in html and "data-col=\"slot\"" not in html
+    finally:
+        conn = app_module.get_conn()
+        conn.execute("DELETE FROM char_assets_cache WHERE character_id=?", (CHAR,))
+        if original:
+            conn.execute("INSERT INTO char_assets_cache (character_id, data_json, cached_at)"
+                         " VALUES (?,?,?)", (CHAR, original[0], original[1]))
+        conn.commit(); conn.close()

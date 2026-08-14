@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.9.14"
+APP_VERSION = "0.9.15"
 
 import asyncio
 import datetime
@@ -2752,10 +2752,14 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                 # BPC status from the authoritative blueprints endpoint (matched by
                 # item_id), falling back to the asset flag. A BPC has no market price.
                 is_copy = a.is_blueprint_copy or (a.item_id in bpc_item_ids)
-                # Key by (type_id, owner, is_copy) so different chars stay separate
-                # AND a BPO never merges with a BPC of the same type (which would
-                # otherwise price the copy at the original's market value).
-                key = (a.type_id, owner_id, is_copy)
+                # Where it sits inside a ship (empty for hangar rows and plain
+                # containers). Part of the key so the same module fitted in a slot
+                # never merges with spares in cargo — that distinction IS the fit.
+                slot, slot_order = _slot_info(a.location_flag) if cid is not None else ("", 0)
+                # Key by (type_id, owner, is_copy, slot) so different chars stay
+                # separate AND a BPO never merges with a BPC of the same type
+                # (which would otherwise price the copy at the original's value).
+                key = (a.type_id, owner_id, is_copy, slot)
                 if key in bucket:
                     bucket[key]["quantity"] += a.quantity
                 else:
@@ -2767,6 +2771,8 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                         "bp_kind": _bp_kind(a, is_copy),
                         "character_id": owner_id,
                         "character_name": owner_name,
+                        "slot": slot,
+                        "slot_order": slot_order,
                     }
 
         # Pick a primary char_id for legacy container-name lookups
@@ -2855,7 +2861,8 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                 # assets above). Corp blueprints aren't fetched, so the copy flag
                 # here relies on the asset endpoint / any matched char BPC item_id.
                 is_copy = a.is_blueprint_copy or (a.item_id in bpc_item_ids)
-                ckey = (a.type_id, is_copy)
+                slot, slot_order = _slot_info(a.location_flag) if cid is not None else ("", 0)
+                ckey = (a.type_id, is_copy, slot)
                 if ckey in bucket:
                     bucket[ckey]["quantity"] += a.quantity
                 else:
@@ -2867,6 +2874,8 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                         # Corp blueprints aren't fetched, so we can only trust the
                         # (unreliable) copy flag here — badge BPC only, never guess BPO.
                         "bp_kind": "bpc" if is_copy else None,
+                        "slot": slot,
+                        "slot_order": slot_order,
                     }
 
         # ── Prices (shared for both personal and corp) ───────────────────────
@@ -2944,7 +2953,10 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                 )
 
         def _sort_items(bucket: dict) -> list:
-            return sorted(bucket.values(), key=lambda x: x["name"])
+            # Slot order first so a ship reads like the fitting window (hull, high,
+            # mid, low, rigs, drones, cargo); hangar rows all share order 0 and so
+            # stay purely alphabetical.
+            return sorted(bucket.values(), key=lambda x: (x.get("slot_order") or 0, x["name"]))
 
         # Labels first (the search matches against them), then fold the hulls in,
         # then filter — a ship's own label has to exist before it can be matched.
@@ -2963,6 +2975,12 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                 containers.append({
                     "container_id": cid,
                     "name": cname,
+                    # Only a fitted ship has slot labels; a plain container has
+                    # none, so the Slot column is skipped there rather than
+                    # rendering a blank one. The folded hull row does not count —
+                    # every folded container has one.
+                    "has_slots": any(i.get("slot") for i in container_assets
+                                     if not i.get("is_hull")),
                     "type_id": container_type_map.get(cid),
                     "assets": container_assets,
                     "total_value": c_value,
@@ -3023,6 +3041,8 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                 return {
                     "container_id": cid,
                     "name": corp_container_info.get(cid, (f"Container {cid}", sid))[0],
+                    "has_slots": any(i.get("slot") for i in container_assets
+                                     if not i.get("is_hull")),
                     "type_id": corp_container_type_map.get(cid),
                     "assets": container_assets,
                     "total_value": c_value,
@@ -3228,6 +3248,61 @@ async def _resolve_corp_container_names(
     return result
 
 
+# location_flag → (label, sort order). ESI reports where inside a ship each item
+# sits, which is what makes a fit readable: the flag carries the module AND any
+# charge loaded into it (HiSlot0 holds both "Mega Beam Laser II" and the crystal
+# in it). Ordered like the in-game fitting window so the table reads top-down.
+_SLOT_LABELS: dict[str, tuple[str, int]] = {
+    "DroneBay":        ("Drone bay", 6),
+    "FighterBay":      ("Fighter bay", 7),
+    "Cargo":           ("Cargo", 8),
+    "FleetHangar":     ("Fleet hangar", 9),
+    "ShipHangar":      ("Ship hangar", 10),
+    "SubSystemBay":    ("Subsystem bay", 11),
+    "HiddenModifiers": ("Hidden", 13),
+}
+for _i in range(8):
+    _SLOT_LABELS[f"HiSlot{_i}"]         = ("High", 1)
+    _SLOT_LABELS[f"MedSlot{_i}"]        = ("Mid", 2)
+    _SLOT_LABELS[f"LoSlot{_i}"]         = ("Low", 3)
+    _SLOT_LABELS[f"RigSlot{_i}"]        = ("Rig", 4)
+    _SLOT_LABELS[f"SubSystemSlot{_i}"]  = ("Subsystem", 5)
+    _SLOT_LABELS[f"FighterTube{_i}"]    = ("Fighter tube", 7)
+
+# Flags that describe a spot in a plain container or hangar, not a ship slot —
+# these rows get no slot label, which is also how a container is told apart from
+# a fitted ship (no labels anywhere → no Slot column).
+_NON_SLOT_FLAGS: frozenset[str] = frozenset({
+    "Hangar", "AutoFit", "Unlocked", "Locked", "Impounded",
+    "Deliveries", "CorpDeliveries", "OfficeFolder", "Wardrobe",
+})
+
+
+def _slot_info(location_flag: str) -> tuple[str, int]:
+    """Return (label, order) for an item's location_flag inside a ship."""
+    flag = (location_flag or "").strip()
+    if not flag or flag in _NON_SLOT_FLAGS or flag.startswith("CorpSAG"):
+        return "", 0
+    hit = _SLOT_LABELS.get(flag)
+    if hit:
+        return hit
+    # Unknown flag — most likely a specialized hold (SpecializedFuelBay,
+    # SpecializedOreHold, …) or one CCP added since. Split the CamelCase so it
+    # reads as words instead of leaking the raw ESI token, and drop the
+    # "Specialized" prefix, which says nothing to the reader.
+    body = flag[len("Specialized"):] if flag.startswith("Specialized") else flag
+    words: list[str] = []
+    for ch in body:
+        if ch.isupper() and words and words[-1]:
+            words.append(ch)
+        elif not words:
+            words.append(ch)
+        else:
+            words[-1] += ch
+    label = " ".join(w for w in words if w) or flag
+    return label[:1].upper() + label[1:].lower(), 12
+
+
 def _container_display_name(custom_name: str, type_name: str, container_id: int) -> str:
     """Label for a container or an assembled ship: "custom name (Type)".
 
@@ -3322,6 +3397,13 @@ def _fold_ship_hulls(
             "is_blueprint_copy": False,
             "unit_price": unit_p,
             "total_value": unit_p,   # hull = 1 unit
+            # Sorts above every slot, so the ship table reads hull → fit → cargo.
+            "slot": "Hull",
+            "slot_order": 0,
+            # The fold applies to any container whose own type sits in the hangar,
+            # not just ships, so this row alone must not switch the Slot column on
+            # for a plain box — see has_slots below.
+            "is_hull": True,
         }
         if owner_map is not None:
             hull["character_id"] = owner_id
