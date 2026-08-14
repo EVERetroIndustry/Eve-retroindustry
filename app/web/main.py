@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.9.8"
+APP_VERSION = "0.9.9"
 
 import asyncio
 import datetime
@@ -6376,7 +6376,11 @@ async def api_version_check():
     if _VERSION_CACHE and (now - _VERSION_CACHE_TS) < _VERSION_CACHE_TTL:
         return _VERSION_CACHE
     try:
-        async with esi_client(timeout=10) as client:
+        # follow_redirects matters: if the repository is ever renamed or moved to an
+        # organisation, GitHub answers the old path with a 301, and httpx does not
+        # follow redirects by default — raise_for_status() would then fail and the
+        # update check would break for every already-installed copy.
+        async with esi_client(timeout=10, follow_redirects=True) as client:
             r = await client.get(
                 f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest",
                 headers={"Accept": "application/vnd.github+json", "User-Agent": "EVE-Retroindustry"},
