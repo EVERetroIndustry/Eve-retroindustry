@@ -41,14 +41,31 @@ jobs:
           & "./dist/EVE_Retroindustry/EVE_Retroindustry.exe" --smoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Create ZIP
+      - name: Create ZIP (portable)
         shell: pwsh
         run: Compress-Archive -Path dist/EVE_Retroindustry -DestinationPath EVE_Retroindustry-${{ github.ref_name }}-win64.zip
+
+      # Inno Setup is not pre-installed on the windows-2025 runner image, so pull
+      # it in. This only affects the machine that COMPILES the installer — the
+      # resulting setup.exe runs on any supported Windows.
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}".TrimStart('v')
+          & "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe" /DAppVersion=$ver installer\eve_retroindustry.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem installer\*setup.exe | ForEach-Object { Write-Host "built: $($_.Name) ($([math]::Round($_.Length/1MB,1)) MB)" }
 
       - uses: actions/upload-artifact@v4
         with:
           name: win64
-          path: EVE_Retroindustry-${{ github.ref_name }}-win64.zip
+          path: |
+            EVE_Retroindustry-${{ github.ref_name }}-win64.zip
+            installer/EVE_Retroindustry-*-setup.exe
 
   build-linux:
     needs: test
@@ -217,6 +234,10 @@ jobs:
 
   release:
     needs: [build-windows, build-linux, build-android]
+    # Tag pushes only. A manual workflow_dispatch run is for verifying that the
+    # builds (and the installer) compile — without it this job would try to create
+    # a release named after the branch.
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -236,12 +257,14 @@ jobs:
             --title "EVE Retroindustry ${{ github.ref_name }}" \
             --generate-notes \
             artifacts/*.zip \
+            artifacts/*setup.exe \
             artifacts/*.AppImage \
             artifacts/EveRetroindustry.apk \
             artifacts/version.json \
             sde_base.db \
           || gh release upload ${{ github.ref_name }} \
             artifacts/*.zip \
+            artifacts/*setup.exe \
             artifacts/*.AppImage \
             artifacts/EveRetroindustry.apk \
             artifacts/version.json \

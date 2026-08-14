@@ -6363,6 +6363,12 @@ def _install_dir() -> Path:
     return Path(os.environ.get("EVE_INSTALL_DIR") or os.path.dirname(_sys.executable))
 
 
+# Uninstall registry key written by the Inno Setup installer (AppId + Inno's "_is1"
+# suffix). Per-user install → HKCU. Only ever updated, never created (see below).
+_UNINSTALL_KEY = (r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall"
+                  r"\{7F3A9C42-5D18-4B6E-9E2A-1C8B0F4D7A63}_is1")
+
+
 @app.get("/api/version/check")
 async def api_version_check():
     global _VERSION_CACHE, _VERSION_CACHE_TS
@@ -6479,6 +6485,14 @@ async def api_version_download(url: str):
                     'taskkill /F /IM EVE_Retroindustry.exe >nul 2>&1\r\n'
                     'timeout /t 1 /nobreak >nul\r\n'
                     f'robocopy "{inner_dir}" "{app_dir}" /E /R:15 /W:1 /NFL /NDL /NJH /NJS /NC /NP >nul\r\n'
+                    # If this copy was installed by the Inno Setup installer, keep
+                    # the Apps & features entry honest — a self-update would
+                    # otherwise leave it showing the version we just replaced. The
+                    # `reg query` guard matters: without it, `reg add` would create
+                    # the key and give portable (ZIP) users a bogus uninstall entry.
+                    f'reg query "{_UNINSTALL_KEY}" >nul 2>&1 && '
+                    f'reg add "{_UNINSTALL_KEY}" /v DisplayVersion /t REG_SZ '
+                    f'/d {latest_tag} /f >nul 2>&1\r\n'
                     f'rmdir /S /Q "{staging}" >nul 2>&1\r\n'
                     f'start "" "{app_dir}\\EVE_Retroindustry.exe"\r\n'
                     'del "%~f0"\r\n',
