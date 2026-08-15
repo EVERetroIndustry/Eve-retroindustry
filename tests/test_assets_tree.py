@@ -447,3 +447,17 @@ def test_sections_are_dropped_when_the_rows_leave_fitting_order(app_module, clie
     assert "b.style.display = 'none'" in html
     # And the sort itself must skip the bands rather than sorting them as data.
     assert "tbody.querySelectorAll('tr[data-name]')" in html
+
+
+def test_dashboard_ship_label_uses_the_same_convention(app_module):
+    """The dashboard's "in which ship" label reuses the Assets rule on purpose.
+
+    ESI's ship_name is whatever the pilot renamed the hull to, so on its own
+    ("Hulk1", "Rorq") it does not say what is actually out there.
+    """
+    f = app_module._container_display_name
+    assert f("Hulk1", "Hulk", 1) == "Hulk1 (Hulk)"
+    assert f("Rorq", "Rorqual", 1) == "Rorq (Rorqual)"
+    # Never renamed → ESI sends the literal "None"; show the bare hull.
+    assert f("None", "Megathron", 1) == "Megathron"
+    assert f("", "Megathron", 1) == "Megathron"

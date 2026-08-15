@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.9.18"
+APP_VERSION = "0.9.19"
 
 import asyncio
 import datetime
@@ -15,7 +15,10 @@ import zipfile as _zipfile
 from pathlib import Path
 
 import httpx
-from app.esi.client import esi_client, esi_error_message
+from app.esi.client import (
+    esi_client, esi_error_message,
+    set_market_token_provider as _esi_set_market_token_provider,
+)
 from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
@@ -97,6 +100,7 @@ from app.character.skills import (
     fetch_skills,
     fetch_skill_queue,
     fetch_location,
+    fetch_ship,
     get_cached_skills,
     get_mfg_skill_ids,
 )
@@ -724,6 +728,39 @@ def get_token_for(character_id: int, conn: sqlite3.Connection | None = None) -> 
     finally:
         if own_conn:
             conn.close()
+
+
+def _market_bucket_token() -> str | None:
+    """Any valid token, used only to isolate our ESI market rate-limit bucket.
+
+    Public market routes are bucketed by <sourceIP>, shared with every other EVE
+    tool on the machine; sending a token makes it <sourceIP>:<applicationID>, so
+    the budget is ours alone. It grants no extra budget and no extra access —
+    which character it belongs to is irrelevant, hence "first one that works".
+    A refresh must never be triggered from here (that would put an OAuth call on
+    the market hot path), so only already-valid tokens count.
+    """
+    try:
+        conn = get_conn()
+    except Exception:
+        return None
+    try:
+        for cid, _name in list_characters(conn):
+            try:
+                token = _get_valid_token_for(conn, cid)
+            except Exception:
+                continue
+            if token:
+                return token
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+_esi_set_market_token_provider(_market_bucket_token)
 
 
 def _science_skill_mult(
@@ -1408,7 +1445,7 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
     # Current location + skill training (live only, concurrently for all chars).
     import datetime as _dt
     _now_utc = _dt.datetime.now(_dt.timezone.utc)
-    loc_sq: dict[int, tuple] = {cid: ({}, []) for cid, _ in chars}
+    loc_sq: dict[int, tuple] = {cid: ({}, [], {}) for cid, _ in chars}
     dock_names: dict[int, str] = {}
     sys_names: dict[int, str] = {}
     skill_names: dict[int, str] = {}
@@ -1418,16 +1455,21 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
         async def _fetch_loc_sq(cid: int):
             tok = tokens.get(cid)
             if not tok:
-                return {}, []
+                return {}, [], {}
             async with esi_client() as client:
+                # The ship is fetched for everyone rather than only after seeing
+                # "undocked", which would need a second round trip. It is one
+                # extra call per character into the char-location group (600
+                # requests per 15 min, per character), so the cost is noise.
                 return await asyncio.gather(
                     fetch_location(client, cid, tok),
                     fetch_skill_queue(client, cid, tok),
+                    fetch_ship(client, cid, tok),
                 )
 
         _loc_res = await asyncio.gather(*[_fetch_loc_sq(c) for c in _char_ids], return_exceptions=True)
         loc_sq = {
-            c: (r if isinstance(r, (list, tuple)) and len(r) == 2 else ({}, []))
+            c: (r if isinstance(r, (list, tuple)) and len(r) == 3 else ({}, [], {}))
             for c, r in zip(_char_ids, _loc_res)
         }
 
@@ -1444,7 +1486,7 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
         _sys_ids: set[int] = set()
         _skill_ids: set[int] = set()
         for _cid in _char_ids:
-            _loc, _sq = loc_sq.get(_cid, ({}, []))
+            _loc, _sq, _ship = loc_sq.get(_cid, ({}, [], {}))
             if _loc.get("station_id"):
                 _dock_ids.add(_loc["station_id"])
             if _loc.get("structure_id"):
@@ -1510,7 +1552,7 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
         corp_id = char_row.get("corporation_id")
 
         # Location: docked station/structure, or system + "undocked".
-        _loc, _sq = loc_sq.get(cid, ({}, []))
+        _loc, _sq, _ship = loc_sq.get(cid, ({}, [], {}))
         location_name = None
         location_state = None
         if _loc.get("station_id"):
@@ -1522,6 +1564,22 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
         elif _loc.get("solar_system_id"):
             location_name = sys_names.get(_loc["solar_system_id"]) or f"#{_loc['solar_system_id']}"
             location_state = "undocked"
+
+        # Which hull the pilot is flying, labelled exactly like an assembled ship
+        # in Assets: "custom name (Type)". ESI's ship_name is whatever they
+        # renamed it to, so on its own it can be anything ("Hulk1", "Rorq") and
+        # would not say what is actually out there.
+        ship_label = None
+        _ship_type = _ship.get("ship_type_id")
+        if _ship_type:
+            _ship_type_name = conn.execute(
+                "SELECT name FROM sde_types WHERE type_id=?", (_ship_type,)
+            ).fetchone()
+            ship_label = _container_display_name(
+                _ship.get("ship_name") or "",
+                _ship_type_name[0] if _ship_type_name else "",
+                _ship.get("ship_item_id") or 0,
+            )
 
         # Active training: the first queue entry still training (finish_date in
         # the FUTURE). ESI keeps already-completed skills in the queue at
@@ -1578,6 +1636,7 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
             "is_active":   cid == active_char_id,
             "location_name":  location_name,
             "location_state": location_state,
+            "ship_label":     ship_label,
             "training":       training,
             "needs_relogin":  is_refresh_invalid(cid),
         })
@@ -1644,6 +1703,7 @@ async def api_dashboard_live(request: Request):
             "has_worth":       c["net_worth"] is not None or c["asset_value"] is not None,
             "location_name":   c["location_name"],
             "location_state":  c["location_state"],
+            "ship_label":      c.get("ship_label"),
             "training":        c["training"],
             "needs_relogin":   c["needs_relogin"],
         }

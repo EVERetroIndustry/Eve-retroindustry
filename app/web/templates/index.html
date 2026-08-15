@@ -189,8 +189,16 @@
     let h = `<i class="bi bi-geo-alt ${icon}" style="flex-shrink:0"></i>`;
     if (c && c.location_name) {
       h += `<span class="text-truncate">${esc(c.location_name)}</span>`;
-      if (st === 'undocked')
-        h += `<span class="badge bg-warning text-dark ms-auto" style="font-size:.58rem;flex-shrink:0">UNDOCKED</span>`;
+      if (st === 'undocked') {
+        // Which hull they are out in, sitting just left of the badge. Same
+        // "custom name (Type)" label as an assembled ship in Assets — the custom
+        // name alone ("Hulk1", "Rorq") does not say what is actually in space.
+        if (c.ship_label)
+          h += `<span class="text-muted ms-auto text-truncate" style="font-size:.68rem"
+                      title="Current ship">${esc(c.ship_label)}</span>`;
+        h += `<span class="badge bg-warning text-dark ${c.ship_label ? 'ms-2' : 'ms-auto'}"
+                    style="font-size:.58rem;flex-shrink:0">UNDOCKED</span>`;
+      }
     } else {
       h += `<span class="text-muted">Location unknown</span>`;
     }

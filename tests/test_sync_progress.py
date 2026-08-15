@@ -95,3 +95,14 @@ def test_loading_page_has_a_real_bar_and_no_canned_messages(client):
     assert "const msgs" not in html
     assert "syncAttempts" not in html
     assert "d.step" in html and "d.pct" in html
+
+
+def test_dashboard_shows_the_ship_next_to_the_undocked_badge(client):
+    """Reported: undocked shows the system, but not which hull is out there."""
+    html = client.get("/").text
+    assert "c.ship_label" in html
+    # Escaped like every other injected value on that card.
+    assert "esc(c.ship_label)" in html
+    # Only while undocked, and left of the badge (the badge loses ms-auto to it).
+    assert "st === 'undocked'" in html
+    assert "c.ship_label ? 'ms-2' : 'ms-auto'" in html

@@ -61,6 +61,91 @@ class _ErrorLimitGovernor:
 _ERROR_LIMIT = _ErrorLimitGovernor()
 
 
+# --- ESI token-bucket rate limiter (the newer, per-group one) -----------------
+# Alongside the old error limit, ESI now meters *successful* traffic with a token
+# bucket and answers 429 + Retry-After when a bucket runs dry. Two properties
+# shape this code:
+#
+#   * The bucket is per RATE LIMIT GROUP, not per client. Pausing everything on a
+#     429 — the way the error limit governor has to — would let a drained market
+#     bucket stop unrelated wallet or asset calls. So state is kept per group.
+#   * A request does not say which group it belongs to; only the response does,
+#     via X-Ratelimit-Group. We therefore learn the mapping from responses, keyed
+#     by the URL path with its numeric segments collapsed, so
+#     /markets/10000002/orders/ and /markets/10000043/orders/ share one entry.
+#
+# Costs (per CCP's docs): 2xx = 2 tokens, 3xx = 1, 4xx = 5, 5xx = 0, and a 429
+# itself is free — so being throttled does not dig the hole deeper.
+class _TokenBucketGovernor:
+    # Below this share of the bucket, pause the group briefly between bursts.
+    # The real protection is the 429 path; this only keeps us off the cliff, as
+    # CCP's "Best Practices" ask ("Don't operate at the limit").
+    _LOW_WATER = 0.10
+    _BRAKE_SECONDS = 2.0
+
+    def __init__(self) -> None:
+        self._pause_until: dict[str, float] = {}   # group -> monotonic deadline
+        self._group_of: dict[str, str] = {}        # path signature -> group
+
+    @staticmethod
+    def signature(url: httpx.URL) -> str:
+        """Path with numeric segments collapsed, so all regions share a bucket key."""
+        parts = ("{}" if seg.isdigit() else seg for seg in url.path.split("/"))
+        return "/".join(parts)
+
+    async def wait(self, sig: str) -> None:
+        group = self._group_of.get(sig)
+        if group is None:
+            return
+        while True:
+            delay = self._pause_until.get(group, 0.0) - time.monotonic()
+            if delay <= 0:
+                return
+            await asyncio.sleep(min(delay, 2.0))
+
+    def observe(self, sig: str, response: httpx.Response) -> None:
+        group = response.headers.get("x-ratelimit-group")
+        if not group:
+            return
+        self._group_of[sig] = group
+        remaining = _int_header(response, "x-ratelimit-remaining")
+        limit = _limit_header_total(response.headers.get("x-ratelimit-limit"))
+        if remaining is not None and limit and remaining <= limit * self._LOW_WATER:
+            self._pause_until[group] = max(
+                self._pause_until.get(group, 0.0), time.monotonic() + self._BRAKE_SECONDS
+            )
+
+    def blocked(self, sig: str, response: httpx.Response) -> float:
+        """Record a 429 and return how long to wait."""
+        # Some 429s come from a limiter deep in the game servers and carry no
+        # rate-limit headers at all — CCP's docs say so explicitly — hence the
+        # fallback group key and default delay.
+        group = response.headers.get("x-ratelimit-group") or self._group_of.get(sig) or sig
+        self._group_of[sig] = group
+        try:
+            delay = float(response.headers.get("retry-after", ""))
+        except ValueError:
+            delay = 60.0
+        delay = max(1.0, min(delay, 300.0))
+        self._pause_until[group] = max(
+            self._pause_until.get(group, 0.0), time.monotonic() + delay
+        )
+        return delay
+
+
+_TOKEN_LIMIT = _TokenBucketGovernor()
+
+
+def _limit_header_total(value: Optional[str]) -> Optional[int]:
+    """X-Ratelimit-Limit is "<tokens>/<window>", e.g. "12000/15m" — take the tokens."""
+    if not value:
+        return None
+    try:
+        return int(value.split("/", 1)[0])
+    except (ValueError, AttributeError):
+        return None
+
+
 def _int_header(response: httpx.Response, name: str) -> Optional[int]:
     try:
         return int(response.headers[name])
@@ -68,20 +153,79 @@ def _int_header(response: httpx.Response, name: str) -> Optional[int]:
         return None
 
 
+# --- market bucket isolation --------------------------------------------------
+# Public routes are bucketed by <sourceIP>, which a desktop user shares with every
+# other EVE tool on the machine (and, behind CGNAT, with strangers). Supplying an
+# access token moves us to <sourceIP>:<applicationID> — the same size bucket, but
+# ours alone. It does NOT multiply the budget: per CCP's docs only *authenticated
+# routes* key on characterID, so rotating characters buys nothing here.
+_market_token_provider: Optional[object] = None
+_market_token_disabled_until = 0.0
+
+
+def set_market_token_provider(fn) -> None:
+    """Register a callable returning a valid access token, or None.
+
+    Optional: without it market calls stay unauthenticated and simply share the
+    per-IP bucket, exactly as before.
+    """
+    global _market_token_provider
+    _market_token_provider = fn
+
+
+def _market_auth_header(request: httpx.Request) -> Optional[str]:
+    """Token to isolate the bucket for a public market call, or None."""
+    if _market_token_provider is None or time.monotonic() < _market_token_disabled_until:
+        return None
+    if "/markets/" not in request.url.path or "authorization" in request.headers:
+        return None
+    try:
+        token = _market_token_provider()
+    except Exception:
+        return None
+    return f"Bearer {token}" if token else None
+
+
 class _GovernedTransport(httpx.AsyncHTTPTransport):
-    """Wraps the default async transport with the ESI error-limit governor.
+    """Wraps the default async transport with both ESI rate-limit governors.
+
     Only ESI hosts are governed; GitHub/image/Fuzzwork traffic passes straight
-    through. On a 420 the request is retried a few times, waiting out each
-    reset window, before finally surfacing the 420 to the caller."""
+    through. A 420 (old error limit, client-wide) pauses all ESI traffic; a 429
+    (token bucket, per group) pauses only that group. Both are retried a few
+    times before the status is finally handed back so raise_for_status fires.
+    """
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        global _market_token_disabled_until
         if request.url.host != ESI_HOST:
             return await super().handle_async_request(request)
+
+        sig = _TokenBucketGovernor.signature(request.url)
+        added_auth = False
+        auth = _market_auth_header(request)
+        if auth:
+            request.headers["Authorization"] = auth
+            added_auth = True
 
         last: Optional[httpx.Response] = None
         for attempt in range(4):
             await _ERROR_LIMIT.wait()
+            await _TOKEN_LIMIT.wait(sig)
             response = await super().handle_async_request(request)
+
+            # A stale or wrong token must never break a call that would have
+            # worked unauthenticated — drop the header, stop using it for a
+            # while, and retry as an anonymous request.
+            if added_auth and response.status_code in (401, 403):
+                await response.aread()
+                await response.aclose()
+                del request.headers["Authorization"]
+                added_auth = False
+                _market_token_disabled_until = time.monotonic() + 600
+                print("[esi] market token rejected — falling back to unauthenticated "
+                      "market calls for 10 minutes", flush=True)
+                continue
+
             reset = _int_header(response, "x-esi-error-limit-reset")
             if response.status_code == 420:
                 _ERROR_LIMIT.blocked(reset)
@@ -90,9 +234,18 @@ class _GovernedTransport(httpx.AsyncHTTPTransport):
                 await response.aclose()
                 last = response
                 continue
+            if response.status_code == 429:
+                delay = _TOKEN_LIMIT.blocked(sig, response)
+                await response.aread()
+                await response.aclose()
+                last = response
+                print(f"[esi] 429 on {sig} — waiting {delay:.0f}s", flush=True)
+                continue
+
             _ERROR_LIMIT.observe(_int_header(response, "x-esi-error-limit-remain"), reset)
+            _TOKEN_LIMIT.observe(sig, response)
             return response
-        return last  # exhausted retries — hand the 420 back so raise_for_status fires
+        return last  # exhausted retries — hand it back so raise_for_status fires
 
 
 def esi_client(**kwargs) -> httpx.AsyncClient:
@@ -116,7 +269,7 @@ def esi_error_message(exc: BaseException) -> Optional[str]:
     'Client error 420 ... developer.mozilla.org' text in the UI."""
     if isinstance(exc, httpx.HTTPStatusError):
         code = exc.response.status_code
-        if code == 420:
+        if code in (420, 429):
             return ("EVE's ESI API is rate-limiting this app right now "
                     "(too many requests in a short window). Wait a minute and try again.")
         if code in (502, 503, 504):

@@ -56,6 +56,27 @@ async def fetch_location(client: httpx.AsyncClient, character_id: int, access_to
     return {}
 
 
+async def fetch_ship(client: httpx.AsyncClient, character_id: int, access_token: str) -> dict:
+    """The character's current ship: {ship_item_id, ship_name, ship_type_id}.
+
+    ship_name is what the pilot renamed the hull to, so it needs the type from the
+    SDE beside it to mean anything. Empty dict on error. Scope
+    esi-location.read_ship_type.v1 (already in SCOPES, so no re-login).
+    """
+    try:
+        r = await client.get(
+            f"{ESI_BASE}/characters/{character_id}/ship/",
+            params={"datasource": "tranquility"},
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            timeout=10,
+        )
+        if r.status_code == 200 and isinstance(r.json(), dict):
+            return r.json()
+    except Exception:
+        pass
+    return {}
+
+
 def get_mfg_skill_ids(conn: sqlite3.Connection) -> set[int]:
     """Returns the set of type_ids of all skills relevant to manufacturing (science + Industry/AdvIndustry)."""
     try:
