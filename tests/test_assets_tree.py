@@ -461,3 +461,113 @@ def test_dashboard_ship_label_uses_the_same_convention(app_module):
     # Never renamed → ESI sends the literal "None"; show the bare hull.
     assert f("None", "Megathron", 1) == "Megathron"
     assert f("", "Megathron", 1) == "Megathron"
+
+
+# ── "All characters" view ─────────────────────────────────────────────────────
+
+def test_resolver_asks_only_about_ids_the_character_owns(app_module):
+    """Reported: in the All-characters view no assembled ship showed its name.
+
+    The caller hands the resolver every container id found across the account. It
+    used to POST that whole list to each character's /assets/names/, so each call
+    carried other pilots' item_ids. Whatever ESI makes of those, a failed batch
+    costs the custom name of every container in it — and every assembled ship then
+    falls back to its bare hull type, which is what was seen.
+    """
+    import asyncio, json as _j
+
+    posted: list[list[int]] = []
+
+    class _Resp:
+        status_code = 200
+        def json(self): return [{"item_id": 111, "name": "Mine"}]
+
+    class _Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, **kw):
+            posted.append(_j.loads(kw["content"]))
+            return _Resp()
+
+    from app.web import main as m
+    orig = m.esi_client
+    m.esi_client = lambda *a, **k: _Client()
+    try:
+        mine = [{"item_id": 111, "type_id": MEGATHRON, "location_id": 60003760}]
+        got = asyncio.run(m._resolve_container_names(
+            1, "tok", [111, 222, 333], assets=mine))          # 222/333 belong to others
+    finally:
+        m.esi_client = orig
+
+    assert posted == [[111]], posted            # only our own id went out
+    assert got == {111: ("Mine (Megathron)", 60003760)}
+
+
+def test_resolver_skips_esi_entirely_when_it_owns_nothing(app_module):
+    """A character with none of the requested containers must not be asked at all."""
+    import asyncio
+
+    called = []
+
+    class _Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **k): called.append(1); raise AssertionError("should not post")
+
+    from app.web import main as m
+    orig = m.esi_client
+    m.esi_client = lambda *a, **k: _Client()
+    try:
+        got = asyncio.run(m._resolve_container_names(1, "tok", [111, 222], assets=[]))
+        assert got == {} and not called
+    finally:
+        m.esi_client = orig
+
+
+def test_all_characters_view_shows_every_pilots_ship_name(app_module, client, monkeypatch):
+    """The caller merges per-character results; each pilot's ship must keep its name."""
+    import json as _j, time as _t
+
+    CHARS = {900000001: (830001, "Alpha Ship"), 900000002: (830002, "Beta Ship")}
+    conn = app_module.get_conn()
+    saved = {}
+    for cid, (ship_id, _n) in CHARS.items():
+        row = conn.execute("SELECT data_json, cached_at FROM char_assets_cache"
+                           " WHERE character_id=?", (cid,)).fetchone()
+        saved[cid] = (row[0], row[1]) if row else None
+        conn.execute("DELETE FROM char_assets_cache WHERE character_id=?", (cid,))
+        conn.execute("INSERT INTO char_assets_cache (character_id, data_json, cached_at)"
+                     " VALUES (?,?,?)", (cid, _j.dumps([
+                         {"item_id": ship_id, "type_id": MEGATHRON, "quantity": 1,
+                          "location_id": 60003760, "location_flag": "Hangar",
+                          "is_singleton": True},
+                         {"item_id": ship_id + 500, "type_id": TRIT, "quantity": 5,
+                          "location_id": ship_id, "location_flag": "Cargo",
+                          "is_singleton": False},
+                     ]), _t.time()))
+    conn.commit(); conn.close()
+
+    owned = {cid: ship for cid, (ship, _n) in CHARS.items()}
+    names = {ship: nm for _c, (ship, nm) in CHARS.items()}
+
+    async def _fake(char_id, token, container_ids, assets_raw):
+        # Mirrors the real resolver: a character only answers for its own items.
+        mine = owned.get(char_id)
+        if mine is None or mine not in container_ids:
+            return {}
+        return {mine: (app_module._container_display_name(names[mine], "Megathron", mine),
+                       60003760)}
+
+    monkeypatch.setattr(app_module, "_resolve_container_names", _fake)
+    try:
+        html = _text(client, "/assets?view=all")
+        assert "Alpha Ship (Megathron)" in html
+        assert "Beta Ship (Megathron)" in html
+    finally:
+        conn = app_module.get_conn()
+        for cid, orig in saved.items():
+            conn.execute("DELETE FROM char_assets_cache WHERE character_id=?", (cid,))
+            if orig:
+                conn.execute("INSERT INTO char_assets_cache (character_id, data_json, cached_at)"
+                             " VALUES (?,?,?)", (cid, orig[0], orig[1]))
+        conn.commit(); conn.close()

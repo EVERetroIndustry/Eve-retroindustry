@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.9.20"
+APP_VERSION = "0.9.21"
 
 import asyncio
 import datetime
@@ -3354,7 +3354,7 @@ async def _resolve_corp_container_names(
                 f"https://esi.evetech.net/latest/corporations/{corp_id}/assets/names/",
                 params={"datasource": "tranquility"},
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                content=json.dumps(container_ids),
+                content=json.dumps(owned_ids),
                 timeout=10,
             )
             custom_names = {e["item_id"]: e["name"] for e in r.json()} if r.status_code == 200 else {}
@@ -3592,8 +3592,15 @@ async def _resolve_container_names(
     asset_map = {item["item_id"]: item for item in assets}
     result: dict[int, tuple[str, int]] = {}
 
-    parent_ids = {asset_map[cid]["location_id"] for cid in container_ids if cid in asset_map}
-    _ = parent_ids  # parent IDs are resolved separately via resolve_station_names_bulk
+    # Ask this character only about items they actually own. In the "All
+    # characters" view the caller passes every container id it found across the
+    # whole account, and posting another pilot's item_ids to this endpoint made
+    # the call fail for the whole batch — so nobody got a custom name and every
+    # assembled ship fell back to its bare hull type. Filtering also keeps the
+    # request small instead of sending the same ids once per character.
+    owned_ids = [cid for cid in container_ids if cid in asset_map]
+    if not owned_ids:
+        return result
 
     try:
         async with esi_client() as client:
@@ -3601,7 +3608,7 @@ async def _resolve_container_names(
                 f"https://esi.evetech.net/latest/characters/{char_id}/assets/names/",
                 params={"datasource": "tranquility"},
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                content=json.dumps(container_ids),
+                content=json.dumps(owned_ids),
                 timeout=10,
             )
             custom_names = {e["item_id"]: e["name"] for e in r.json()} if r.status_code == 200 else {}
