@@ -223,3 +223,77 @@ def test_error_message_covers_both_limiters(app_module):
     for code in (420, 429):
         exc = httpx.HTTPStatusError("x", request=None, response=_resp(code))
         assert "rate-limiting" in (esi.esi_error_message(exc) or "")
+
+
+# ── the market-token provider must never block the event loop ─────────────────
+
+def test_market_token_provider_never_triggers_an_oauth_refresh(app_module, monkeypatch):
+    """It runs inside the async transport, so a blocking call freezes the server.
+
+    get_valid_token() does a synchronous httpx.post to the SSO endpoint with a
+    15 s timeout, behind a per-character lock, whenever the access token has
+    expired — and EVE access tokens last about 20 minutes. Calling it from the
+    transport stalled every request in the process, the dashboard included, for
+    the length of that round trip. The provider therefore reads a stored, still
+    valid token and nothing else.
+    """
+    import app.auth.token_store as ts
+
+    def _boom(*a, **k):
+        raise AssertionError("provider must not call get_valid_token")
+
+    monkeypatch.setattr(ts, "get_valid_token", _boom)
+    monkeypatch.setattr(app_module, "_get_valid_token_for", _boom)
+    monkeypatch.setattr(ts.httpx, "post", _boom)      # nor any HTTP of its own
+
+    app_module._market_token_cache.update({"token": None, "until": 0.0})
+    app_module._market_bucket_token()                  # must not raise
+
+
+def test_market_token_provider_ignores_expired_tokens(app_module):
+    """An expired access token is worse than none: ESI would 401 the market call."""
+    import time as _t
+
+    conn = app_module.get_conn()
+    saved = conn.execute("SELECT character_id, access_token, token_expires_at"
+                         " FROM characters").fetchall()
+    try:
+        conn.execute("UPDATE characters SET access_token='stale', token_expires_at=?",
+                     (_t.time() - 60,))
+        conn.commit(); conn.close()
+        app_module._market_token_cache.update({"token": None, "until": 0.0})
+        assert app_module._market_bucket_token() is None
+
+        conn = app_module.get_conn()
+        conn.execute("UPDATE characters SET access_token='fresh', token_expires_at=?",
+                     (_t.time() + 3600,))
+        conn.commit(); conn.close()
+        app_module._market_token_cache.update({"token": None, "until": 0.0})
+        assert app_module._market_bucket_token() == "fresh"
+    finally:
+        conn = app_module.get_conn()
+        for cid, tok, exp in saved:
+            conn.execute("UPDATE characters SET access_token=?, token_expires_at=?"
+                         " WHERE character_id=?", (tok, exp, cid))
+        conn.commit(); conn.close()
+        app_module._market_token_cache.update({"token": None, "until": 0.0})
+
+
+def test_market_token_provider_is_cached(app_module):
+    """A burst of market pages must cost one query, not one per request."""
+    calls = []
+    real_get_conn = app_module.get_conn
+
+    def counting():
+        calls.append(1)
+        return real_get_conn()
+
+    app_module._market_token_cache.update({"token": None, "until": 0.0})
+    app_module.get_conn = counting
+    try:
+        for _ in range(50):
+            app_module._market_bucket_token()
+    finally:
+        app_module.get_conn = real_get_conn
+        app_module._market_token_cache.update({"token": None, "until": 0.0})
+    assert len(calls) == 1, calls

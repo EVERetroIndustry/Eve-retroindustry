@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.9.21"
+APP_VERSION = "0.9.22"
 
 import asyncio
 import datetime
@@ -730,34 +730,47 @@ def get_token_for(character_id: int, conn: sqlite3.Connection | None = None) -> 
             conn.close()
 
 
+_market_token_cache: dict = {"token": None, "until": 0.0}
+
+
 def _market_bucket_token() -> str | None:
-    """Any valid token, used only to isolate our ESI market rate-limit bucket.
+    """An already-valid access token, used only to isolate our market bucket.
 
     Public market routes are bucketed by <sourceIP>, shared with every other EVE
     tool on the machine; sending a token makes it <sourceIP>:<applicationID>, so
-    the budget is ours alone. It grants no extra budget and no extra access —
-    which character it belongs to is irrelevant, hence "first one that works".
-    A refresh must never be triggered from here (that would put an OAuth call on
-    the market hot path), so only already-valid tokens count.
+    the budget is ours alone. It grants no extra budget and no extra access, so
+    which character it belongs to is irrelevant.
+
+    This runs INSIDE the async transport, on the event loop, so it must never
+    block. It therefore reads a stored token straight from the table and never
+    calls get_valid_token(), which performs a synchronous OAuth refresh when the
+    token has expired — doing that here stalled the whole server, dashboard
+    included, for the length of a round trip to the SSO endpoint. (The codebase
+    already had _valid_token_async for exactly this reason.) The result is cached
+    briefly so a burst of market pages costs one query, not one per request.
     """
+    now = _time.time()
+    if now < _market_token_cache["until"]:
+        return _market_token_cache["token"]
+    token: str | None = None
     try:
         conn = get_conn()
-    except Exception:
-        return None
-    try:
-        for cid, _name in list_characters(conn):
-            try:
-                token = _get_valid_token_for(conn, cid)
-            except Exception:
-                continue
-            if token:
-                return token
-        return None
-    finally:
         try:
+            row = conn.execute(
+                "SELECT access_token FROM characters"
+                " WHERE access_token IS NOT NULL AND token_expires_at > ?"
+                " ORDER BY token_expires_at DESC LIMIT 1",
+                (now + 30,),          # margin, so it cannot expire mid-flight
+            ).fetchone()
+            token = row[0] if row and row[0] else None
+        finally:
             conn.close()
-        except Exception:
-            pass
+    except Exception:
+        token = None
+    # Cached even when None: with nobody logged in this would otherwise hit the
+    # DB on every single market request.
+    _market_token_cache.update({"token": token, "until": now + 60})
+    return token
 
 
 _esi_set_market_token_provider(_market_bucket_token)
