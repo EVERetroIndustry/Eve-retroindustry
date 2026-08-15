@@ -1407,7 +1407,7 @@ function saveRecentStation(item) {
         <div class="suggest-item d-flex align-items-center gap-2 px-3 py-2" style="cursor:pointer">
           <img loading="lazy" src="/icon/${item.type_id}?size=32" width="28" height="28" class="rounded" style="flex-shrink:0">
           <div style="flex:1;min-width:0">
-            <div class="fw-semibold text-truncate">${item.name}</div>
+            <div class="fw-semibold text-truncate">${escHtml(item.name)}</div>
             <div class="d-flex align-items-center gap-1 mt-1">
               <span style="color:#3fb950;font-size:.75rem">ME ${item.me}</span>
               <span style="color:#8b949e;font-size:.75rem">·</span>
@@ -1451,7 +1451,7 @@ function saveRecentStation(item) {
           <div class="suggest-item d-flex align-items-center gap-2 px-3 py-2" style="cursor:pointer" data-idx="${items.indexOf(item)}">
             <img loading="lazy" src="/icon/${item.type_id}?size=32" width="28" height="28" class="rounded" style="flex-shrink:0">
             <div style="flex:1;min-width:0">
-              <div class="fw-semibold text-truncate">${item.name}</div>
+              <div class="fw-semibold text-truncate">${escHtml(item.name)}</div>
               <div class="d-flex align-items-center gap-1 mt-1">
                 ${kind}
                 <span style="color:#3fb950;font-size:.75rem">ME ${item.me}</span>
@@ -1470,7 +1470,7 @@ function saveRecentStation(item) {
         html += `
           <div class="suggest-item d-flex align-items-center gap-2 px-3 py-2" style="cursor:pointer" data-idx="${items.indexOf(item)}">
             <img loading="lazy" src="/icon/${item.type_id}?size=32" width="28" height="28" class="rounded" style="flex-shrink:0">
-            <span class="text-truncate">${item.name}</span>
+            <span class="text-truncate">${escHtml(item.name)}</span>
           </div>`;
       });
     }
@@ -1621,7 +1621,7 @@ function makeStationSelector({ displayId, hiddenId, boxId, onSelect }) {
       recent.forEach(item => {
         html += `<div class="suggest-item d-flex align-items-center gap-2 px-3 py-2" style="cursor:pointer">
           <i class="bi bi-clock-history" style="color:#8b949e;flex-shrink:0"></i>
-          <div style="flex:1;min-width:0"><div class="text-truncate">${item.name}</div>
+          <div style="flex:1;min-width:0"><div class="text-truncate">${escHtml(item.name)}</div>
           <div style="color:#8b949e;font-size:.75rem">${item.location_id}</div></div></div>`;
       });
     }
@@ -1655,7 +1655,7 @@ function makeStationSelector({ displayId, hiddenId, boxId, onSelect }) {
       data.owned.forEach(item => {
         html += `<div class="suggest-item d-flex align-items-center gap-2 px-3 py-2" style="cursor:pointer">
           <i class="bi bi-geo-alt-fill" style="color:#e3b341;flex-shrink:0"></i>
-          <div style="flex:1;min-width:0"><div class="fw-semibold text-truncate">${item.name}</div>
+          <div style="flex:1;min-width:0"><div class="fw-semibold text-truncate">${escHtml(item.name)}</div>
           <div style="color:#8b949e;font-size:.75rem">${item.location_id}</div></div></div>`;
       });
     }
@@ -1664,7 +1664,7 @@ function makeStationSelector({ displayId, hiddenId, boxId, onSelect }) {
       data.other.forEach(item => {
         html += `<div class="suggest-item d-flex align-items-center gap-2 px-3 py-2" style="cursor:pointer">
           <i class="bi bi-geo-alt" style="color:#8b949e;flex-shrink:0"></i>
-          <div style="flex:1;min-width:0"><div class="text-truncate">${item.name}</div>
+          <div style="flex:1;min-width:0"><div class="text-truncate">${escHtml(item.name)}</div>
           <div style="color:#8b949e;font-size:.75rem">${item.location_id}</div></div></div>`;
       });
     }

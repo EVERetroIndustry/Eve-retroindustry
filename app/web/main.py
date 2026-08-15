@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.9.19"
+APP_VERSION = "0.9.20"
 
 import asyncio
 import datetime
@@ -1493,8 +1493,16 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
                 _dock_ids.add(_loc["structure_id"])
             if _loc.get("solar_system_id"):
                 _sys_ids.add(_loc["solar_system_id"])
-            if _sq and _sq[0].get("skill_id"):
-                _skill_ids.add(_sq[0]["skill_id"])
+            # Every skill in the queue, not just entry 0. ESI parks an already
+            # finished skill at position 0 until the pilot next logs in, so the
+            # entry actually displayed is the first one finishing in the FUTURE
+            # (v0.8.114). Collecting only [0] resolved the name of a skill that is
+            # not shown and left the displayed one as a bare "#3304". Taking the
+            # whole queue cannot drift from the display rule again, and it is one
+            # local SQL IN over a handful of ids.
+            for _e in _sq or ():
+                if _e.get("skill_id"):
+                    _skill_ids.add(_e["skill_id"])
 
         if _dock_ids:
             _any_tok = next((t for t in tokens.values() if t), None)
@@ -1691,7 +1699,9 @@ async def api_dashboard_live(request: Request):
         return {"logged_in": False}
 
     def _s(v):
-        return _isk(v) if v is not None else None
+        # Whole ISK on the dashboard: at billions the cents are pure noise and
+        # they push the numbers wide enough to wrap on a character card.
+        return _isk0(v) if v is not None else None
 
     chars_out: dict[str, dict] = {}
     for c in ctx["char_cards"]:
@@ -1710,7 +1720,7 @@ async def api_dashboard_live(request: Request):
     return {
         "logged_in": True,
         "agg_wallet_str": _s(ctx["agg_wallet"]),
-        "agg_value_str": _isk(ctx["agg_value"]) if ctx["agg_value"] else None,
+        "agg_value_str": _isk0(ctx["agg_value"]) if ctx["agg_value"] else None,
         "chars": chars_out,
     }
 

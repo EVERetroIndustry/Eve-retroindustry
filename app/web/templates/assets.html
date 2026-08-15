@@ -336,10 +336,10 @@ document.getElementById('add-loc-btn')?.addEventListener('click', async function
     const r = await fetch('/api/my-location');
     const data = await r.json();
     if (data.in_space) {
-      btn.innerHTML = `<i class="bi bi-crosshair me-1"></i>${data.solar_system_name} — in space`;
+      btn.innerHTML = `<i class="bi bi-crosshair me-1"></i>${escHtml(data.solar_system_name)} — in space`;
       setTimeout(() => { btn.innerHTML = '<i class="bi bi-crosshair me-1"></i>Add Current Location'; btn.disabled = false; }, 3000);
     } else if (data.location_id) {
-      btn.innerHTML = `<i class="bi bi-check-circle me-1"></i>${data.name}`;
+      btn.innerHTML = `<i class="bi bi-check-circle me-1"></i>${escHtml(data.name)}`;
       btn.classList.replace('btn-outline-secondary', 'btn-outline-success');
       setTimeout(() => {
         btn.innerHTML = '<i class="bi bi-crosshair me-1"></i>Add Current Location';
@@ -347,7 +347,7 @@ document.getElementById('add-loc-btn')?.addEventListener('click', async function
         btn.disabled = false;
       }, 3000);
     } else {
-      btn.innerHTML = `<i class="bi bi-x-circle me-1"></i>${data.error || 'Error'}`;
+      btn.innerHTML = `<i class="bi bi-x-circle me-1"></i>${escHtml(data.error || 'Error')}`;
       setTimeout(() => { btn.innerHTML = '<i class="bi bi-crosshair me-1"></i>Add Current Location'; btn.disabled = false; }, 3000);
     }
   } catch {

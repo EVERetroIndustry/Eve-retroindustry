@@ -49,7 +49,7 @@
       {# Rendered from cached asset values now; upgraded to include wallets by loadLive(). #}
       <div id="agg-value">
         {% if agg_value %}
-        <div class="fw-bold text-isk" style="font-size:1.05rem">{{ agg_value | isk }}</div>
+        <div class="fw-bold text-isk" style="font-size:1.05rem">{{ agg_value | isk0 }}</div>
         <div class="text-muted" style="font-size:.7rem">ISK (all chars)</div>
         {% else %}
         <div class="fs-4 fw-bold text-muted">—</div>
@@ -136,7 +136,7 @@
           {% if c.asset_value is not none %}
           <div class="mb-3 p-2 rounded" style="background:#1c2128">
             <div class="text-muted" style="font-size:.7rem;text-transform:uppercase;letter-spacing:.04em">Asset Value</div>
-            <div class="text-isk fw-semibold">{{ c.asset_value | isk }} ISK</div>
+            <div class="text-isk fw-semibold">{{ c.asset_value | isk0 }} ISK</div>
           </div>
           {% endif %}
         </div>

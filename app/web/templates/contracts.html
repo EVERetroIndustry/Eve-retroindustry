@@ -128,7 +128,7 @@ async function loadItems(btn, contractId, charId, corpId) {
     } else {
       box.innerHTML = d.items.map(it =>
         `<div class="${it.included ? '' : 'text-danger'}">`
-        + `${it.included ? '' : '↩ '}${it.quantity.toLocaleString()}× ${it.name}</div>`
+        + `${it.included ? '' : '↩ '}${it.quantity.toLocaleString()}× ${escHtml(it.name)}</div>`
       ).join('');
     }
     btn.dataset.loaded = '1';

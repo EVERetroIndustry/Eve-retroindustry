@@ -186,6 +186,18 @@
     }
     #app-progress.active { opacity: 1; }
   </style>
+<script>
+// Escape before dropping a value into innerHTML. Names that players choose —
+// citadels, ships, containers — can legally contain &, <, > and quotes, and EVE
+// allows the full range of characters the client accepts, so pasting them raw
+// both mangles the name (an "&" starts an entity) and opens an injection hole.
+// Escapes quotes too, so the same helper is safe inside a quoted attribute.
+window.escHtml = function (s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+};
+</script>
 </head>
 <body>
 <div id="app-progress" aria-hidden="true"></div>

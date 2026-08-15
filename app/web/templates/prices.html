@@ -556,7 +556,7 @@
   const na = '<span class="text-muted">—</span>';
 
   function makeGroupRow(item) {
-    return `<tr data-name="${item.name.toLowerCase()}" data-id="${item.type_id}"
+    return `<tr data-name="${escHtml(item.name.toLowerCase())}" data-id="${item.type_id}"
                 data-jita-sell="${item.sell_price != null ? item.sell_price : ''}">
       <td class="py-1">
         <img src="/icon/${item.type_id}?size=32"
@@ -564,9 +564,9 @@
              onerror="this.style.visibility='hidden'">
       </td>
       <td class="py-1 align-middle">
-        <span class="item-hist" role="button" tabindex="0" title="Show price history">${item.name}</span>
+        <span class="item-hist" role="button" tabindex="0" title="Show price history">${escHtml(item.name)}</span>
         ${item.group_name && item.group_name !== data_group_name
-          ? `<span class="badge bg-secondary ms-1" style="font-size:.65em">${item.group_name}</span>`
+          ? `<span class="badge bg-secondary ms-1" style="font-size:.65em">${escHtml(item.group_name)}</span>`
           : ''}
       </td>
       <td class="text-end py-1 align-middle font-monospace small pricecol pm-sell ph-jita" data-v="${item.sell_price != null ? item.sell_price : ''}"></td>
@@ -814,8 +814,8 @@
       }
       stationBox.innerHTML = all.map(s =>
         `<div class="suggest-item px-3 py-2" style="cursor:pointer;font-size:.875rem"
-              data-id="${s.location_id}" data-name="${s.name.replace(/"/g,'&quot;')}">
-           <i class="bi bi-geo-alt me-2 text-muted"></i>${s.name}
+              data-id="${s.location_id}" data-name="${escHtml(s.name)}">
+           <i class="bi bi-geo-alt me-2 text-muted"></i>${escHtml(s.name)}
          </div>`
       ).join('');
       stationBox.style.display = 'block';
@@ -1061,7 +1061,7 @@
       return list.map(o => `<tr>
         <td class="text-end font-monospace">${fmtNum(o.price, true, false)}</td>
         <td class="text-end font-monospace">${intS(o.qty)}</td>
-        <td class="text-truncate" style="max-width:240px" title="${String(o.location || '').replace(/"/g,'&quot;')}">${o.location || '—'}</td>
+        <td class="text-truncate" style="max-width:240px" title="${escHtml(o.location || '')}">${escHtml(o.location || '—')}</td>
       </tr>`).join('');
     }
     function loadMarket() {
