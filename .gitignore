@@ -20,10 +20,13 @@ build/
 !sde_base.db
 data/tokens.json
 
-# EVE SDE data (large files, downloaded separately)
-data/sde.zip
+# EVE SDE data (large files, downloaded separately). Globbed rather than named:
+# the download is ~100 MB and the file name carries the build number, so a rule
+# for one literal name let a rebuild leave 250 MB of zip+YAML staged for commit.
+data/*.zip
 data/fsd/
 data/fsd_backup/
+data/new_sde/
 
 # Android / Gradle (build/ above already covers android-poc/app/build/)
 .gradle/
