@@ -1227,6 +1227,10 @@ async def auth_sync(request: Request):
     try:
         if not has_any_character(conn):
             return RedirectResponse("/")
+        # A character was just (re-)added, which is exactly what fixes a missing
+        # esi-corporations.read_divisions.v1 scope - retry those instead of waiting
+        # out the negative cache.
+        _clear_failed_corp_divisions(conn)
     finally:
         conn.close()
     if not _sync_state["running"] and not _sync_state["done"]:
@@ -2943,6 +2947,14 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
             corp_id = next(iter(seen_corp_ids), 0)
 
         # ── Corporate assets ─────────────────────────────────────────────────
+        # A corporation can rename its 7 hangar divisions; use the real names
+        # instead of "Division 3". Same cached ESI call as the wallet page, so
+        # visiting either screen warms the other. In the all-characters view
+        # corp_id is the first corporation found (as for the assets themselves).
+        corp_div_labels = _CORP_DIV_LABEL
+        if corp_assets_list and corp_id:
+            _divs = await _corp_division_names(conn, corp_id, token)
+            corp_div_labels = _corp_hangar_labels(_divs["hangar"])
         # station_id → {div_flag → {"hangar": {type_id: item}, "containers": {cid: {type_id: item}}}}
         corp_sd: dict[int, dict] = {}
         if corp_assets_list:
@@ -3216,7 +3228,7 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                     containers_value = sum(c["total_value"] for c in containers)
                     divisions.append({
                         "flag": flag,
-                        "label": _CORP_DIV_LABEL.get(flag, flag),
+                        "label": corp_div_labels.get(flag, flag),
                         "hangar": hangar_items,
                         "hangar_value": hangar_value,
                         "containers": containers,
@@ -5097,6 +5109,125 @@ _CORP_DIVISION_NAMES = {
     5: "5th Wallet", 6: "6th Wallet", 7: "7th Wallet",
 }
 
+# Custom division names change about never, and ESI caches the endpoint for an
+# hour anyway - one call per corporation per day is plenty. A failed refresh keeps
+# serving the cached names (a stale real name beats falling back to "3rd Wallet").
+_CORP_DIVISION_TTL = 24 * 3600
+# A failure is cached too, and that is the important half: without it a character
+# that is not a Director (or was authorized before the scope existed) would fire a
+# 403 on EVERY wallet and assets page view - and a 4xx costs 5 tokens in the ESI
+# token bucket plus a slot in the 420 error budget. Short TTL so re-adding the
+# character starts working again quickly; /auth also clears failed rows outright.
+_CORP_DIVISION_ERROR_TTL = 30 * 60
+
+
+def _ensure_corp_division_cache(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS corp_division_cache (
+        corporation_id INTEGER PRIMARY KEY,
+        wallet_json TEXT,
+        hangar_json TEXT,
+        error TEXT,
+        cached_at REAL)""")
+    conn.commit()
+
+
+def _load_corp_divisions(conn: sqlite3.Connection, corp_id: int) -> tuple[dict, str | None, float]:
+    """Cached names as ({"wallet": {div: name}, "hangar": {...}}, error, cached_at).
+    Returns ({"wallet": {}, "hangar": {}}, None, 0.0) when nothing is cached."""
+    _ensure_corp_division_cache(conn)
+    empty: dict[str, dict[int, str]] = {"wallet": {}, "hangar": {}}
+    row = conn.execute(
+        "SELECT wallet_json, hangar_json, error, cached_at FROM corp_division_cache"
+        " WHERE corporation_id=?", (corp_id,)).fetchone()
+    if not row:
+        return empty, None, 0.0
+
+    def _parse(raw):
+        try:
+            # JSON object keys are strings; division numbers must come back as ints.
+            return {int(k): v for k, v in (json.loads(raw or "{}") or {}).items()}
+        except Exception:
+            return {}
+
+    return ({"wallet": _parse(row[0]), "hangar": _parse(row[1])},
+            row[2] or None, row[3] or 0.0)
+
+
+def _save_corp_divisions(conn: sqlite3.Connection, corp_id: int, names: dict,
+                         error: str | None) -> None:
+    _ensure_corp_division_cache(conn)
+    conn.execute(
+        "INSERT OR REPLACE INTO corp_division_cache"
+        " (corporation_id, wallet_json, hangar_json, error, cached_at) VALUES (?,?,?,?,?)",
+        (corp_id, json.dumps(names.get("wallet", {})),
+         json.dumps(names.get("hangar", {})), error, _time.time()))
+    conn.commit()
+
+
+def _clear_failed_corp_divisions(conn: sqlite3.Connection) -> None:
+    """Drop negative-cache rows so a freshly (re-)added character is tried again
+    without waiting out _CORP_DIVISION_ERROR_TTL."""
+    try:
+        _ensure_corp_division_cache(conn)
+        conn.execute("DELETE FROM corp_division_cache WHERE error IS NOT NULL")
+        conn.commit()
+    except Exception:
+        pass
+
+
+async def _corp_division_names(conn: sqlite3.Connection, corp_id: int, token: str | None,
+                               client: httpx.AsyncClient | None = None) -> dict:
+    """Custom wallet/hangar division names for a corporation.
+
+    Returns {"wallet": {div: name}, "hangar": {div: name}, "error": str|None}.
+    Only divisions the corporation actually renamed are present - callers keep
+    their own default label for the rest.
+    """
+    cached, cached_err, cached_at = _load_corp_divisions(conn, corp_id)
+    have_names = bool(cached["wallet"] or cached["hangar"])
+    ttl = _CORP_DIVISION_TTL if not cached_err else _CORP_DIVISION_ERROR_TTL
+
+    def _result(names: dict, error: str | None) -> dict:
+        # Only report an error when there is nothing to show for it, so a transient
+        # 503 never nags a user who can already see the real names.
+        return {"wallet": names["wallet"], "hangar": names["hangar"],
+                "error": None if (names["wallet"] or names["hangar"]) else error}
+
+    if not corp_id or not token or (cached_at and (_time.time() - cached_at) < ttl):
+        return _result(cached, cached_err)
+    try:
+        if client is not None:
+            data, err = await wallet_api.fetch_corp_divisions(client, corp_id, token)
+        else:
+            async with esi_client(timeout=12) as own:
+                data, err = await wallet_api.fetch_corp_divisions(own, corp_id, token)
+    except Exception as exc:
+        data, err = None, str(exc)
+    if data is None:
+        # Remember the failure (with whatever names we already had) so the next page
+        # view does not repeat the request.
+        _save_corp_divisions(conn, corp_id, cached, err)
+        return _result(cached, err)
+    names = {"wallet": data.get("wallet", {}) or {}, "hangar": data.get("hangar", {}) or {}}
+    _save_corp_divisions(conn, corp_id, names, None)
+    return _result(names, None)
+
+
+def _wallet_division_labels(custom: dict) -> dict[int, str]:
+    """Default wallet labels with the corporation's custom names layered on top."""
+    return {d: (custom.get(d) or _CORP_DIVISION_NAMES[d]) for d in _CORP_DIVISION_NAMES}
+
+
+def _corp_hangar_labels(custom: dict) -> dict[str, str]:
+    """_CORP_DIV_LABEL with the corporation's custom hangar names layered on top.
+    Only the CorpSAG1-7 flags are divisions; Hangar / CorpDeliveries are not."""
+    out = dict(_CORP_DIV_LABEL)
+    for div, name in (custom or {}).items():
+        flag = f"CorpSAG{div}"
+        if flag in out and name:
+            out[flag] = name
+    return out
+
 
 async def _resolve_party_names(ids: set[int]) -> dict[int, str]:
     """Resolve char/corp/alliance/station/type IDs to names via ESI
@@ -5139,7 +5270,8 @@ async def wallet_page(request: Request, char: str = "", scope: str = "personal",
         "wallet_char_id": plan_char_id,
         "balance": None, "journal": [], "transactions": [],
         "corp_wallets": None, "corp_error": None, "corp_name": None,
-        "error": None, "division_names": _CORP_DIVISION_NAMES,
+        "error": None, "division_names": dict(_CORP_DIVISION_NAMES),
+        "corp_div_note": None, "custom_divisions": set(),
         "row_cap": _WALLET_ROW_CAP,
     }
 
@@ -5188,6 +5320,12 @@ async def wallet_page(request: Request, char: str = "", scope: str = "personal",
                     ctx["corp_error"] = err
                     cn = await _resolve_party_names({corp_id})
                     ctx["corp_name"] = cn.get(corp_id, str(corp_id))
+                    # A corporation can rename each of its 7 wallet divisions; show
+                    # the real name instead of "3rd Wallet" wherever one is set.
+                    divs = await _corp_division_names(conn, corp_id, token, client)
+                    ctx["division_names"] = _wallet_division_labels(divs["wallet"])
+                    ctx["custom_divisions"] = set(divs["wallet"].keys())
+                    ctx["corp_div_note"] = divs["error"]
                     if wallets:
                         journal = await wallet_api.fetch_corp_journal(
                             client, corp_id, division, token, limit=_WALLET_ROW_CAP)

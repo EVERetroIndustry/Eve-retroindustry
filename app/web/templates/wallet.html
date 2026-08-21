@@ -84,11 +84,20 @@
     <a href="/wallet?char={{ wallet_char_id }}&scope=corp&division={{ w.division }}"
        class="card px-3 py-2 text-decoration-none {% if w.division == division %}border-primary{% endif %}"
        style="min-width:150px;{% if w.division == division %}border-color:#e3b341 !important{% endif %}">
-      <div class="text-muted" style="font-size:.72rem">{{ division_names[w.division] or ('Division ' ~ w.division) }}</div>
+      {# Custom names can be long: truncate the name but keep the division number
+         visible, since journal/transactions are addressed by number. #}
+      <div class="d-flex align-items-baseline gap-1 text-muted" style="font-size:.72rem;max-width:240px">
+        <span class="text-truncate"
+              title="{{ division_names[w.division] or ('Division ' ~ w.division) }}">{{ division_names[w.division] or ('Division ' ~ w.division) }}</span>
+        {% if w.division in custom_divisions %}<span class="opacity-50 flex-shrink-0">div {{ w.division }}</span>{% endif %}
+      </div>
       <div class="fw-semibold text-isk">{{ w.balance | isk }} ISK</div>
     </a>
     {% endfor %}
   </div>
+  {% if corp_div_note %}
+  <div class="text-muted small mt-2"><i class="bi bi-info-circle me-1"></i>{{ corp_div_note }}</div>
+  {% endif %}
 </div>
 {% endif %}
 

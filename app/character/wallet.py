@@ -10,6 +10,10 @@ ESI endpoints:
     GET /corporations/{id}/wallets/              → [{division, balance}]
     GET /corporations/{id}/wallets/{div}/journal/
     GET /corporations/{id}/wallets/{div}/transactions/
+  Corporation division names (requires the Director role → otherwise 403):
+    GET /corporations/{id}/divisions/            → {hangar: [...], wallet: [...]}
+    Scope: esi-corporations.read_divisions.v1. Only divisions with a CUSTOM name
+    are listed, so anything missing keeps our default label.
 
 Scopes: esi-wallet.read_character_wallet.v1, esi-wallet.read_corporation_wallets.v1
 (corporation role: esi-characters? - no, just the wallet scope + in-game role).
@@ -102,6 +106,48 @@ async def fetch_corp_wallets(client: httpx.AsyncClient, corp_id: int, token: str
         return None, f"ESI returned HTTP {r.status_code}."
     except Exception as exc:
         return None, str(exc)
+
+
+async def fetch_corp_divisions(client: httpx.AsyncClient, corp_id: int, token: str
+                               ) -> tuple[dict | None, str | None]:
+    """Custom names of the corporation's 7 wallet and 7 hangar divisions.
+
+    Returns ({"wallet": {division: name}, "hangar": {division: name}}, None)
+    or (None, error_message).
+
+    ESI lists a division ONLY when it is not using the default name, so a missing
+    entry means "still called the default" - not an error and not an empty name.
+    403 = the character is not a Director (the endpoint requires that role), or it
+    was authorized before esi-corporations.read_divisions.v1 was added and its
+    token does not carry the scope.
+    """
+    try:
+        r = await client.get(f"{ESI_BASE}/corporations/{corp_id}/divisions/",
+                             headers=_auth(token), timeout=12)
+    except Exception as exc:
+        return None, str(exc)
+    if r.status_code == 200:
+        data = r.json() or {}
+        out: dict[str, dict[int, str]] = {"wallet": {}, "hangar": {}}
+        for kind in ("wallet", "hangar"):
+            for d in data.get(kind) or []:
+                div, name = d.get("division"), (d.get("name") or "").strip()
+                # A blank name is ESI saying "default" - keep the caller's default.
+                if isinstance(div, int) and name:
+                    out[kind][div] = name
+        return out, None
+    if r.status_code == 403:
+        body = ""
+        try:
+            body = str((r.json() or {}).get("error") or "")
+        except Exception:
+            pass
+        if "role" in body.lower():
+            return None, ("Only a Director can read custom division names - this "
+                          "character does not have that role.")
+        return None, ("Re-add this character to grant the new 'read corporation "
+                      "divisions' permission (it also requires the Director role).")
+    return None, f"ESI returned HTTP {r.status_code}."
 
 
 async def fetch_corp_journal(client: httpx.AsyncClient, corp_id: int, division: int,

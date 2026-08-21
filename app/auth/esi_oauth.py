@@ -90,6 +90,7 @@ SCOPES = [
     # --- Corporation ---
     "esi-corporations.read_facilities.v1",     # corporation industry facilities
     "esi-characters.read_corporation_roles.v1", # corporation roles
+    "esi-corporations.read_divisions.v1",      # custom wallet/hangar division names (Director only)
 ]
 
 
