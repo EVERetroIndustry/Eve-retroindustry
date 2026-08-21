@@ -1,10 +1,10 @@
 """
-Manufacturing planner — compares the BOM with assets available at a station.
+Manufacturing planner - compares the BOM with assets available at a station.
 
 Modes:
-  full       – cost of raw materials (the whole manufacturing chain)
-  components – cost of the direct first-level components (Capital Armor Plates, etc.)
-  optimal    – make vs. buy optimization (requires prices)
+  full       - cost of raw materials (the whole manufacturing chain)
+  components - cost of the direct first-level components (Capital Armor Plates, etc.)
+  optimal    - make vs. buy optimization (requires prices)
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -22,7 +22,7 @@ _SKILL_INDUSTRY        = 3380  # -4 % time/level
 _SKILL_ADV_INDUSTRY    = 3388  # -3 % time/level
 
 # Zainou 'Beancounter' Industry implants (slot 8, group "Cyber Production").
-# {type_id: (name, manufacturing time reduction in %)} — verified against the
+# {type_id: (name, manufacturing time reduction in %)} - verified against the
 # ESI "Manufacturing Time Bonus" dogma attribute, not from memory. There is no
 # BX-805: the family stops at -4 %, unlike other Beancounter lines.
 MFG_IMPLANTS: dict[int, tuple[str, float]] = {
@@ -47,18 +47,18 @@ def calc_job_time(
 ) -> int:
     """Return the total job time in seconds.
 
-    EVE Online formula — every modifier and the run count form ONE product:
+    EVE Online formula - every modifier and the run count form ONE product:
       time = base_time × runs
-        × (1 − te × 0.01)               # Blueprint TE (0–20)
-        × (1 − industry × 0.04)         # Industry skill (manufacturing only)
-        × (1 − adv_industry × 0.03)     # Advanced Industry skill (manufacturing only)
-        × (1 − implant_pct / 100)       # Zainou 'Beancounter' Industry BX-80x (manufacturing only)
+        × (1 - te × 0.01)               # Blueprint TE (0-20)
+        × (1 - industry × 0.04)         # Industry skill (manufacturing only)
+        × (1 - adv_industry × 0.03)     # Advanced Industry skill (manufacturing only)
+        × (1 - implant_pct / 100)       # Zainou 'Beancounter' Industry BX-80x (manufacturing only)
         × science_skill_mult             # science skills required by the blueprint (precomputed)
         × facility_te_multiplier         # structure + rigs (precomputed)
-    Reactions: Industry/AdvIndustry and the BX implant do not apply — the implant's
+    Reactions: Industry/AdvIndustry and the BX implant do not apply - the implant's
     attribute is "Manufacturing Time Bonus" and reactions are a separate activity.
 
-    Rounding happens ONCE, on the total — NOT per run. Rounding per run and then
+    Rounding happens ONCE, on the total - NOT per run. Rounding per run and then
     multiplying inflates the error by the run count: a 17 s/run job with 5625 runs
     lost a whole second per run to rounding, i.e. ~1.5 h on one job, and small
     bonuses (BX-801's 1 %) vanished entirely because they could not tip the
@@ -70,7 +70,7 @@ def calc_job_time(
       - CCP/Fenris support, "Time Efficiency Research": "Job time = Blueprint
         manufacturing run time * number of production runs * Time Efficiency
         Reduction factor"
-    Note: per-JOB rounding of MATERIAL quantities is a real and separate mechanic —
+    Note: per-JOB rounding of MATERIAL quantities is a real and separate mechanic -
     that is what BOMResolver.runs_per_job models. Do not conflate the two.
     No source states whether the fractional final second is floored, ceiled or
     rounded; that is a ≤1 s question on a whole job, so round() is used.
@@ -88,7 +88,7 @@ def calc_job_time(
 def format_duration(seconds: int) -> str:
     """Format seconds as 'Xd Yh Zm'."""
     if seconds <= 0:
-        return "—"
+        return "-"
     d = seconds // 86400
     h = (seconds % 86400) // 3600
     m = (seconds % 3600) // 60
@@ -134,10 +134,10 @@ class ManufacturingPlan:
     materials:         list[MaterialStatus]
     can_manufacture:   bool
     total_missing_types: int
-    # For optimal mode — to display make vs buy decisions
+    # For optimal mode - to display make vs buy decisions
     opt_total_cost:    float | None = None
     opt_naive_cost:    float | None = None
-    # [Decision, …] from the optimizer (optimal mode only) — the UI renders
+    # [Decision, …] from the optimizer (optimal mode only) - the UI renders
     # the Make vs Buy table from them, and steps skip "buy" components.
     opt_decisions:     list | None = None
 
@@ -201,7 +201,7 @@ def build_plan(
     # me_override/te_override carry the ROOT ME/TE the caller already settled on
     # (a value typed into the form, or the blueprint's own). Without them this
     # function re-derived ME from the owned blueprint only, so a manually entered
-    # ME never reached `materials` — the Materials tab then disagreed with the
+    # ME never reached `materials` - the Materials tab then disagreed with the
     # Manufacturing steps, which are built from the caller's own resolved tree.
     me = me_override if me_override is not None else (bp.material_efficiency if bp else 0)
     te = te_override if te_override is not None else (bp.time_efficiency     if bp else 0)
@@ -229,7 +229,7 @@ def build_plan(
             prev = items.get(child.type_id, (child.name, 0))[1]
             items[child.type_id] = (child.name, prev + child.quantity)
 
-    # Make-vs-buy analysis runs outside optimal mode too — in full/components it
+    # Make-vs-buy analysis runs outside optimal mode too - in full/components it
     # is purely informational (the "Make vs Buy" tab) and affects neither the
     # shopping list nor the manufacturing steps.
     opt_decisions = None

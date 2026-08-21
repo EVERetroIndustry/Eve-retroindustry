@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# SessionStart hook: warns when the local checkout is behind the remote —
+# SessionStart hook: warns when the local checkout is behind the remote -
 # both the main repo (application) and the private notes (CLAUDE.md via symlink).
 # Prevents editing a stale state / desync between machines.
-# Nothing sensitive is committed — the notes URL is resolved at runtime from the symlink.
+# Nothing sensitive is committed - the notes URL is resolved at runtime from the symlink.
 set -uo pipefail
 proj="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 msgs=()
@@ -14,7 +14,7 @@ check() {  # $1 = repo directory, $2 = label
   up=$(git -C "$d" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || return 0
   behind=$(git -C "$d" rev-list --count "HEAD..$up" 2>/dev/null) || return 0
   if [ -n "$behind" ] && [ "$behind" -gt 0 ]; then
-    msgs+=("$label: $behind commit(s) behind remote — before editing run: git -C \"$d\" pull")
+    msgs+=("$label: $behind commit(s) behind remote - before editing run: git -C \"$d\" pull")
   fi
 }
 

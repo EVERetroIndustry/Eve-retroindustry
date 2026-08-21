@@ -1,5 +1,5 @@
 """
-Contracts — personal, corporation and public (regional).
+Contracts - personal, corporation and public (regional).
 
 ESI endpoints:
   Character (scope esi-contracts.read_character_contracts.v1):

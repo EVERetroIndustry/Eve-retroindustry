@@ -12,7 +12,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
 
 # Matches "1% reduction in manufacturing time" or "...in reaction time".
-# Reactions skill (45746) has "...reaction time per skill level" — without
+# Reactions skill (45746) has "...reaction time per skill level" - without
 # this alternation it would be silently dropped from sde_skill_time_bonus.
 _BONUS_RE = re.compile(
     r'(\d+(?:\.\d+)?)\s*%\s*reduction\s+in\s+(?:manufacturing|reaction)\s+time',
@@ -23,7 +23,7 @@ console = Console()
 
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 # The new SDE layout (build 3417089+) has files in the zip root, not in fsd/. Support
-# both layouts — data/fsd/ (older) and data/ (new).
+# both layouts - data/fsd/ (older) and data/ (new).
 SDE_DIR = os.path.join(_DATA_DIR, "fsd") \
     if os.path.exists(os.path.join(_DATA_DIR, "fsd", "types.yaml")) else _DATA_DIR
 DB_PATH = os.path.join(os.path.dirname(__file__), "eve_cache.db")
@@ -49,7 +49,7 @@ def import_planet_schematics(conn: sqlite3.Connection):
     """PI factory schematics: inputs → output (type_ids + quantities) + cycle time.
     Powers the Planets production-chain view. Source: planetSchematics.yaml."""
     if not os.path.exists(PLANET_SCHEMATICS_YAML):
-        console.print(f"[yellow]planetSchematics.yaml not found ({PLANET_SCHEMATICS_YAML}) — skipping[/]")
+        console.print(f"[yellow]planetSchematics.yaml not found ({PLANET_SCHEMATICS_YAML}) - skipping[/]")
         return
     console.print("Loading planetSchematics.yaml…")
     with open(PLANET_SCHEMATICS_YAML, "r", encoding="utf-8") as f:
@@ -189,7 +189,7 @@ def import_types(conn: sqlite3.Connection) -> dict:
 
 
 _SKILL_EXCLUDE = {3380, 3388}  # Handled separately in calc_job_time
-_IMPLANT_GROUP  = 743           # Zainou/manufacturing implants — not fetchable via ESI skills
+_IMPLANT_GROUP  = 743           # Zainou/manufacturing implants - not fetchable via ESI skills
 
 
 def import_groups(conn: sqlite3.Connection):
@@ -197,12 +197,12 @@ def import_groups(conn: sqlite3.Connection):
 
     Previously sde_groups was populated once via ESI (_ensure_groups_populated),
     which meant new groups (e.g. 5120 Command Carrier from Cradle of War)
-    were never backfilled for existing users — rig_applies_to_product then
+    were never backfilled for existing users - rig_applies_to_product then
     returned False through its INNER JOIN and no rig applied to products from
     those groups.
     """
     if not os.path.exists(GROUPS_YAML):
-        console.print(f"[yellow]groups.yaml not found ({GROUPS_YAML}) — skipping[/]")
+        console.print(f"[yellow]groups.yaml not found ({GROUPS_YAML}) - skipping[/]")
         return
     console.print("Loading groups.yaml…")
     with open(GROUPS_YAML, "r", encoding="utf-8") as f:
@@ -331,7 +331,7 @@ def import_blueprints(conn: sqlite3.Connection):
 
 
 def main():
-    console.print("[bold]EVE Retroindustry — Import SDE into SQLite[/]\n")
+    console.print("[bold]EVE Retroindustry - Import SDE into SQLite[/]\n")
 
     if not os.path.exists(BLUEPRINTS_YAML):
         console.print(f"[red]Not found: {BLUEPRINTS_YAML}[/]")
@@ -354,8 +354,8 @@ def main():
     console.print(f"\n[bold green]Done in {time.time()-t_start:.1f}s[/]")
     console.print(f"Database: {DB_PATH}")
 
-    # Quick test — Nidhoggur
-    console.print("\n[bold]Test — Nidhoggur (24483):[/]")
+    # Quick test - Nidhoggur
+    console.print("\n[bold]Test - Nidhoggur (24483):[/]")
     conn = sqlite3.connect(DB_PATH)
 
     # Find the blueprint for Nidhoggur

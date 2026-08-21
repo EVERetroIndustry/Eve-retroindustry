@@ -5,7 +5,7 @@ name: Android (test build)
 # publishes it as the "android-latest" prerelease with a direct download link:
 #   https://github.com/EVERetroIndustry/Eve-retroindustry/releases/download/android-latest/EveRetroindustry.apk
 #
-# Intentionally NOT wired into release.yml — while Android is still just a test
+# Intentionally NOT wired into release.yml - while Android is still just a test
 # build (on-device runtime unverified, OAuth login not working yet), it does not
 # belong in versioned releases.
 
@@ -45,7 +45,7 @@ jobs:
 
       - name: Build signed release APK
         working-directory: android-poc
-        # The first build is slow — Chaquopy downloads CPython 3.12 + wheels.
+        # The first build is slow - Chaquopy downloads CPython 3.12 + wheels.
         env:
           ANDROID_KEYSTORE_FILE: ${{ runner.temp }}/release.p12
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -72,7 +72,7 @@ jobs:
           # Create the prerelease (first time) or just upload/overwrite assets (afterwards).
           gh release create android-latest EveRetroindustry.apk version.json \
             --prerelease \
-            --title "EVE Retroindustry — Android (test build)" \
+            --title "EVE Retroindustry - Android (test build)" \
             --notes "Automated Android test build (arm64, sideload). Download EveRetroindustry.apk and install it manually (allow installs from unknown sources). Updates then happen directly in the app." \
             --target main \
           || gh release upload android-latest EveRetroindustry.apk version.json --clobber

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Public Contracts — EVE Retroindustry{% endblock %}
+{% block title %}Public Contracts - EVE Retroindustry{% endblock %}
 {% block content %}
 
 <div class="d-flex align-items-center justify-content-between mb-3 flex-wrap gap-2">
@@ -50,7 +50,7 @@
       <span id="idx-label">Downloading…</span><span id="idx-pct">0%</span>
     </div>
     <div class="progress" style="height:6px"><div id="idx-bar" class="progress-bar bg-warning" style="width:0%"></div></div>
-    <div class="text-muted mt-1" style="font-size:.72rem">A large region (The Forge ~34k contracts) can take 1–2 min.</div>
+    <div class="text-muted mt-1" style="font-size:.72rem">A large region (The Forge ~34k contracts) can take 1-2 min.</div>
   </div>
 </div>
 {% endif %}
@@ -75,7 +75,7 @@
     </div>
     <div style="min-width:130px">
       <label class="form-label small text-muted mb-1">Max price (ISK)</label>
-      <input type="number" name="max_price" value="{{ max_price }}" class="form-control form-control-sm" placeholder="—">
+      <input type="number" name="max_price" value="{{ max_price }}" class="form-control form-control-sm" placeholder="-">
     </div>
     <button class="btn btn-sm btn-eve"><i class="bi bi-search me-1"></i>Search</button>
   </div>
@@ -105,8 +105,8 @@
           <td class="text-muted text-truncate" style="max-width:210px;font-size:.75rem">
             {% if c.courier %}{{ c.start_name }} <i class="bi bi-arrow-right"></i> {{ c.end_name }}{% else %}{{ c.start_name }}{% endif %}
           </td>
-          <td class="text-end" style="white-space:nowrap">{% if c.price %}{{ c.price | isk }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
-          <td class="text-end" style="white-space:nowrap">{% if c.reward %}{{ c.reward | isk }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
+          <td class="text-end" style="white-space:nowrap">{% if c.price %}{{ c.price | isk }}{% else %}<span class="text-muted">-</span>{% endif %}</td>
+          <td class="text-end" style="white-space:nowrap">{% if c.reward %}{{ c.reward | isk }}{% else %}<span class="text-muted">-</span>{% endif %}</td>
           <td class="text-muted text-truncate" style="max-width:130px;font-size:.78rem">{{ c.issuer_name }}</td>
           <td class="text-end text-muted" style="white-space:nowrap;font-size:.75rem">{{ c.date_expired | replace('T',' ') | replace('Z','') | truncate(10,true,'') }}</td>
         </tr>

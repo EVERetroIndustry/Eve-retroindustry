@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% block title %}Loading — EVE Retroindustry{% endblock %}
+{% block title %}Loading - EVE Retroindustry{% endblock %}
 {% block content %}
 
 <div class="row justify-content-center mt-5">
   <div class="col-lg-5 text-center">
 
-    {# Phase 1 — ESI sync #}
+    {# Phase 1 - ESI sync #}
     <div id="phase-sync" class="card p-5">
       <div id="spinner-wrap" class="mb-4">
         <div class="spinner-border text-primary" style="width:3rem;height:3rem" role="status">
@@ -15,7 +15,7 @@
       <h5 class="mb-2">Loading your character data</h5>
       <p class="text-muted small mb-4">
         Fetching blueprints, assets and skills from ESI.<br>
-        With many characters this takes a while — the bar below is real progress.
+        With many characters this takes a while - the bar below is real progress.
       </p>
 
       <div class="progress mb-2" style="height:6px">
@@ -23,10 +23,10 @@
       </div>
       <div id="status-line" class="text-muted small mb-1">Connecting to ESI…</div>
       <div id="sync-elapsed" class="text-muted small mb-3" style="opacity:.6"></div>
-      <a href="/" class="btn btn-outline-secondary btn-sm">Skip — go to dashboard</a>
+      <a href="/" class="btn btn-outline-secondary btn-sm">Skip - go to dashboard</a>
     </div>
 
-    {# Phase 2 — price prompt #}
+    {# Phase 2 - price prompt #}
     <div id="phase-prices" class="card p-5 d-none">
       <div class="mb-4">
         <i class="bi bi-check-circle-fill text-success" style="font-size:3rem"></i>
@@ -44,7 +44,7 @@
       </div>
     </div>
 
-    {# Phase 3 — price progress #}
+    {# Phase 3 - price progress #}
     <div id="phase-price-progress" class="card p-5 d-none">
       <div class="mb-4">
         <div class="spinner-border text-warning" style="width:3rem;height:3rem" role="status"></div>
@@ -57,7 +57,7 @@
       </div>
       <div id="price-status" class="text-muted small mb-3">Starting...</div>
 
-      <a href="/" class="btn btn-outline-secondary btn-sm">Skip — go to dashboard</a>
+      <a href="/" class="btn btn-outline-secondary btn-sm">Skip - go to dashboard</a>
     </div>
 
   </div>
@@ -91,7 +91,7 @@ async function pollSync() {
       line = 'Resolving station and structure names…';
     } else if (d.total > 1 && d.index) {
       line = `Character ${d.index} of ${d.total}`
-           + (d.char ? ` — ${d.char}` : '')
+           + (d.char ? ` - ${d.char}` : '')
            + (d.step ? ` · ${d.step}` : '');
     } else if (d.step) {
       line = `Fetching ${d.step}…`;
@@ -104,7 +104,7 @@ async function pollSync() {
     elapsedEl.textContent = d.elapsed ? `${d.elapsed}s elapsed` : '';
     setTimeout(pollSync, 1500);
   } catch {
-    // Server not answering yet (or restarting) — say so instead of pretending.
+    // Server not answering yet (or restarting) - say so instead of pretending.
     statusEl.textContent = 'Waiting for the app to respond…';
     setTimeout(pollSync, 3000);
   }

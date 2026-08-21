@@ -11,7 +11,7 @@ from app.web.rig_affected_groups import RIG_AFFECTED_GROUPS
 
 ESI_BASE = "https://esi.evetech.net/latest"
 
-# SCC Surcharge — raised on 2024-02-01 from 1.5 % to 4.0 % (third increase since Viridian 2023)
+# SCC Surcharge - raised on 2024-02-01 from 1.5 % to 4.0 % (third increase since Viridian 2023)
 _SCC = 0.04
 
 
@@ -122,7 +122,7 @@ STRUCTURE_TYPE_MAP: dict[str, tuple[str, str]] = {
     "tatara":  ("L",  "reaction"),
 }
 
-# Refineries run reactions — their rig bonuses scale with a DIFFERENT
+# Refineries run reactions - their rig bonuses scale with a DIFFERENT
 # security table (lowsec ×1.0, null/WH ×1.1) than manufacturing rigs
 # (lowsec ×1.9, null/WH ×2.1). Verified against EVE Ref API.
 _RXN_STRUCTURE_TYPES = frozenset({"athanor", "tatara"})
@@ -136,7 +136,7 @@ STRUCTURE_TE_BONUS: dict[str, float] = {
     "tatara":  25.0,
 }
 
-# Structure type → base ME bonus (%) — engineering complexes give 1% ME, refineries 0%
+# Structure type → base ME bonus (%) - engineering complexes give 1% ME, refineries 0%
 STRUCTURE_ME_BONUS: dict[str, float] = {
     "raitaru": 1.0,
     "azbel":   1.0,
@@ -272,7 +272,7 @@ def get_station_rigs_full(conn: sqlite3.Connection, location_id: int) -> dict:
 
 
 def get_station_te_multiplier(conn: sqlite3.Connection, location_id: int) -> float:
-    """[DEPRECATED for calculation] Return the station's "global" TE multiplier — applies
+    """[DEPRECATED for calculation] Return the station's "global" TE multiplier - applies
     all rigs regardless of product category. Used only for the summary
     display % in the header (where we don't have a specific product anyway). For per-job
     calculation use `get_product_te_multiplier(...)`.
@@ -311,7 +311,7 @@ def get_station_te_multiplier(conn: sqlite3.Connection, location_id: int) -> flo
 
 
 def get_product_te_multiplier(conn: sqlite3.Connection, facility, product_type_id: int) -> float:
-    """Per-product TE multiplier — applies only rigs relevant to the product's
+    """Per-product TE multiplier - applies only rigs relevant to the product's
     category (an Equipment TE rig does not speed up ship construction, etc.).
 
     facility: StationFacility z app.bom.resolver (passed in to avoid circular import).
@@ -326,7 +326,7 @@ def get_product_te_multiplier(conn: sqlite3.Connection, facility, product_type_i
 
 
 def get_station_facility(conn: sqlite3.Connection, location_id: int):
-    """Return the StationFacility for the given location_id — structure role bonus,
+    """Return the StationFacility for the given location_id - structure role bonus,
     rig list (with ME/TE bonuses), and security multiplier.
     For NPC stations / unknown structures it returns an empty facility (1.0 multiplier).
     """
@@ -373,7 +373,7 @@ def get_station_me_multiplier(conn: sqlite3.Connection, location_id: int) -> flo
     """Return the station's combined ME multiplier (e.g. 0.87 = 13 % savings).
 
     Bonuses stack multiplicatively (per Fenris Creations):
-        m = (1 − struct_role/100) × (1 − rig1×sec/100) × (1 − rig2×sec/100) × …
+        m = (1 - struct_role/100) × (1 - rig1×sec/100) × (1 - rig2×sec/100) × …
     where struct_role is 1 % for engineering complexes and 0 % for refineries,
     and sec is 1.0 / 1.9 / 2.1 depending on the system's security status.
     """

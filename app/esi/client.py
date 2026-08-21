@@ -15,20 +15,20 @@ ESI_COMPAT_DATE = "2026-07-17"
 
 # The connection pool must cover our concurrency (semaphores up to 30), otherwise refresh
 # is the bottleneck: httpx's default max_keepalive_connections=20 recycles only ~20
-# connections and the rest pay the TLS handshake over and over — with keepalive 50 the bulk
+# connections and the rest pay the TLS handshake over and over - with keepalive 50 the bulk
 # volume/orders refresh is ~2.8x faster (measured). We stay at 30 concurrent
 # (semaphore), so under the ESI rate limit.
 _ESI_LIMITS = httpx.Limits(max_connections=50, max_keepalive_connections=50)
 
 
 class ESIErrorLimited(httpx.HTTPStatusError):
-    """Raised (via raise_for_status) when ESI returns HTTP 420 — the whole
+    """Raised (via raise_for_status) when ESI returns HTTP 420 - the whole
     client is error-limited and no request will succeed until the window resets."""
 
 
 # --- ESI error-limit governor -------------------------------------------------
 # ESI keeps a per-client error budget in a ~60s sliding window and returns HTTP
-# 420 ("error limited") for EVERY request once it is exhausted — so a single
+# 420 ("error limited") for EVERY request once it is exhausted - so a single
 # innocent GET (e.g. Plan → assets) fails only because something else (Sync All
 # across many characters, a price refresh) burned the budget. Every ESI response
 # carries X-ESI-Error-Limit-Remain / -Reset; we watch them across ALL esi_client()
@@ -67,7 +67,7 @@ _ERROR_LIMIT = _ErrorLimitGovernor()
 # shape this code:
 #
 #   * The bucket is per RATE LIMIT GROUP, not per client. Pausing everything on a
-#     429 — the way the error limit governor has to — would let a drained market
+#     429 - the way the error limit governor has to - would let a drained market
 #     bucket stop unrelated wallet or asset calls. So state is kept per group.
 #   * A request does not say which group it belongs to; only the response does,
 #     via X-Ratelimit-Group. We therefore learn the mapping from responses, keyed
@@ -75,7 +75,7 @@ _ERROR_LIMIT = _ErrorLimitGovernor()
 #     /markets/10000002/orders/ and /markets/10000043/orders/ share one entry.
 #
 # Costs (per CCP's docs): 2xx = 2 tokens, 3xx = 1, 4xx = 5, 5xx = 0, and a 429
-# itself is free — so being throttled does not dig the hole deeper.
+# itself is free - so being throttled does not dig the hole deeper.
 class _TokenBucketGovernor:
     # Below this share of the bucket, pause the group briefly between bursts.
     # The real protection is the 429 path; this only keeps us off the cliff, as
@@ -118,7 +118,7 @@ class _TokenBucketGovernor:
     def blocked(self, sig: str, response: httpx.Response) -> float:
         """Record a 429 and return how long to wait."""
         # Some 429s come from a limiter deep in the game servers and carry no
-        # rate-limit headers at all — CCP's docs say so explicitly — hence the
+        # rate-limit headers at all - CCP's docs say so explicitly - hence the
         # fallback group key and default delay.
         group = response.headers.get("x-ratelimit-group") or self._group_of.get(sig) or sig
         self._group_of[sig] = group
@@ -137,7 +137,7 @@ _TOKEN_LIMIT = _TokenBucketGovernor()
 
 
 def _limit_header_total(value: Optional[str]) -> Optional[int]:
-    """X-Ratelimit-Limit is "<tokens>/<window>", e.g. "12000/15m" — take the tokens."""
+    """X-Ratelimit-Limit is "<tokens>/<window>", e.g. "12000/15m" - take the tokens."""
     if not value:
         return None
     try:
@@ -156,7 +156,7 @@ def _int_header(response: httpx.Response, name: str) -> Optional[int]:
 # --- market bucket isolation --------------------------------------------------
 # Public routes are bucketed by <sourceIP>, which a desktop user shares with every
 # other EVE tool on the machine (and, behind CGNAT, with strangers). Supplying an
-# access token moves us to <sourceIP>:<applicationID> — the same size bucket, but
+# access token moves us to <sourceIP>:<applicationID> - the same size bucket, but
 # ours alone. It does NOT multiply the budget: per CCP's docs only *authenticated
 # routes* key on characterID, so rotating characters buys nothing here.
 _market_token_provider: Optional[object] = None
@@ -214,7 +214,7 @@ class _GovernedTransport(httpx.AsyncHTTPTransport):
             response = await super().handle_async_request(request)
 
             # A stale or wrong token must never break a call that would have
-            # worked unauthenticated — drop the header, stop using it for a
+            # worked unauthenticated - drop the header, stop using it for a
             # while, and retry as an anonymous request.
             if added_auth and response.status_code in (401, 403):
                 await response.aread()
@@ -222,7 +222,7 @@ class _GovernedTransport(httpx.AsyncHTTPTransport):
                 del request.headers["Authorization"]
                 added_auth = False
                 _market_token_disabled_until = time.monotonic() + 600
-                print("[esi] market token rejected — falling back to unauthenticated "
+                print("[esi] market token rejected - falling back to unauthenticated "
                       "market calls for 10 minutes", flush=True)
                 continue
 
@@ -239,13 +239,13 @@ class _GovernedTransport(httpx.AsyncHTTPTransport):
                 await response.aread()
                 await response.aclose()
                 last = response
-                print(f"[esi] 429 on {sig} — waiting {delay:.0f}s", flush=True)
+                print(f"[esi] 429 on {sig} - waiting {delay:.0f}s", flush=True)
                 continue
 
             _ERROR_LIMIT.observe(_int_header(response, "x-esi-error-limit-remain"), reset)
             _TOKEN_LIMIT.observe(sig, response)
             return response
-        return last  # exhausted retries — hand it back so raise_for_status fires
+        return last  # exhausted retries - hand it back so raise_for_status fires
 
 
 def esi_client(**kwargs) -> httpx.AsyncClient:

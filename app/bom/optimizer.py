@@ -14,7 +14,7 @@ Algorithm (bottom-up):
   the (real) install fees then silently erase the paper savings.
 
   input_price is Jita sell (index 0) or Jita buy (index 1) depending on the
-  `input_basis` argument — real builders source inputs from buy orders, which
+  `input_basis` argument - real builders source inputs from buy orders, which
   is cheaper than instant-buying at sell.
 
   The result is the minimum total cost and a list of decisions for each intermediate.
@@ -60,7 +60,7 @@ def optimize(
     """
     Run make vs. buy optimization on the BOM tree.
     prices: {type_id: (sell_price, buy_price)}
-    input_basis: "sell" (index 0) or "buy" (index 1) — which price to pay for inputs.
+    input_basis: "sell" (index 0) or "buy" (index 1) - which price to pay for inputs.
     """
     price_idx = 1 if input_basis == "buy" else 0
     raw_decisions: list[Decision] = []
@@ -176,7 +176,7 @@ def get_shopping_list(
         decision = decisions.get(node.type_id)
         if not is_root and decision and decision.action == "buy":
             _add(node.type_id, node.name, node.quantity)
-            return  # don't descend further — we buy the finished component
+            return  # don't descend further - we buy the finished component
 
         for child in node.children:
             traverse(child)
@@ -190,7 +190,7 @@ def _naive_cost(
     prices: dict[int, tuple[float | None, float | None]],
     price_idx: int = 0,
 ) -> float | None:
-    """Naive cost — make everything, buy the leaves. Includes each job's install
+    """Naive cost - make everything, buy the leaves. Includes each job's install
     fee, so 'naive' is the true all-in cost of building the whole tree."""
     if node.is_leaf:
         price = prices.get(node.type_id, (None, None))[price_idx]

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Copies the shared Python code + data from the repo root into the Android gradle module.
 # Called before `gradle assembleDebug` (in CI and locally). The target directories are
-# gitignored — they are build-time artifacts, not source.
+# gitignored - they are build-time artifacts, not source.
 #
 #   app/  ──► app/src/main/python/app          (Chaquopy: `import app.web.main`)
 #   app/web/templates/ ─► assets/bundle/app/web/templates  (Jinja reads from the filesystem)

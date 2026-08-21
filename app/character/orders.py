@@ -1,5 +1,5 @@
 """
-Market orders — active and historical, for character and corporation.
+Market orders - active and historical, for character and corporation.
 
 ESI endpoints:
   Character:

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Regenerate the README screenshots from anonymized demo data.
 
-Takes the local (real) eve_cache.db, builds an anonymized copy — fake pilot
+Takes the local (real) eve_cache.db, builds an anonymized copy - fake pilot
 names/ids, fake corporations, generated wallet balances, renamed private
-structures — then starts the app against that copy and screenshots the
+structures - then starts the app against that copy and screenshots the
 Dashboard, Production Plan and Assets pages into docs/screenshots/.
 
 Nothing traceable to the real account ends up in the images: item/blueprint
@@ -125,7 +125,7 @@ def build_demo_db(dst_dir: str) -> str:
         for lid, _ in conn.execute("SELECT location_id, name FROM location_name_cache").fetchall():
             if lid and lid >= 1_000_000_000_000:   # player structure id range
                 conn.execute("UPDATE location_name_cache SET name=? WHERE location_id=?",
-                             (f"{generic[gi % len(generic)]} — Demo {gi+1}", lid))
+                             (f"{generic[gi % len(generic)]} - Demo {gi+1}", lid))
                 gi += 1
 
     # Make every cache "fresh" so pages serve it without an ESI call.
@@ -187,8 +187,8 @@ def main() -> None:
     m.fetch_location = fake_location
     m.fetch_skill_queue = fake_skill_queue
 
-    # ── Jobs & Orders are fetched live from ESI (never cached in the DB), so —
-    #    like location/skills above — stub the fetchers with a realistic spread. ──
+    # ── Jobs & Orders are fetched live from ESI (never cached in the DB), so -
+    #    like location/skills above - stub the fetchers with a realistic spread. ──
     _c = sqlite3.connect(demo_db)
     TID = {}
     for _n in ("Raven", "Scorpion", "Megathron", "Tempest",
@@ -239,7 +239,7 @@ def main() -> None:
 
     m.orders_api.fetch_orders = fake_orders
 
-    # ── PI colonies (live from ESI; scope-gated) — stubbed for the screenshot.
+    # ── PI colonies (live from ESI; scope-gated) - stubbed for the screenshot.
     #    Real planet/system ids so /universe/names resolves "Jita IV" etc. ──
     PLANETS_BY_INDEX = {
         0: [{"planet_id": 40009082, "solar_system_id": 30000142, "planet_type": "barren",
@@ -392,7 +392,7 @@ def main() -> None:
             check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # Trim the EMPTY SPACE BELOW the content only. A plain -trim also eats
         # the top, because the navbar band (#0f141b) is just 2.4 % away from the
-        # page background (#0b0e13) and the fuzz is 3 % — so ImageMagick treated
+        # page background (#0b0e13) and the fuzz is 3 % - so ImageMagick treated
         # the navbar's own padding as border and shaved it off, leaving the logo
         # flush against the top edge. The header then looked cut compared to the
         # running app, which is what a tester reported. Left/right never needed

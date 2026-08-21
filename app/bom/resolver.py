@@ -14,7 +14,7 @@ import sqlite3
 
 from app.character.blueprints import CharBlueprint
 
-# Sentinel for "cache miss" — `None` is a valid stored value (no group for the
+# Sentinel for "cache miss" - `None` is a valid stored value (no group for the
 # given type_id), so we need a separate marker.
 _MISSING = object()
 
@@ -29,7 +29,7 @@ class StationFacility:
     `sec_multiplier` = 1.0 / 1.9 / 2.1 depending on the system's security status.
 
     The resolver / time-calc then decides per product which rigs apply (an Equipment rig
-    does not apply to ships, etc.) — see industry_helper.rig_applies_to_product.
+    does not apply to ships, etc.) - see industry_helper.rig_applies_to_product.
     """
     structure_pct: float = 0.0
     structure_te_pct: float = 0.0
@@ -48,7 +48,7 @@ class BOMNode:
     blueprint_type_id: int | None
     me: int = 0             # effective ME used for the calculation (0 if the user has no BP)
     product_qty_per_run: int = 1   # yield of one cycle (40 fuel block, 10000 TC, …)
-    job_fee: float = 0.0    # install fee for THIS job (0 if fee params not supplied) —
+    job_fee: float = 0.0    # install fee for THIS job (0 if fee params not supplied) -
                             # lets the make-vs-buy optimizer compare all-in make cost
                             # (materials + fee) against the buy price, per node.
     children: list[BOMNode] = field(default_factory=list)
@@ -83,21 +83,21 @@ class BOMResolver:
         self.conn.row_factory = sqlite3.Row
         # Per-job install-fee inputs (optional). When adjusted_prices is given,
         # each node gets job_fee = EIV × rate, where EIV = Σ(adjusted_price ×
-        # BASE material qty × runs) — the same Fenris Creations formula used for the displayed
+        # BASE material qty × runs) - the same Fenris Creations formula used for the displayed
         # fee total. rate_mfg / rate_rxn already fold in SCI×(1-bonus)+tax+SCC.
         self._adj_prices = adjusted_prices
         self._rate_mfg = rate_mfg
         self._rate_rxn = rate_rxn
         # Max runs per single job (= per BPC copy). ME is rounded per job,
         # so this drives the material math:
-        #   1 (default) — N parallel 1-run copies (conservative)
-        #   K           — copies of K runs each (e.g. a 10-run BPC), remainder
+        #   1 (default) - N parallel 1-run copies (conservative)
+        #   K           - copies of K runs each (e.g. a 10-run BPC), remainder
         #                 in a final smaller job
-        #   None        — everything in one batched job (in-game multi-run window)
+        #   None        - everything in one batched job (in-game multi-run window)
         self.runs_per_job = runs_per_job if (runs_per_job or 0) > 0 else None
         # product_type_id → character's ME (best available blueprint for that product)
         self._bp_me_by_product: dict[int, int] = {}
-        # Hot-path caches — resolver is reused for the entire BOM walk, so
+        # Hot-path caches - resolver is reused for the entire BOM walk, so
         # repeating the same DB lookups for the same type_id (Wasp I appears
         # in every Wasp II run, Tungsten Carbide reaction repeats across
         # branches…) is pure waste.
@@ -196,14 +196,14 @@ class BOMResolver:
     def find_blueprint(self, product_type_id: int) -> sqlite3.Row | None:
         """Finds the blueprint that produces the given type (manufacturing or reaction).
 
-        Selection rules — resolves cases where the SDE carries several recipes for the same product:
+        Selection rules - resolves cases where the SDE carries several recipes for the same product:
 
         1. Excludes blueprints with "TEST" / "Test " / "QA " / "Tournament" in the name
-           — these are tutorial / internal developer blueprints (e.g. the "Test Reaction
+           - these are tutorial / internal developer blueprints (e.g. the "Test Reaction
            Blueprint" produces Tungsten Carbide with a 500x lower yield than the
            real recipe; the bug propagated to 43 other T2 products).
         2. Prefers the recipe with the highest output per cycle (`p.quantity DESC`)
-           — real recipes tend to have a larger yield than legacy/test versions.
+           - real recipes tend to have a larger yield than legacy/test versions.
         3. On a yield tie, prefers the higher `blueprint_type_id` (the newer
            SDE record; the developer occasionally renames a BP and leaves the old one in the data).
         """
@@ -251,12 +251,12 @@ class BOMResolver:
         product_type_id: int,
         facility: StationFacility,
     ) -> float:
-        """Returns the ME multiplier for a specific product — filters rigs by
+        """Returns the ME multiplier for a specific product - filters rigs by
         whether they apply to the product's category (an Equipment rig
         does not apply to ships, etc.).
 
         Cached: classify each product once and the rig groups once, no
-        per-node DB round-trips — Wasp II BOM walk went from ~180
+        per-node DB round-trips - Wasp II BOM walk went from ~180
         sqlite calls down to ~5.
         """
         multiplier = 1.0 - facility.structure_pct / 100
@@ -284,7 +284,7 @@ class BOMResolver:
         """
         Recursively breaks the manufacturing of the given type down into primary raw materials.
 
-        me: for the root node — None means use the best user BP (or 0 if none).
+        me: for the root node - None means use the best user BP (or 0 if none).
         For intermediate steps, the per-product ME is always looked up in `_bp_me_by_product`.
 
         mfg_facility / rxn_facility: station configuration for the per-product ME multiplier.
@@ -318,7 +318,7 @@ class BOMResolver:
         else:
             effective_me = float(me)
 
-        # Per-product facility multiplier — applies only rigs applicable to this product
+        # Per-product facility multiplier - applies only rigs applicable to this product
         facility = mfg_facility if activity == "manufacturing" else rxn_facility
         prod_mult = self._product_facility_multiplier(type_id, facility)
 
@@ -333,7 +333,7 @@ class BOMResolver:
             product_qty_per_run=int(product_qty_per_run),
         )
 
-        # Per-job install fee (EIV × rate) — EIV uses BASE (ME 0) quantities,
+        # Per-job install fee (EIV × rate) - EIV uses BASE (ME 0) quantities,
         # not the ME-reduced ones, matching the official job-cost formula.
         if self._adj_prices is not None:
             rate = self._rate_rxn if activity == "reaction" else self._rate_mfg
@@ -369,7 +369,7 @@ class BOMResolver:
         where fac_mult is the already multiplicatively-combined multiplier of the
         structure and rigs. round(..., 2) before ceil prevents floating-point drift.
 
-        ME is rounded per JOB — so the total material needed depends on how the
+        ME is rounded per JOB - so the total material needed depends on how the
         runs are split across jobs/BPC copies. self.runs_per_job (J) says how many
         runs one copy has:
 

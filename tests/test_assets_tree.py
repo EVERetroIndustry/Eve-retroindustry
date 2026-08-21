@@ -27,7 +27,7 @@ def _hangar_row(type_id, name, qty, price, owner=OWNER, is_copy=False):
 def _node():
     """One station: two Megathrons in the hangar, one of them assembled with a fit.
 
-    Keyed exactly like assets_page keys it — (type_id, owner_id, is_copy).
+    Keyed exactly like assets_page keys it - (type_id, owner_id, is_copy).
     """
     ship_container_id = 555001
     return {
@@ -56,7 +56,7 @@ def test_label_keeps_both_custom_name_and_type(app_module):
     assert f("None", "Megathron", 1) == "Megathron"
     assert f("none", "Megathron", 1) == "Megathron"
     # The bracket marks a named item as assembled/in use, so it is appended
-    # unconditionally — no test against the name's content, which is what broke
+    # unconditionally - no test against the name's content, which is what broke
     # twice (a substring test hid the hull on Hulk1/Hulk2, a whole-word test
     # would do the same to "Hulk 1").
     assert f("Hulk1", "Hulk", 1) == "Hulk1 (Hulk)"
@@ -102,7 +102,7 @@ def test_fold_survives_a_changed_bucket_key(app_module):
     """The regression guard: the fold must not depend on the key's shape.
 
     v0.8.60 added is_copy to the key and the fold, which rebuilt (type_id,
-    owner_id), stopped matching without any error — hulls were never folded for
+    owner_id), stopped matching without any error - hulls were never folded for
     ten minor versions. Match on the row's fields instead.
     """
     node, ship_cid = _node()
@@ -385,13 +385,13 @@ def test_fitted_and_spare_copies_of_one_module_stay_apart(app_module, client, mo
                 seen.append(flat)
         assert len(seen) == 2, seen
         # The two fitted ones collapse into a single row, the spare in cargo keeps
-        # its own — that split is the whole point of grouping by slot, and merged
+        # its own - that split is the whole point of grouping by slot, and merged
         # they used to read "x3", which says nothing about the fit.
         qtys = sorted(int(s.split("Tracking Computer II ")[1].split()[0]) for s in seen)
         assert qtys == [1, 2], seen
         # Sections replace the old Slot column, in fitting-window wording. This
         # fixture fits two mid slots and leaves a spare in cargo, so those are the
-        # bands it must produce — and no others.
+        # bands it must produce - and no others.
         bands = set(re.findall(r'class="slot-section".*?>\s*([^<>]+?)\s*</td>', html, re.S))
         assert bands == {"Hull", "Medium power", "Cargo"}, bands
     finally:
@@ -440,7 +440,7 @@ def test_plain_container_renders_no_slot_column(app_module, client, monkeypatch)
 
 
 def test_sections_are_dropped_when_the_rows_leave_fitting_order(app_module, client):
-    """Sorting by any column scrambles the groups, so the bands must go with them —
+    """Sorting by any column scrambles the groups, so the bands must go with them -
     a band left behind would be labelling the wrong block."""
     html = _text(client, "/assets")
     assert "tr.slot-section" in html
@@ -471,7 +471,7 @@ def test_resolver_asks_only_about_ids_the_character_owns(app_module):
     The caller hands the resolver every container id found across the account. It
     used to POST that whole list to each character's /assets/names/, so each call
     carried other pilots' item_ids. Whatever ESI makes of those, a failed batch
-    costs the custom name of every container in it — and every assembled ship then
+    costs the custom name of every container in it - and every assembled ship then
     falls back to its bare hull type, which is what was seen.
     """
     import asyncio, json as _j

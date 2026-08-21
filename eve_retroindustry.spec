@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-# EVE Retroindustry — PyInstaller spec
+# EVE Retroindustry - PyInstaller spec
 #
 # Build:
 #   1. python scripts/build_sde_base.py   (creates sde_base.db)
@@ -20,7 +20,7 @@ from PyInstaller.utils.hooks import collect_all
 block_cipher = None
 
 # pywebview uses Qt (PyQt6-WebEngine) on both Linux and Windows. Self-contained
-# bundled Chromium — no system webkit2gtk on Linux, no Edge WebView2 / pythonnet
+# bundled Chromium - no system webkit2gtk on Linux, no Edge WebView2 / pythonnet
 # on Windows (the default pywebview Windows backend tries to load
 # Python.Runtime.dll through pythonnet and silently corrupts under PyInstaller).
 #
@@ -48,7 +48,7 @@ a = Analysis(
         ("app/web/templates", "app/web/templates"),
         ("app/web/static", "app/web/static"),
         ("assets/icon.ico", "assets"),
-        # Bundle SDE base — first run copies it to eve_cache.db; later runs
+        # Bundle SDE base - first run copies it to eve_cache.db; later runs
         # use it to refresh SDE tables when the bundled DB has newer/more
         # types than the user's eve_cache.db (e.g. after an in-app update).
         ("sde_base.db", "."),
@@ -183,9 +183,9 @@ _qt_other_lib_keep = re.compile(
 # QtWebEngineProcess is the standalone helper executable Chromium spawns
 # for renderers / GPU / utility processes. On Linux it lives in libexec/
 # (outside the lib/-filtered branch), on Windows it sits in bin/ alongside
-# the DLLs — so the Windows filter must allow it explicitly.
+# the DLLs - so the Windows filter must allow it explicitly.
 _qt_exec_keep = re.compile(r"QtWebEngineProcess(\.exe)?$")
-# Plugins kept across platforms — superset, harmless extras stay.
+# Plugins kept across platforms - superset, harmless extras stay.
 # Linux needs xcb/wayland; Windows needs windowsvistastyle (under styles/).
 _qt_plugin_keep = re.compile(
     r"PyQt6[/\\]Qt6[/\\]plugins[/\\](platforms|imageformats|tls|iconengines|"
@@ -209,7 +209,7 @@ def _qt_keep(dest: str) -> bool:
     # (QtWebEngineProcess.exe, libEGL.dll, libGLESv2.dll, opengl32sw.dll,
     # d3dcompiler_47.dll, vk_swiftshader.dll, …). Trying to allowlist all
     # of them is brittle, and the bin/ tree is only ~80 MB so we leave it
-    # whole — Windows bundle stays under 250 MB which is fine.
+    # whole - Windows bundle stays under 250 MB which is fine.
     if "/lib/" in d:
         base = d.rsplit("/", 1)[-1]
         return bool(

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Jobs — EVE Retroindustry{% endblock %}
+{% block title %}Jobs - EVE Retroindustry{% endblock %}
 {% block content %}
 
 <div class="row mb-3 align-items-center">
@@ -15,7 +15,7 @@
 {% endif %}
 
 {% if fetch_failed %}
-<div class="alert alert-warning py-2"><i class="bi bi-arrow-repeat me-2"></i>Couldn't load jobs for some characters — a sync may be in progress. Refresh in a moment.</div>
+<div class="alert alert-warning py-2"><i class="bi bi-arrow-repeat me-2"></i>Couldn't load jobs for some characters - a sync may be in progress. Refresh in a moment.</div>
 {% endif %}
 
 {% set ns = namespace(any=false) %}

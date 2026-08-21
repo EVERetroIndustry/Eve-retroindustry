@@ -32,9 +32,9 @@ def print_plan(
         bp_info = "[red]Character has no blueprint for this product[/]"
 
     mode_labels = {
-        "full":       "[white]full[/]       — base materials (entire production chain)",
-        "components": "[yellow]components[/] — direct tier-1 components (buy ready)",
-        "optimal":    "[green]optimal[/]    — make vs. buy optimization",
+        "full":       "[white]full[/]       - base materials (entire production chain)",
+        "components": "[yellow]components[/] - direct tier-1 components (buy ready)",
+        "optimal":    "[green]optimal[/]    - make vs. buy optimization",
     }
     mode_str = mode_labels.get(plan.mode, plan.mode)
 
@@ -81,7 +81,7 @@ def print_plan(
     for m in sorted_mats:
         cov_color   = "green" if m.ok else ("yellow" if m.coverage_pct >= 50 else "red")
         status      = "[green]✓[/]" if m.ok else "[red]✗[/]"
-        missing_str = f"[red]{m.missing:,}[/]" if m.missing > 0 else "[dim]—[/]"
+        missing_str = f"[red]{m.missing:,}[/]" if m.missing > 0 else "[dim]-[/]"
 
         row = [m.name, f"{m.required:,}"]
 
@@ -98,7 +98,7 @@ def print_plan(
             if m.missing > 0 and sell_p is not None:
                 buy_str = _isk(sell_p * m.missing)
             elif m.missing == 0:
-                buy_str = "[dim]—[/]"
+                buy_str = "[dim]-[/]"
             else:
                 buy_str = "[dim]N/A[/]"
             row.append(buy_str)
@@ -132,7 +132,7 @@ def _print_shopping_bill(
     prices: dict[int, tuple[float | None, float | None]],
     plan: ManufacturingPlan,
 ):
-    """Shopping bill — missing materials sorted by price."""
+    """Shopping bill - missing materials sorted by price."""
     rows = []
     total_known = 0.0
     missing_price_count = 0
@@ -151,7 +151,7 @@ def _print_shopping_bill(
     rows.sort(key=lambda r: -(r[3] or 0))
 
     table = Table(
-        title=f"Shopping list — {plan.product_name} ×{plan.quantity:,}",
+        title=f"Shopping list - {plan.product_name} ×{plan.quantity:,}",
         box=box.ROUNDED,
         show_lines=True,
     )

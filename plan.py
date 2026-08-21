@@ -1,5 +1,5 @@
 """
-EVE Retroindustry — production planner using character data.
+EVE Retroindustry - production planner using character data.
 
 Usage:
   python plan.py --product "Phoenix" --station 60003760
@@ -72,7 +72,7 @@ async def resolve_station_name(
                 if r.status_code == 200:
                     name = r.json().get("name", name)
             else:
-                # Player structure — requires a token
+                # Player structure - requires a token
                 if token:
                     r = await client.get(
                         f"{ESI_BASE}/universe/structures/{location_id}/",
@@ -177,7 +177,7 @@ async def list_locations(char_id: int, token: str, conn: sqlite3.Connection):
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="EVE Retroindustry — production planner")
+    parser = argparse.ArgumentParser(description="EVE Retroindustry - production planner")
     parser.add_argument("--product",         help="Product name or type_id")
     parser.add_argument("--station", type=int, help="Station/structure ID (e.g. 60003760 = Jita)")
     parser.add_argument("--qty",     type=int, default=1, help="Number of units (default: 1)")
@@ -271,13 +271,13 @@ async def main():
     _bp = find_blueprint_for_product(blueprints, type_id, conn)
     _me = float(_bp.material_efficiency if _bp else 0)
 
-    # Build the BOM tree — needed both for collecting type_ids and for optimal mode
+    # Build the BOM tree - needed both for collecting type_ids and for optimal mode
     from app.bom.resolver import BOMResolver as _BOMResolver
     _resolver = _BOMResolver(DB_ABS)
     _root = _resolver.resolve(type_id, args.qty, me=_me)
     _resolver.close()
 
-    # Collect type_ids — we need every node in the tree plus the product itself
+    # Collect type_ids - we need every node in the tree plus the product itself
     all_ids = list(set(collect_all_type_ids(_root) + [type_id]))
     async with httpx.AsyncClient() as client:
         if args.jita:

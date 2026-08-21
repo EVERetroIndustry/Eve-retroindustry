@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ project.name }} — EVE Projects{% endblock %}
+{% block title %}{{ project.name }} - EVE Projects{% endblock %}
 {% block content %}
 
 <div class="row mb-3 align-items-center">
@@ -75,7 +75,7 @@
             &nbsp;/&nbsp;
             <span style="color:#e3b341">TE {{ plan.te }}</span>
           </td>
-          <td class="text-muted small">{{ plan.station_name or '—' }}</td>
+          <td class="text-muted small">{{ plan.station_name or '-' }}</td>
           <td class="text-center">
             <div class="form-check d-flex justify-content-center mb-0">
               <input class="form-check-input" type="checkbox" style="cursor:pointer;width:1.2em;height:1.2em"
@@ -136,7 +136,7 @@
         {% endif %}
         {# Checkbox sits as a sibling of the accordion button, positioned over
            the right edge. Putting <input> INSIDE <button> is invalid HTML and
-           lets some browsers route the click through to the button anyway —
+           lets some browsers route the click through to the button anyway -
            which expanded the accordion every time the user just wanted to
            tick the checkbox. #}
         <div class="form-check mb-0"
@@ -232,7 +232,7 @@
             {% if item.purchased > 0 %}
             <span class="{% if done %}text-success{% else %}text-warning{% endif %}">{{ item.purchased | format_number }}</span>
             {% else %}
-            <span class="text-muted">—</span>
+            <span class="text-muted">-</span>
             {% endif %}
           </td>
           <td class="text-center">
@@ -296,7 +296,7 @@ async function toggleShopping(cb) {
   if (el) {
     el.innerHTML = cb.checked
       ? `<span class="text-success">${needed.toLocaleString('cs-CZ')}</span>`
-      : '<span class="text-muted">—</span>';
+      : '<span class="text-muted">-</span>';
   }
 }
 

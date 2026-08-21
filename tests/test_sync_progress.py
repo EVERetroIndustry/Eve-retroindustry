@@ -28,7 +28,7 @@ def test_pct_rises_monotonically_through_the_whole_sync(app_module, sync_state):
             seen.append(app_module._sync_pct())
     assert seen == sorted(seen), "progress must never go backwards"
     assert seen[0] < seen[-1]
-    # The character loop stops short of 100 — the trailing steps own the rest.
+    # The character loop stops short of 100 - the trailing steps own the rest.
     assert max(seen) <= 95
     # And it actually moves per step, not once per character.
     assert len(set(seen)) > 12

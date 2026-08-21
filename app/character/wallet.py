@@ -1,5 +1,5 @@
 """
-Wallet — ISK balance, journal and market transactions for both character and corporation.
+Wallet - ISK balance, journal and market transactions for both character and corporation.
 
 ESI endpoints:
   Character:
@@ -12,7 +12,7 @@ ESI endpoints:
     GET /corporations/{id}/wallets/{div}/transactions/
 
 Scopes: esi-wallet.read_character_wallet.v1, esi-wallet.read_corporation_wallets.v1
-(corporation role: esi-characters? — no, just the wallet scope + in-game role).
+(corporation role: esi-characters? - no, just the wallet scope + in-game role).
 """
 from __future__ import annotations
 import httpx
@@ -42,7 +42,7 @@ _MAX_JOURNAL_PAGES = 12
 
 async def fetch_journal(client: httpx.AsyncClient, char_id: int, token: str,
                         limit: int = 2500) -> list[dict]:
-    """Wallet journal — newest first, up to `limit` entries.
+    """Wallet journal - newest first, up to `limit` entries.
 
     Keeps pulling pages until it has `limit` entries or ESI runs out, rather than
     assuming a page size: published sources disagree on whether a journal page
@@ -106,7 +106,7 @@ async def fetch_corp_wallets(client: httpx.AsyncClient, corp_id: int, token: str
 
 async def fetch_corp_journal(client: httpx.AsyncClient, corp_id: int, division: int,
                              token: str, limit: int = 2500) -> list[dict]:
-    """Corp division journal — same paging rules as the character journal."""
+    """Corp division journal - same paging rules as the character journal."""
     out: list[dict] = []
     for page in range(1, _MAX_JOURNAL_PAGES + 1):
         try:

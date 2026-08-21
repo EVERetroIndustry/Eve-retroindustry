@@ -1,6 +1,6 @@
 """
 EVE Online ESI OAuth2 PKCE flow for native/CLI applications.
-Does not require a client_secret — uses PKCE (code_challenge).
+Does not require a client_secret - uses PKCE (code_challenge).
 
 Flow:
   1. Generate code_verifier + code_challenge
@@ -121,7 +121,7 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
-        # The browser tab stays on this page — no redirect to
+        # The browser tab stays on this page - no redirect to
         # localhost:8000/auth/sync, which would open our app in an external
         # browser instead of keeping it in the original window.
         # Meanwhile the webview polls /api/auth/status and redirects itself
@@ -129,7 +129,7 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         body = (
             "<!doctype html>"
             "<meta charset='utf-8'>"
-            "<title>EVE Retroindustry — login complete</title>"
+            "<title>EVE Retroindustry - login complete</title>"
             "<style>"
             "  body { font-family: system-ui, sans-serif; background:#0d1117; "
             "         color:#c9d1d9; display:flex; align-items:center; "
@@ -148,13 +148,13 @@ class _CallbackHandler(BaseHTTPRequestHandler):
             "and is loading your character data.</p>"
             "<script>"
             "  // try to auto-close the tab (works only if window was opened "
-            "  // by script with window.open) — falls back to staying open."
+            "  // by script with window.open) - falls back to staying open."
             "  setTimeout(() => { try { window.close(); } catch (e) {} }, 1500);"
             "</script>"
             "</div>"
         )
         self.wfile.write(body.encode())
-        # serve_forever() won't stop the thread on its own — trigger shutdown
+        # serve_forever() won't stop the thread on its own - trigger shutdown
         # from another thread, otherwise we'd deadlock (shutdown waits for the
         # serve_forever loop to end, which is waiting on us).
         threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -168,7 +168,7 @@ class _DualStackCallbackServer(HTTPServer):
 
     EVE SSO redirects the browser to ``http://localhost:5173/callback``. On some
     machines the browser resolves ``localhost`` to ``::1`` (IPv6), while a plain
-    ``HTTPServer(("localhost", ...))`` binds IPv4 only (127.0.0.1) — the redirect
+    ``HTTPServer(("localhost", ...))`` binds IPv4 only (127.0.0.1) - the redirect
     then hits a closed IPv6 port, the code never arrives, and the app waits
     forever. Binding a dual-stack IPv6 socket makes both loopback flavors reach
     us regardless of how the browser resolves ``localhost``.
@@ -194,12 +194,12 @@ def _make_callback_server() -> HTTPServer:
     """Create the local callback server, preferring a dual-stack IPv6 socket that
     catches both ``::1`` and ``127.0.0.1``. Fall back to IPv4-only if IPv6 is
     disabled on this machine. Raises OSError if the port can't be bound (e.g. it
-    is already in use) — the caller logs that."""
+    is already in use) - the caller logs that."""
     try:
         return _DualStackCallbackServer(("::", CALLBACK_PORT), _CallbackHandler)
     except OSError as exc:
         if _is_addr_in_use(exc):
-            raise  # port taken — IPv4 fallback would fail too; let caller report it
+            raise  # port taken - IPv4 fallback would fail too; let caller report it
         print(f"[auth] IPv6 dual-stack bind failed ({exc!r}); falling back to IPv4-only",
               flush=True)
         return HTTPServer(("127.0.0.1", CALLBACK_PORT), _CallbackHandler)
@@ -282,7 +282,7 @@ def login(client_id: str | None = None) -> bool:
     refresh_token = data["refresh_token"]
     expires_in    = data.get("expires_in", 1200)
 
-    # Decode the JWT for character info (without signature verification — we trust HTTPS)
+    # Decode the JWT for character info (without signature verification - we trust HTTPS)
     try:
         payload = jwt.decode(access_token, options={"verify_signature": False})
         sub = payload.get("sub", "")           # "CHARACTER:EVE:12345678"
@@ -302,7 +302,7 @@ def login(client_id: str | None = None) -> bool:
     return True
 
 
-# Reference to the active callback server (HTTPServer) — None when no login is running.
+# Reference to the active callback server (HTTPServer) - None when no login is running.
 # Kept so that /auth/cancel can shut it down.
 _active_server: HTTPServer | None = None
 _cancelled: bool = False
@@ -329,7 +329,7 @@ def start_web_login() -> str | None:
     """
     Start the OAuth2 PKCE flow for the web UI.
     Return the auth URL to redirect to, or None if client_id is missing.
-    The callback server runs in the background — on success it stores the tokens and redirects to the app.
+    The callback server runs in the background - on success it stores the tokens and redirects to the app.
     """
     global _active_server, _cancelled
     if not _login_lock.acquire(blocking=False):
@@ -369,7 +369,7 @@ def start_web_login() -> str | None:
             except OSError as exc:
                 if _is_addr_in_use(exc):
                     print(f"[auth] callback FAILED: port {CALLBACK_PORT} is already in use "
-                          f"— another program is holding it. Close it and try again. ({exc!r})",
+                          f"- another program is holding it. Close it and try again. ({exc!r})",
                           flush=True)
                 else:
                     print(f"[auth] callback FAILED: could not bind port {CALLBACK_PORT}: {exc!r}",
@@ -381,12 +381,12 @@ def start_web_login() -> str | None:
             _active_server = server
             print(f"[auth] callback server listening on {server.server_address} "
                   f"(family={server.address_family.name}); waiting for SSO redirect", flush=True)
-            # Watchdog — if the user doesn't come back within 15 min, shut down and release the lock.
+            # Watchdog - if the user doesn't come back within 15 min, shut down and release the lock.
             def _watchdog():
                 import time
                 time.sleep(15 * 60)
                 if _active_server is server:
-                    print("[auth] callback watchdog: no redirect within 15 min — giving up",
+                    print("[auth] callback watchdog: no redirect within 15 min - giving up",
                           flush=True)
                     try:
                         server.shutdown()
@@ -405,7 +405,7 @@ def start_web_login() -> str | None:
                 print("[auth] login cancelled by user", flush=True)
                 return
             if not _CallbackHandler.code:
-                print("[auth] callback FAILED: no authorization code received — the browser "
+                print("[auth] callback FAILED: no authorization code received - the browser "
                       "never reached the callback (IPv6/IPv4, firewall, or closed too early)",
                       flush=True)
                 return

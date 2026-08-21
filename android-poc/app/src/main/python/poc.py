@@ -2,7 +2,7 @@
 Chaquopy dependency proof-of-concept.
 
 Goal: verify that the entire EVE Retroindustry dependency stack imports on
-Android — mainly the natively compiled pydantic-core (Rust), which is the
+Android - mainly the natively compiled pydantic-core (Rust), which is the
 make-or-break. Returns a text report that MainActivity displays.
 """
 import io
@@ -24,7 +24,7 @@ def _try_import(label: str, modname: str, version_attr: str = "__version__") -> 
 
 def run_checks() -> str:
     out = io.StringIO()
-    out.write("EVE Retroindustry — Chaquopy dependency PoC\n")
+    out.write("EVE Retroindustry - Chaquopy dependency PoC\n")
     out.write(f"Python {platform.python_version()} on {platform.machine()}\n")
     out.write("-" * 44 + "\n")
 

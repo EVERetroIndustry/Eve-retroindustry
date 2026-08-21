@@ -26,7 +26,7 @@ from app.market.prices import (
 def get_cached_jita_prices(conn: sqlite3.Connection, type_ids: list[int]) -> dict[int, tuple[float | None, float | None]]:
     """Returns all prices from the cache (last fetched Jita / The Forge sell).
 
-    The cache does NOT expire — the last fetched value is always used. The real
+    The cache does NOT expire - the last fetched value is always used. The real
     price is often more representative than the ESI 30-day average, and moreover a bulk
     refresh of /markets/{region}/orders/ returns the lowest sell in the entire
     The Forge region (Jita station + surrounding systems), so if there is currently no
@@ -122,7 +122,7 @@ def get_cached_prices_for_ids(
     conn: sqlite3.Connection,
     type_ids: list[int],
 ) -> dict[int, tuple[float | None, float | None]]:
-    """Like :func:`get_prices_for_ids` but NEVER touches ESI — cached Jita/Forge
+    """Like :func:`get_prices_for_ids` but NEVER touches ESI - cached Jita/Forge
     sell prices plus custom overrides only. Types with no cached price simply get
     no entry. Synchronous and instant, so the dashboard can render immediately;
     the ``/api/dashboard/live`` endpoint fills in ESI-derived values afterwards."""
@@ -144,7 +144,7 @@ def get_all_price_items(
     """Returns items from the cache for the initial render.
 
     If `relevant_ids` is passed, returns only those + everything with a custom_price.
-    Without it, returns the entire cache (legacy behavior — slow for 19k+ rows).
+    Without it, returns the entire cache (legacy behavior - slow for 19k+ rows).
 
     For a large cache (~19k types), rendering all rows in HTML is extremely slow
     (48 MB+ page). Instead, the UI loads the rest via `/api/prices/search` on
@@ -229,9 +229,9 @@ def _persist_bulk_orders(
         if sell is not None or buy is not None:
             refreshed += 1
             traded.append(tid)
-        # Volume (7-day history) is not overwritten in this refresh — the old value is kept
+        # Volume (7-day history) is not overwritten in this refresh - the old value is kept
         rows.append((tid, sell, buy, jita_avail, now))
-    # Use COALESCE for volume — INSERT OR REPLACE would erase the existing volume,
+    # Use COALESCE for volume - INSERT OR REPLACE would erase the existing volume,
     # so use an UPSERT instead
     conn.executemany(
         """INSERT INTO market_price_cache (type_id, sell_price, buy_price, jita_available, cached_at)
@@ -270,7 +270,7 @@ async def _fill_volumes(
     load_hist_etags(conn, JITA_REGION)
     done_holder = [0]
     total = len(type_ids)
-    BATCH = 200       # commit every 200 results — keeps the open DB write short
+    BATCH = 200       # commit every 200 results - keeps the open DB write short
 
     async def _one(client: httpx.AsyncClient, tid: int) -> tuple[int, int | None]:
         vol = await _fetch_region_volume(client, JITA_REGION, tid)
@@ -307,7 +307,7 @@ async def _maybe_call(cb, *args):
 
 
 async def refresh_jita_prices_all(conn: sqlite3.Connection, type_ids: list[int]) -> int:
-    """Fetches fresh Jita prices for all passed type_ids — bulk paginated region orders.
+    """Fetches fresh Jita prices for all passed type_ids - bulk paginated region orders.
     Then, for types with at least one order, also fetches the 7-day volume from the history endpoint.
     Returns the number of types with at least one price.
     """
@@ -322,7 +322,7 @@ async def refresh_jita_prices_all(conn: sqlite3.Connection, type_ids: list[int])
 
 
 async def stream_jita_refresh(conn: sqlite3.Connection, type_ids: list[int]):
-    """Async generator yielding SSE chunks. Bulk paginated fetch — progress
+    """Async generator yielding SSE chunks. Bulk paginated fetch - progress
     is sent after each page of the orders endpoint (~500 pages for the Jita region).
     """
     ensure_price_table(conn)
@@ -346,7 +346,7 @@ async def stream_jita_refresh(conn: sqlite3.Connection, type_ids: list[int]):
     while not task.done():
         total = total_pages_holder[0]
         done = completed_holder[0]
-        # Phase 1 = order fetch — display 0–80 % so phase 2 (volumes)
+        # Phase 1 = order fetch - display 0-80 % so phase 2 (volumes)
         # has the last 20 %.
         pct = int(done * 80 / total) if total else 0
         yield f"data: {_json.dumps({'current': done, 'total': total, 'pct': pct, 'phase': 'orders'})}\n\n"
@@ -355,7 +355,7 @@ async def stream_jita_refresh(conn: sqlite3.Connection, type_ids: list[int]):
 
     refreshed, traded = _persist_bulk_orders(conn, bulk_holder, wanted)
 
-    # Phase 2 — 7-day Jita volumes for everything that actually trades.
+    # Phase 2 - 7-day Jita volumes for everything that actually trades.
     vol_done_holder = [0]
     vol_total = len(traded)
     yield f"data: {_json.dumps({'pct': 80, 'phase': 'volumes', 'vol_done': 0, 'vol_total': vol_total})}\n\n"
@@ -375,7 +375,7 @@ async def stream_jita_refresh(conn: sqlite3.Connection, type_ids: list[int]):
 
 
 # ---------------------------------------------------------------------------
-# Secondary trade hubs (Amarr / Dodixie / Rens / Hek) — same pipeline as Jita,
+# Secondary trade hubs (Amarr / Dodixie / Rens / Hek) - same pipeline as Jita,
 # fetched on demand per hub, stored in hub_price_cache keyed by region_id.
 # ---------------------------------------------------------------------------
 
@@ -404,7 +404,7 @@ def _persist_hub_bulk_orders(
             refreshed += 1
             traded.append(tid)
         rows.append((region_id, tid, sell, buy, avail, now))
-    # volume is filled separately (7-day history) — don't overwrite it here.
+    # volume is filled separately (7-day history) - don't overwrite it here.
     conn.executemany(
         """INSERT INTO hub_price_cache (region_id, type_id, sell_price, buy_price, available, cached_at)
            VALUES (?, ?, ?, ?, ?, ?)
@@ -536,7 +536,7 @@ def get_all_hub_prices(
     type_ids: list[int],
 ) -> dict[int, dict[int, dict]]:
     """For the given type_ids, return {type_id: {region_id: {sell, buy, volume}}}
-    across every cached hub — used to attach comparison columns to price rows."""
+    across every cached hub - used to attach comparison columns to price rows."""
     if not type_ids:
         return {}
     out: dict[int, dict[int, dict]] = {}
@@ -553,7 +553,7 @@ def get_all_hub_prices(
     return out
 
 
-HISTORY_TTL = 60 * 60 * 8  # 8 h — market history updates about once a day
+HISTORY_TTL = 60 * 60 * 8  # 8 h - market history updates about once a day
 
 
 def _densify_history(series: list[dict], end_date: str | None = None) -> list[dict]:
@@ -564,7 +564,7 @@ def _densify_history(series: list[dict], end_date: str | None = None) -> list[di
     counts trades instead of days.
 
     `end_date` (YYYY-MM-DD) extends the timeline past the last trade up to that day
-    (normally today) — so the chart ends at 'now', not at the last sale, making a
+    (normally today) - so the chart ends at 'now', not at the last sale, making a
     long no-trade streak visible. Defaults to the last entry's date."""
     import datetime
     if not series:
@@ -622,7 +622,7 @@ async def get_price_history(conn: sqlite3.Connection, region_id: int, type_id: i
     async with esi_client() as client:
         series = await fetch_region_history(client, region_id, type_id)
 
-    if series is None:  # fetch failed — serve stale if we have it
+    if series is None:  # fetch failed - serve stale if we have it
         if row:
             try:
                 return _densify_history(_json.loads(row[0]), _today)

@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}Assets — EVE Retroindustry{% endblock %}
+{% block title %}Assets - EVE Retroindustry{% endblock %}
 {% block content %}
 
 <style>
-  /* Section bands inside an assembled ship — High power / Medium power / Low
+  /* Section bands inside an assembled ship - High power / Medium power / Low
      power / Rig Slot / Drones / Cargo, in the order the in-game fitting window
      uses. They only make sense while the rows are in that order, so sorting by
      any column hides them (see the sort handler). */
@@ -50,7 +50,7 @@
                onerror="this.onerror=function(){this.style.visibility='hidden'};this.src='/icon/{{ item.type_id }}?size=32'">
         </td>
         <td>{{ item.name }}{% if item.bp_kind == 'bpc' %}
-          <span class="badge badge-bpc ms-1" title="Blueprint copy — no market value">BPC</span>{% elif item.bp_kind == 'bpo' %}
+          <span class="badge badge-bpc ms-1" title="Blueprint copy - no market value">BPC</span>{% elif item.bp_kind == 'bpo' %}
           <span class="badge badge-bpo ms-1" title="Blueprint original">BPO</span>{% elif item.bp_kind == 'rxn' %}
           <span class="badge badge-rxn ms-1" title="Reaction formula">RXN</span>{% endif %}</td>
         {% if show_badge %}
@@ -64,10 +64,10 @@
         {% endif %}
         <td class="text-end fw-semibold">{{ item.quantity | int | format_number }}</td>
         <td class="text-end text-muted">
-          {% if item.unit_price %}{{ item.unit_price | isk0 }}{% else %}<span class="text-muted opacity-50">—</span>{% endif %}
+          {% if item.unit_price %}{{ item.unit_price | isk0 }}{% else %}<span class="text-muted opacity-50">-</span>{% endif %}
         </td>
         <td class="text-end text-isk fw-semibold">
-          {% if item.total_value %}{{ item.total_value | isk0 }}{% else %}<span class="text-muted opacity-50">—</span>{% endif %}
+          {% if item.total_value %}{{ item.total_value | isk0 }}{% else %}<span class="text-muted opacity-50">-</span>{% endif %}
         </td>
       </tr>
       {% endfor %}
@@ -79,7 +79,7 @@
         <td class="text-end text-muted small">Total</td>
         <td class="text-end fw-bold text-isk">
           {% set tbl_total = items | selectattr('total_value') | map(attribute='total_value') | sum %}
-          {% if tbl_total > 0 %}{{ tbl_total | isk0 }}{% else %}—{% endif %}
+          {% if tbl_total > 0 %}{{ tbl_total | isk0 }}{% else %}-{% endif %}
         </td>
       </tr>
     </tfoot>
@@ -134,7 +134,7 @@
 {% if stations %}
 <div class="d-flex align-items-center justify-content-between mb-3">
   <span class="text-muted small">
-    <i class="bi bi-person me-1"></i>Personal — {{ stations | length }} locations{% if search %} • filter: "{{ search }}"{% endif %}
+    <i class="bi bi-person me-1"></i>Personal - {{ stations | length }} locations{% if search %} • filter: "{{ search }}"{% endif %}
   </span>
   <div class="d-flex align-items-center gap-2">
     <span class="text-muted small">Sort by:</span>
@@ -243,7 +243,7 @@
 <div class="d-flex align-items-center mb-3 {% if stations %}mt-4{% endif %}">
   <span class="text-muted small">
     <i class="bi bi-building me-1 text-warning"></i>
-    <span class="text-warning fw-semibold">Corporation</span> — {{ corp_stations | length }} locations
+    <span class="text-warning fw-semibold">Corporation</span> - {{ corp_stations | length }} locations
   </span>
 </div>
 
@@ -336,7 +336,7 @@ document.getElementById('add-loc-btn')?.addEventListener('click', async function
     const r = await fetch('/api/my-location');
     const data = await r.json();
     if (data.in_space) {
-      btn.innerHTML = `<i class="bi bi-crosshair me-1"></i>${escHtml(data.solar_system_name)} — in space`;
+      btn.innerHTML = `<i class="bi bi-crosshair me-1"></i>${escHtml(data.solar_system_name)} - in space`;
       setTimeout(() => { btn.innerHTML = '<i class="bi bi-crosshair me-1"></i>Add Current Location'; btn.disabled = false; }, 3000);
     } else if (data.location_id) {
       btn.innerHTML = `<i class="bi bi-check-circle me-1"></i>${escHtml(data.name)}`;
@@ -468,7 +468,7 @@ sortBtns.forEach(btn => {
   });
 });
 
-// Container/ship icons — setting src via JS fetches the image even in display:none.
+// Container/ship icons - setting src via JS fetches the image even in display:none.
 // (Unlike the HTML src attribute, which Chromium defers while display:none.)
 document.querySelectorAll('img.eve-icon[data-render]').forEach(img => {
   img.onerror = () => {
@@ -478,7 +478,7 @@ document.querySelectorAll('img.eve-icon[data-render]').forEach(img => {
   img.src = img.dataset.render;
 });
 
-// Lazy item icons in tables — force-reload after a section is expanded.
+// Lazy item icons in tables - force-reload after a section is expanded.
 document.addEventListener('shown.bs.collapse', e => {
   e.target.querySelectorAll('img[loading="lazy"]').forEach(img => {
     const src = img.src;

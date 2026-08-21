@@ -12,7 +12,7 @@ CACHE_TTL = 3600  # 1 hour
 # but we must always fetch them for display in the UI.
 _GENERAL_SKILL_IDS = {3380, 3388}
 
-# Cache schema version — bump it when the format changes to force a refresh.
+# Cache schema version - bump it when the format changes to force a refresh.
 # v2: we store all skills from ESI (previously only a filtered subset of
 # manufacturing + science skills was stored, so blueprint-required skills like
 # Capital Ship Construction were missing and showed up red in the UI even for a
@@ -161,7 +161,7 @@ async def fetch_skills(
             timeout=10,
         )
         if r.status_code != 200:
-            # Fallback — if we have anything cached (even stale), use it.
+            # Fallback - if we have anything cached (even stale), use it.
             return get_cached_skills(conn, character_id)
         all_skills = {int(s["skill_id"]): int(s["trained_skill_level"])
                       for s in r.json().get("skills", [])}

@@ -149,7 +149,7 @@ async def main():
     resolver.close()
 
     if root.is_leaf:
-        console.print(f"\n[yellow]'{type_name}' has no production blueprint — it is a raw material.[/]")
+        console.print(f"\n[yellow]'{type_name}' has no production blueprint - it is a raw material.[/]")
         return
 
     # Production tree
@@ -157,7 +157,7 @@ async def main():
         print_bom_tree(root)
 
     if args.optimize:
-        # Load prices for ALL nodes (not just leaves) — we also need intermediates
+        # Load prices for ALL nodes (not just leaves) - we also need intermediates
         all_ids = collect_all_type_ids(root)
         prices = await get_prices(all_ids, use_jita=True)
 
@@ -165,7 +165,7 @@ async def main():
         sell_p, _ = prices.get(type_id, (None, None))
         print_optimization(opt_result, type_name, args.qty, sell_p)
     else:
-        # Standard mode — raw materials + prices
+        # Standard mode - raw materials + prices
         print_primary_materials(root)
         print_bom_stats(root)
 

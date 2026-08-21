@@ -2,7 +2,7 @@
 setlocal EnableDelayedExpansion
 
 echo ============================================================
-echo  EVE Retroindustry — Windows build
+echo  EVE Retroindustry - Windows build
 echo ============================================================
 echo.
 

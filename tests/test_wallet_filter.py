@@ -1,7 +1,7 @@
 """Wallet journal/transaction checkbox filters.
 
 Both tables already ship every row to the browser, so the filter is client-side.
-These cover the server side of that contract — the hooks the JS needs — plus the
+These cover the server side of that contract - the hooks the JS needs - plus the
 ref_type humanising the filter list depends on to be readable.
 """
 from __future__ import annotations

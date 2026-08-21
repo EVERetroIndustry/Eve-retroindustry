@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}About — EVE Retroindustry{% endblock %}
+{% block title %}About - EVE Retroindustry{% endblock %}
 {% block content %}
 
 <div class="row justify-content-center">
@@ -28,7 +28,7 @@
     </div>
 
     <p class="text-muted">
-      A local industry calculator for EVE Online — blueprint cost analysis, BOM expansion,
+      A local industry calculator for EVE Online - blueprint cost analysis, BOM expansion,
       market pricing, asset tracking, and production project management.
     </p>
 
@@ -150,7 +150,7 @@
           <div id="update-notbundled" class="d-none mt-3 p-3 rounded" style="background:#1c2128;border:1px solid #30363d">
             <i class="bi bi-info-circle text-muted me-2"></i>
             <span class="text-muted small">
-              Running in dev mode — update via <code>git pull</code>.
+              Running in dev mode - update via <code>git pull</code>.
             </span>
           </div>
 
@@ -193,7 +193,7 @@
             <div class="fw-semibold"><i class="bi bi-cup-hot-fill me-2" style="color:#e3b341"></i>Support the project</div>
             <div class="text-muted small">
               I build this in my spare time, primarily for my own EVE career. If it saves you
-              ISK or time and you'd like to chip in, you can buy me a coffee on Ko-fi —
+              ISK or time and you'd like to chip in, you can buy me a coffee on Ko-fi -
               completely optional, always appreciated.
             </div>
           </div>
@@ -249,7 +249,7 @@
             <div class="fw-semibold">EVE Image Server</div>
             <div class="text-muted small">
               Item icons, portraits and logos come from the EVE Online image CDN
-              (<code>images.evetech.net</code>) once, then live in a local cache — so
+              (<code>images.evetech.net</code>) once, then live in a local cache - so
               they load instantly and work offline.
             </div>
           </div>
@@ -335,7 +335,7 @@ function _applyUpdateData(d) {
     document.getElementById('update-download-btn').style.display = 'none';
   } else if (!d.download_url) {
     document.getElementById('update-bundled-note').textContent =
-      "Couldn't find a matching download in that release — use the release link above to grab it manually.";
+      "Couldn't find a matching download in that release - use the release link above to grab it manually.";
     document.getElementById('update-download-btn').disabled = true;
   }
 }

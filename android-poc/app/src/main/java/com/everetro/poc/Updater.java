@@ -26,7 +26,7 @@ import java.net.URL;
  * (BuildConfig), and if the remote is newer, offers to download + install it
  * via the system installer.
  *
- * Prerequisite: all builds signed with the same key (CI release keystore) —
+ * Prerequisite: all builds signed with the same key (CI release keystore) -
  * otherwise Android refuses an update over the existing app.
  */
 public class Updater {
@@ -50,12 +50,12 @@ public class Updater {
                     act.runOnUiThread(() -> promptUpdate(act, name, apkUrl));
                 }
             } catch (Throwable t) {
-                Log.w(TAG, "update check failed", t);  // silent — offline etc.
+                Log.w(TAG, "update check failed", t);  // silent - offline etc.
             }
         }, "eve-update-check").start();
     }
 
-    /** Manual check (from a UI button) — always gives feedback, even when everything is up to date. */
+    /** Manual check (from a UI button) - always gives feedback, even when everything is up to date. */
     public static void checkManual(Activity act) {
         act.runOnUiThread(() ->
             Toast.makeText(act, "Checking for updates…", Toast.LENGTH_SHORT).show());

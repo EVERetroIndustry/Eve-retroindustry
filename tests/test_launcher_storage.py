@@ -2,7 +2,7 @@
 
 A Windows user could not start the app at all: pywebview validates its
 storage_path by stat-ing it and then calling os.makedirs() unguarded, and turns
-any OSError into "Storage path ... is not writable" — discarding the real error
+any OSError into "Storage path ... is not writable" - discarding the real error
 (there, FileExistsError / WinError 183). These tests cover both halves of the
 fix: pick a directory that passes pywebview's own checks, and keep the app
 starting even if the directory goes bad right afterwards.
@@ -151,7 +151,7 @@ def test_default_width_clears_the_navbar_label_threshold(launcher):
     """The navbar keeps its labels from 1800 px up (measured); 1680 did not.
 
     It collapses by measuring real overflow rather than a media query, so the
-    default has to sit above that with headroom — the measurement depends on the
+    default has to sit above that with headroom - the measurement depends on the
     font, and Windows does not lay text out exactly like Linux.
     """
     w, h = launcher._default_window_size(_WV([_Screen(3840, 2160)]))

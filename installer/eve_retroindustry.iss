@@ -1,7 +1,7 @@
 ; Inno Setup script for EVE Retroindustry (Windows).
 ;
 ; Deliberately a PER-USER install into %LOCALAPPDATA%\Programs: no admin rights,
-; no UAC prompt, and — importantly — the install directory stays writable by the
+; no UAC prompt, and - importantly - the install directory stays writable by the
 ; app, so the existing in-app updater (which copies a new build over itself and
 ; relaunches) keeps working exactly as it does for the portable ZIP. A
 ; Program Files install would need elevation on every update.
@@ -35,7 +35,7 @@ AppPublisherURL={#AppURL}
 AppSupportURL={#AppURL}/issues
 AppUpdatesURL={#AppURL}/releases
 
-; Per-user install — no admin, no UAC, writable install dir (see header).
+; Per-user install - no admin, no UAC, writable install dir (see header).
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 DefaultDirName={localappdata}\Programs\EVE Retroindustry
@@ -57,7 +57,7 @@ UninstallDisplayName={#AppName}
 WizardStyle=modern
 Compression=lzma2/max
 SolidCompression=yes
-; The app is unsigned, so don't pretend otherwise — SmartScreen may warn.
+; The app is unsigned, so don't pretend otherwise - SmartScreen may warn.
 AllowNoIcons=yes
 CloseApplications=yes
 CloseApplicationsFilter=*.exe

@@ -1,5 +1,5 @@
 """
-EVE Retroindustry — login via ESI OAuth2.
+EVE Retroindustry - login via ESI OAuth2.
 
 Usage (first login):
   python login.py --client-id <YOUR_CLIENT_ID>
@@ -13,7 +13,7 @@ How to get a client_id:
   3. Connection Type: Authentication & API Access
   4. Scopes: esi-characters.read_blueprints.v1  esi-assets.read_assets.v1
   5. Callback URL: http://localhost:5173/callback
-  6. Copy the Client ID (no secret key — native app)
+  6. Copy the Client ID (no secret key - native app)
 """
 import argparse
 import asyncio
@@ -25,7 +25,7 @@ console = Console()
 
 
 def main():
-    parser = argparse.ArgumentParser(description="EVE Retroindustry — ESI Login")
+    parser = argparse.ArgumentParser(description="EVE Retroindustry - ESI Login")
     parser.add_argument("--client-id", help="EVE Application Client ID")
     parser.add_argument("--status",    action="store_true", help="Show login status")
     args = parser.parse_args()

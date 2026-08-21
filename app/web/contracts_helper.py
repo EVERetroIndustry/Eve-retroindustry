@@ -1,5 +1,5 @@
 """
-Public contracts — per-region index into a SQLite cache + local full-text search.
+Public contracts - per-region index into a SQLite cache + local full-text search.
 
 Fetches ALL public contracts of the chosen region (metadata) and their items
 (1 call/contract), stores them in the cache, and then anything can be searched
@@ -186,7 +186,7 @@ def best_contract_price(conn: sqlite3.Connection, region_id: int, type_id: int) 
     """Cheapest price/unit of a product from public item_exchange contracts in the region.
     Prefers single-item contracts (clean price/unit); if there is none, it takes a
     bundle (multiple items) and marks is_bundle=True (the price/unit is then only
-    indicative — it also covers the other items in the bundle). Returns None if the product is nowhere."""
+    indicative - it also covers the other items in the bundle). Returns None if the product is nowhere."""
     ensure_public_contract_tables(conn)
     rows = conn.execute("""
         SELECT c.contract_id, c.price, pi.quantity,

@@ -148,7 +148,7 @@
       return `<tr${cls}>
         <td class="text-end font-monospace">${iskF(o.price)}${badge}</td>
         <td class="text-end font-monospace">${intS(o.qty)}</td>
-        <td class="text-truncate" style="max-width:240px" title="${escHtml(o.location || '')}">${escHtml(o.location || '—')}</td>
+        <td class="text-truncate" style="max-width:240px" title="${escHtml(o.location || '')}">${escHtml(o.location || '-')}</td>
       </tr>`;
     }).join('');
   }

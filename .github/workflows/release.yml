@@ -46,7 +46,7 @@ jobs:
         run: Compress-Archive -Path dist/EVE_Retroindustry -DestinationPath EVE_Retroindustry-${{ github.ref_name }}-win64-portable.zip
 
       # Inno Setup is not pre-installed on the windows-2025 runner image, so pull
-      # it in. This only affects the machine that COMPILES the installer — the
+      # it in. This only affects the machine that COMPILES the installer - the
       # resulting setup.exe runs on any supported Windows.
       - name: Install Inno Setup
         shell: pwsh
@@ -56,7 +56,7 @@ jobs:
         shell: pwsh
         run: |
           # Tag runs give "v1.2.3"; a manual workflow_dispatch gives a branch name,
-          # which VersionInfoVersion can't parse — fall back so the compile can
+          # which VersionInfoVersion can't parse - fall back so the compile can
           # still be validated.
           $ver = "${{ github.ref_name }}".TrimStart('v')
           if ($ver -notmatch '^\d+\.\d+\.\d+$') {
@@ -78,8 +78,8 @@ jobs:
 
       # The installer ships inside a ZIP: browsers flag a downloaded .exe as
       # "not commonly downloaded", but not an archive. It does NOT remove the
-      # warning entirely — Windows propagates Mark-of-the-Web to extracted files,
-      # so SmartScreen can still prompt when setup.exe is launched — but it keeps
+      # warning entirely - Windows propagates Mark-of-the-Web to extracted files,
+      # so SmartScreen can still prompt when setup.exe is launched - but it keeps
       # the download itself clean and gets through proxies that block .exe.
       # (Zipping gains no size: Inno already LZMA2-compressed the payload.)
       - name: Wrap installer in a ZIP
@@ -90,14 +90,14 @@ jobs:
           # installer/SETUP_README.txt rides along as README.txt. A tester hit
           # Inno's "Unable to execute file in the temporary directory ... Error 5",
           # which is a %TEMP%/antivirus problem on the machine rather than a broken
-          # build — and the fix every web guide gives ("run as administrator") is
+          # build - and the fix every web guide gives ("run as administrator") is
           # wrong for a per-user installer. The note explains that and points at
           # the portable build. Kept in a file, not inlined here: unindented
           # here-string lines would break this YAML block scalar.
           Copy-Item installer\SETUP_README.txt README.txt -Force
           Compress-Archive -Path $exe.FullName, README.txt -DestinationPath $zip -Force
           Write-Host "packed: $zip ($([math]::Round((Get-Item $zip).Length/1MB,1)) MB)"
-          # Listing is informational only — never fail a release over it.
+          # Listing is informational only - never fail a release over it.
           try {
             $z = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $zip).Path)
             foreach ($e in $z.Entries) { Write-Host "  entry: $($e.FullName)" }
@@ -154,7 +154,7 @@ jobs:
           mkdir -p AppDir
           cp -r dist/EVE_Retroindustry/. AppDir/
 
-          # AppRun — entry point called by the AppImage runtime
+          # AppRun - entry point called by the AppImage runtime
           cat > AppDir/AppRun << 'APPRUN'
           #!/bin/bash
           APPDIR="$(dirname "$(readlink -f "$0")")"
@@ -173,7 +173,7 @@ jobs:
           Categories=Game;Utility;
           DESKTOP
 
-          # Icon — convert bundled .ico to 256×256 PNG
+          # Icon - convert bundled .ico to 256×256 PNG
           python3 -c "
           from PIL import Image
           img = Image.open('assets/icon.ico')
@@ -191,7 +191,7 @@ jobs:
 
           # Use the type2-runtime which supports both FUSE2 and FUSE3.
           # Arch-based distros (Garuda, Manjaro) ship fuse3 but not fuse2 by
-          # default — the standard AppImageKit runtime only loads libfuse.so.2
+          # default - the standard AppImageKit runtime only loads libfuse.so.2
           # and fails there.
           wget -q "https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64" \
                -O runtime-x86_64 \
@@ -279,7 +279,7 @@ jobs:
   release:
     needs: [build-windows, build-linux, build-android]
     # Tag pushes only. A manual workflow_dispatch run is for verifying that the
-    # builds (and the installer) compile — without it this job would try to create
+    # builds (and the installer) compile - without it this job would try to create
     # a release named after the branch.
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest

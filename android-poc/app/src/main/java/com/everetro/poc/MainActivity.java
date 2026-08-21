@@ -30,11 +30,11 @@ public class MainActivity extends AppCompatActivity {
 
     private WebView web;
     private TextView status;
-    private View statusScroll;   // wrapper for the status text — must be hidden entirely, otherwise it eats touches
+    private View statusScroll;   // wrapper for the status text - must be hidden entirely, otherwise it eats touches
     private String url;
     // The server runs once per process (the Android process survives an Activity relaunch).
     // sPort = the port of OUR server for this process (0 = not started yet). We pick a
-    // free port dynamically — a hardcoded 8000 could be held by a zombie from last time.
+    // free port dynamically - a hardcoded 8000 could be held by a zombie from last time.
     private static volatile boolean sServerLaunched = false;
     private static volatile int sPort = 0;
 
@@ -61,7 +61,7 @@ public class MainActivity extends AppCompatActivity {
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         web.setWebViewClient(new WebViewClient() {
             // When the main frame (our local server) fails to load, show the Python
-            // server.log in the app — so the error can be diagnosed even without adb.
+            // server.log in the app - so the error can be diagnosed even without adb.
             @Override
             public void onReceivedError(WebView view, android.webkit.WebResourceRequest req,
                                         android.webkit.WebResourceError err) {
@@ -114,11 +114,11 @@ public class MainActivity extends AppCompatActivity {
             }
             final Python py = Python.getInstance();
             final PyObject mod = py.getModule("android_main");
-            // Pass the Activity to Python — needed to open the SSO login via an Intent.
+            // Pass the Activity to Python - needed to open the SSO login via an Intent.
             mod.callAttr("set_context", this);
 
             // Start the server only ONCE per process (the Android process survives
-            // an Activity relaunch). Grab OUR OWN free port — reusing an existing
+            // an Activity relaunch). Grab OUR OWN free port - reusing an existing
             // listener on a fixed port could hit a stuck zombie from last time
             // (ERR_EMPTY_RESPONSE). Within the process we keep our port in sPort.
             final int port;
@@ -142,7 +142,7 @@ public class MainActivity extends AppCompatActivity {
 
             setStatus("Waiting for server…");
             if (!waitForServer(mod, port, 30_000)) {
-                setStatus("Server didn't start within 30 s — see logcat (python.stdout).");
+                setStatus("Server didn't start within 30 s - see logcat (python.stdout).");
                 return;
             }
 
@@ -186,8 +186,8 @@ public class MainActivity extends AppCompatActivity {
 
     /**
      * Unpacks assets/bundle/** into filesDir/** (sde_base.db + app/web/templates).
-     * Overwrites on every start — cheap, and guarantees fresh templates after an update.
-     * eve_cache.db (user data) is NOT deleted — it lives alongside, not in bundle/.
+     * Overwrites on every start - cheap, and guarantees fresh templates after an update.
+     * eve_cache.db (user data) is NOT deleted - it lives alongside, not in bundle/.
      */
     private void extractBundle(File filesDir) throws IOException {
         copyAsset("bundle", filesDir);

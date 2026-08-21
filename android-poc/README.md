@@ -1,13 +1,13 @@
-# EVE Retroindustry — Chaquopy Android PoC
+# EVE Retroindustry - Chaquopy Android PoC
 
 Goal: verify that the app's entire Python dependency stack starts up on Android
 (via Chaquopy = CPython runtime in the APK). **The make-or-break is `pydantic-core`
-(Rust binary)** — if it imports, the rest is straightforward work.
+(Rust binary)** - if it imports, the rest is straightforward work.
 
 The running app shows a report like:
 
 ```
-EVE Retroindustry — Chaquopy dependency PoC
+EVE Retroindustry - Chaquopy dependency PoC
 Python 3.12.x on x86_64
 --------------------------------------------
   OK   fastapi        0.115.0
@@ -32,7 +32,7 @@ The simplest option is **Android Studio** (it brings the SDK, emulator, and AVD 
 # Android Studio + JDK (needed for Gradle/AGP)
 paru -S android-studio jdk17-openjdk        # or: yay -S android-studio
 # on first launch Studio downloads: Android SDK, platform-tools (API 34).
-# we DON'T NEED a system image / emulator — testing is done on a physical phone.
+# we DON'T NEED a system image / emulator - testing is done on a physical phone.
 ```
 
 After installing, set up the env (add to ~/.zshrc):
@@ -48,10 +48,10 @@ android-emulator jdk17-openjdk` (from AUR; longer build).
 
 ---
 
-## 2. Testing — on a physical phone (no emulator)
+## 2. Testing - on a physical phone (no emulator)
 
 We target **only `arm64-v8a`** (real phones). We don't use the emulator, so the
-APK contains no x86_64 and wouldn't start in an emulator — that's intentional.
+APK contains no x86_64 and wouldn't start in an emulator - that's intentional.
 
 Phone over USB (USB debugging enabled in Developer options):
 
@@ -81,7 +81,7 @@ adb shell am start -n com.everetro.poc/.MainActivity
 adb logcat -s python.stdout python.stderr
 ```
 
-The first build is slow — Chaquopy downloads CPython 3.12 for Android and all the
+The first build is slow - Chaquopy downloads CPython 3.12 for Android and all the
 wheels (incl. pydantic-core). When it passes and the app shows all `OK`, the stack
 is verified and we can plan the full port.
 

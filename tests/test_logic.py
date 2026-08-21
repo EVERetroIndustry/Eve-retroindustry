@@ -5,8 +5,8 @@ import sqlite3
 # ── planner ────────────────────────────────────────────────────────────────
 def test_format_duration():
     from app.manufacturing.planner import format_duration
-    assert format_duration(0) == "—"
-    assert format_duration(-5) == "—"
+    assert format_duration(0) == "-"
+    assert format_duration(-5) == "-"
     assert format_duration(60) == "1m"
     assert format_duration(3600) == "1h"
     assert format_duration(3661) == "1h 1m"
@@ -21,7 +21,7 @@ def test_calc_job_time():
     assert calc_job_time(1000, runs=3, te=0, industry_level=0, adv_industry_level=0) == 3000
     # Blueprint TE 10 % → ×0.9.
     assert calc_job_time(1000, runs=1, te=10, industry_level=0, adv_industry_level=0) == 900
-    # Industry V (−20 %) applies to manufacturing but NOT reactions.
+    # Industry V (-20 %) applies to manufacturing but NOT reactions.
     assert calc_job_time(1000, 1, 0, 5, 0) == 800
     assert calc_job_time(1000, 1, 0, 5, 0, is_reaction=True) == 1000
 
@@ -32,8 +32,8 @@ def test_calc_job_time_rounds_the_total_not_each_run():
     Rounding per run and then multiplying by runs multiplies the rounding error by
     the run count. Real case that exposed it: Crystalline Carbonide Armor Plate,
     5625 runs, 17 s/run after TE+skills.
-      per-run: round(17 × 0.96) × 5625 = 16 × 5625 = 90 000 s  (−5.88 %, not −4 %)
-      total  : round(17 × 5625 × 0.96)              = 91 800 s  (−4.00 %, correct)
+      per-run: round(17 × 0.96) × 5625 = 16 × 5625 = 90 000 s  (-5.88 %, not -4 %)
+      total  : round(17 × 5625 × 0.96)              = 91 800 s  (-4.00 %, correct)
     """
     from app.manufacturing.planner import calc_job_time
     assert calc_job_time(17, runs=5625, te=0, industry_level=0, adv_industry_level=0,
@@ -53,15 +53,15 @@ def test_calc_job_time_implant():
     from app.manufacturing.planner import (
         calc_job_time, MFG_IMPLANTS, MFG_IMPLANT_PCTS,
     )
-    # BX-804 (−4 %) on its own.
+    # BX-804 (-4 %) on its own.
     assert calc_job_time(1000, 1, 0, 0, 0, implant_time_pct=4) == 960
     # Stacks multiplicatively with Industry V: 1000 × 0.80 × 0.96.
     assert calc_job_time(1000, 1, 0, 5, 0, implant_time_pct=4) == 768
-    # Reactions are unaffected — the attribute is "Manufacturing Time Bonus".
+    # Reactions are unaffected - the attribute is "Manufacturing Time Bonus".
     assert calc_job_time(1000, 1, 0, 0, 0, implant_time_pct=4, is_reaction=True) == 1000
     # Default = no implant, so existing callers keep their numbers.
     assert calc_job_time(1000, 1, 0, 0, 0) == calc_job_time(1000, 1, 0, 0, 0, implant_time_pct=0)
-    # The BX family really is 1/2/4 % — there is no BX-805.
+    # The BX family really is 1/2/4 % - there is no BX-805.
     assert MFG_IMPLANT_PCTS == frozenset({1.0, 2.0, 4.0})
     assert {n for n, _p in MFG_IMPLANTS.values()} == {"BX-801", "BX-802", "BX-804"}
 
@@ -154,7 +154,7 @@ def test_rig_applies_to_product(app_module):
         # Battleship: large-ship rig applies, equipment rig does not.
         assert applies(conn, r_large_ship, hyperion) is True
         assert applies(conn, r_equipment, hyperion) is False
-        # A drone-damage MODULE is Equipment, not a Drone — the old heuristic got this wrong.
+        # A drone-damage MODULE is Equipment, not a Drone - the old heuristic got this wrong.
         assert applies(conn, r_equipment, drone_amp) is True
         assert applies(conn, r_drone, drone_amp) is False
         # An actual drone is bonused by the Drone rig.
@@ -202,7 +202,7 @@ def test_empty_form_field_falls_back_to_default_not_empty_string():
     """Guards the reason runs_per_job needs client-side normalisation.
 
     FastAPI treats a blank form value as missing and substitutes the field
-    default, so the backend can never see "" — "empty = one batched job" has to
+    default, so the backend can never see "" - "empty = one batched job" has to
     be sent as the explicit 0. If this ever starts returning "", the normalising
     JS in plan.html can go away.
     """

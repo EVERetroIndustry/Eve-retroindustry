@@ -1,5 +1,5 @@
 """
-Build sde_base.db — a clean, SDE-only database for bundling with PyInstaller.
+Build sde_base.db - a clean, SDE-only database for bundling with PyInstaller.
 
 Copies the SDE tables from the current eve_cache.db and strips all user data.
 Run this before building the PyInstaller package.

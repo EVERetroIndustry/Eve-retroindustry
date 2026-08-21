@@ -46,7 +46,7 @@ android {
                 install "python-multipart==0.0.9"
                 install "rich==13.9.4"        // imported by app.auth.esi_oauth
                 install "sqlalchemy==2.0.35"
-                // pydantic v1 — v2 requires pydantic-core (Rust), which has NO
+                // pydantic v1 - v2 requires pydantic-core (Rust), which has NO
                 // Chaquopy arm64 wheel (the build fails on maturin/sdist). v1 has a
                 // pure-Python wheel; FastAPI 0.115 supports v1. The app code is
                 // v1/v2 compatible (see app/models/blueprint.py).
@@ -57,7 +57,7 @@ android {
 
     // Signing the release build with a persistent key (from GitHub Secrets, decoded
     // into a file in CI). Without it (a local build without env vars) signingConfig
-    // stays empty and `assembleRelease` could not be signed — but that is fine for CI.
+    // stays empty and `assembleRelease` could not be signed - but that is fine for CI.
     signingConfigs {
         release {
             def ksFile = System.getenv("ANDROID_KEYSTORE_FILE")
@@ -88,7 +88,7 @@ android {
 dependencies {
     // kotlin-bom unifies kotlin-stdlib versions across transitive dependencies.
     // Without it: "Duplicate class kotlin.collections.jdk8.*" (stdlib 1.8.22 vs
-    // stdlib-jdk8 1.6.21) — since Kotlin 1.8, jdk7/jdk8 are merged into stdlib.
+    // stdlib-jdk8 1.6.21) - since Kotlin 1.8, jdk7/jdk8 are merged into stdlib.
     implementation platform('org.jetbrains.kotlin:kotlin-bom:1.8.22')
     implementation 'androidx.appcompat:appcompat:1.7.0'
 }

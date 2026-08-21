@@ -1,5 +1,5 @@
 """
-EVE Retroindustry — launcher with embedded webview window.
+EVE Retroindustry - launcher with embedded webview window.
 
 Entry point for both development mode and PyInstaller frozen bundle.
 
@@ -43,7 +43,7 @@ def _user_data_dir() -> str:
 
 def _migrate_legacy_data(old_dir: str, new_dir: str) -> None:
     """One-time copy of user data from the old in-install location into the
-    stable data dir — only when the data dir has no eve_cache.db yet."""
+    stable data dir - only when the data dir has no eve_cache.db yet."""
     import shutil
     if not old_dir or os.path.abspath(old_dir) == os.path.abspath(new_dir):
         return
@@ -148,7 +148,7 @@ def _patch_qt_clipboard() -> None:
          origin (our http://127.0.0.1). That is exactly what broke copying the list.
 
     We patch the bundled pywebview (running in the AppImage) before webview.start().
-    Everything is in try/except — a failed patch must not crash app startup.
+    Everything is in try/except - a failed patch must not crash app startup.
     """
     try:
         from webview.platforms.qt import BrowserView
@@ -198,7 +198,7 @@ def _smoke_test() -> int:
     """Headless self-test of the *packaged* binary (no GUI window).
 
     Boots the bundled server, confirms a page renders, and imports the Qt /
-    pywebview backend — catching PyInstaller packaging failures (missing hidden
+    pywebview backend - catching PyInstaller packaging failures (missing hidden
     imports, data files, DLLs) that source-level tests can't see. Returns a
     process exit code. Triggered by ``--smoke`` or ``EVE_SMOKE=1``.
     """
@@ -220,7 +220,7 @@ def _smoke_test() -> int:
         print(f"SMOKE FAIL: request failed: {exc!r}", file=sys.stderr)
         return 1
 
-    # Import the GUI backend the way main() does — surfaces bundling gaps
+    # Import the GUI backend the way main() does - surfaces bundling gaps
     # without needing a display (import only, no widgets created). Skippable via
     # EVE_SMOKE_NO_GUI, because importing QtWebEngine on a headless Linux CI
     # runner pulls system Qt libs that aren't present there.
@@ -264,7 +264,7 @@ def _describe_path(path: str | None) -> str:
 def _is_storage_path_error(exc: BaseException, storage_dir: str | None) -> bool:
     """True for pywebview's storage-path rejection, and nothing else.
 
-    It raises WebViewException("Storage path <path> is not writable") — matching
+    It raises WebViewException("Storage path <path> is not writable") - matching
     on both the wording and our own path keeps the retry from swallowing an
     unrelated GUI failure.
     """
@@ -279,7 +279,7 @@ def _prepare_webview_storage(app_dir: str) -> str | None:
 
     pywebview re-validates storage_path itself: it stats the path, calls
     os.makedirs() UNGUARDED when the stat fails, and rewrites any resulting
-    OSError into "Storage path ... is not writable" — throwing the real error
+    OSError into "Storage path ... is not writable" - throwing the real error
     away. A Windows user hit exactly that and the app died before its first
     window: os.path.exists() reported the directory missing while
     CreateDirectory reported it already there (WinError 183). Since our own
@@ -302,7 +302,7 @@ def _prepare_webview_storage(app_dir: str) -> str | None:
     for path in candidates:
         try:
             # A name that exists but is not a directory (leftover file, broken
-            # junction) can never be made usable — rename it aside, never delete:
+            # junction) can never be made usable - rename it aside, never delete:
             # a real profile directory must survive even if we misjudge it.
             if os.path.lexists(path) and not os.path.isdir(path):
                 aside = f"{path}.broken"
@@ -311,7 +311,7 @@ def _prepare_webview_storage(app_dir: str) -> str | None:
                         break
                     aside = f"{path}.broken{n}"
                 print(f"[webview] {path} is not a directory "
-                      f"({_describe_path(path)}) — moving it to {aside}")
+                      f"({_describe_path(path)}) - moving it to {aside}")
                 os.rename(path, aside)
 
             os.makedirs(path, exist_ok=True)
@@ -329,8 +329,8 @@ def _prepare_webview_storage(app_dir: str) -> str | None:
                   f"{_describe_path(path)}")
         except Exception as exc:
             print(f"[webview] storage path unusable: {path}: {exc!r}"
-                  f" — {_describe_path(path)}")
-    print("[webview] no usable profile directory — running with the default "
+                  f" - {_describe_path(path)}")
+    print("[webview] no usable profile directory - running with the default "
           "profile (saved form state will not persist)")
     return None
 
@@ -340,13 +340,13 @@ def _default_window_size(webview) -> tuple[int, int]:
 
     The navbar drops to icon-only by measuring real overflow, not a fixed
     breakpoint. Measured here, it keeps the labels from 1800 px up and loses them
-    at 1750 — and the old 1680 default sat just under that, so testers got
+    at 1750 - and the old 1680 default sat just under that, so testers got
     unlabelled icons every single time. 1880 leaves headroom above the flip,
     which matters because the measurement is font-dependent and Windows does not
     lay text out identically to Linux. The height is unchanged.
 
     Clamped to the screen, because a window wider than the display is worse than
-    a few missing labels — it opens with its edges (and possibly the close
+    a few missing labels - it opens with its edges (and possibly the close
     button) off-screen. A laptop at 1366 px simply gets the largest window that
     fits and the icon-only navbar it would have had anyway.
     """
@@ -361,7 +361,7 @@ def _default_window_size(webview) -> tuple[int, int]:
             want_w = max(900, min(want_w, sw - 40))
             want_h = max(600, min(want_h, sh - 120))
     except Exception as exc:
-        print(f"[window] screen size unavailable ({exc!r}) — using {want_w}x{want_h}")
+        print(f"[window] screen size unavailable ({exc!r}) - using {want_w}x{want_h}")
     return want_w, want_h
 
 
@@ -369,7 +369,7 @@ def _start_webview(webview, storage_dir: str | None) -> None:
     """Run the GUI, surviving a profile directory that goes bad under us.
 
     _prepare_webview_storage already ran pywebview's checks, but they can still
-    fail a moment later — that is exactly what the Windows report showed, where
+    fail a moment later - that is exactly what the Windows report showed, where
     our makedirs had just succeeded and pywebview's stat then said the directory
     was missing. pywebview validates storage_path before it touches the GUI or
     the window list, so retrying without a profile is safe here; the only cost is
@@ -382,7 +382,7 @@ def _start_webview(webview, storage_dir: str | None) -> None:
             raise
         print(f"[webview] {exc!r}")
         print(f"[webview] storage path state: {_describe_path(storage_dir)}")
-        print("[webview] starting with the default profile instead — saved form "
+        print("[webview] starting with the default profile instead - saved form "
               "state will not persist this session")
         webview.start(gui="qt", private_mode=False)
 
@@ -403,7 +403,7 @@ def main() -> None:
         import PyQt6.QtCore  # noqa: F401
         import PyQt6.QtWebEngineWidgets  # noqa: F401
         import webview.platforms.qt  # noqa: F401
-    except Exception as exc:  # pragma: no cover — surfaces at startup only
+    except Exception as exc:  # pragma: no cover - surfaces at startup only
         print(f"ERROR: Qt backend failed to load: {exc!r}", file=sys.stderr)
         raise
 
@@ -427,7 +427,7 @@ def main() -> None:
 
     window.events.closed += on_closed
 
-    # Use PyQt6 + QtWebEngine on both Linux and Windows — self-contained
+    # Use PyQt6 + QtWebEngine on both Linux and Windows - self-contained
     # bundled Chromium, no runtime dependency on system webkit2gtk or
     # Edge WebView2 / pythonnet. The default Windows backend tries to
     # load Python.Runtime.dll through pythonnet which silently corrupts
@@ -436,7 +436,7 @@ def main() -> None:
     #
     # private_mode=False + storage_path: pywebview defaults to an
     # off-the-record browser profile, which wipes localStorage on every
-    # exit — the plan page's "recently used stations/blueprints" and saved
+    # exit - the plan page's "recently used stations/blueprints" and saved
     # form state silently vanished between sessions. Persist the profile
     # next to eve_cache.db (writable app dir).
     _start_webview(webview, _prepare_webview_storage(_APP_DIR))

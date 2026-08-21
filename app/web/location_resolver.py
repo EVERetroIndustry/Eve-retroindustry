@@ -12,7 +12,7 @@ _SEM = asyncio.Semaphore(10)
 
 # location_id → True if ESI returned 403 (no docking access). Kept in memory
 # for the lifetime of the process so the same inaccessible structure isn't
-# resolved over and over — a flood of 403 responses would otherwise exhaust the
+# resolved over and over - a flood of 403 responses would otherwise exhaust the
 # ESI error limit (HTTP 420).
 _forbidden: set[int] = set()
 
@@ -61,7 +61,7 @@ async def get_security_status(
     system_id: int,
 ) -> float | None:
     """Return the security_status for the given system. Caches the result
-    permanently (sec status doesn't normally change — only FW state, which we ignore)."""
+    permanently (sec status doesn't normally change - only FW state, which we ignore)."""
     ensure_location_name_table(conn)
     row = conn.execute(
         "SELECT security_status FROM solar_system_cache WHERE system_id=?",
@@ -283,7 +283,7 @@ async def resolve_station_name(
         except Exception:
             pass
 
-    # Player structures without a resolved name aren't cached in memory —
+    # Player structures without a resolved name aren't cached in memory -
     # after re-login with esi-universe.read_structures.v1 they're retried.
     if not forbidden and (sys_id is not None or location_id < 1_000_000_000_000):
         _cache[location_id] = name
@@ -321,7 +321,7 @@ async def resolve_station_names_bulk(
             stored_stale = stored is None or stored == str(lid) or stored == f"[Private structure {lid}]"
             upgrading = got_real and not name.startswith("[") and stored is not None and stored.startswith("[")
             if got_real and not is_forbidden and (stored_stale or upgrading):
-                # Store only the real name — 403 fallbacks aren't cached in the DB
+                # Store only the real name - 403 fallbacks aren't cached in the DB
                 new_entries[lid] = (name, sys_id)
             elif stored and not is_forbidden and sys_id and db_sys.get(lid) != sys_id:
                 new_entries[lid] = (stored, sys_id)

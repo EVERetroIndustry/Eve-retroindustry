@@ -2,8 +2,8 @@
 Loading market prices from ESI.
 
 Two modes:
-  adjusted  – global adjusted/average prices, single API call
-  jita      – live Jita sell/buy prices, N parallel calls, 30 min cache
+  adjusted  - global adjusted/average prices, single API call
+  jita      - live Jita sell/buy prices, N parallel calls, 30 min cache
 """
 import asyncio
 import json
@@ -17,7 +17,7 @@ JITA_REGION = 10000002   # The Forge
 JITA_STATION = 60003760  # Jita 4-4 CNAP
 PRICE_CACHE_TTL = 60 * 60 * 12  # 12 hours
 
-# Secondary trade hubs — region_id → {name, station}. Jita stays the app-wide
+# Secondary trade hubs - region_id → {name, station}. Jita stays the app-wide
 # reference (market_price_cache); these are fetched on demand per hub into
 # hub_price_cache and shown as comparison columns on the Prices page. Sell/buy are
 # region-wide best (as with Jita/The Forge); `station` is the hub's main station,
@@ -30,14 +30,14 @@ TRADE_HUBS: dict[int, dict] = {
 }
 # Used ONLY for the UI freshness indicator (green/red badge on /prices,
 # `fresh` flag in the API). For price calculations (`get_prices_for_ids`) the
-# cache does NOT expire — the last fetched Jita / The Forge sell value is always
+# cache does NOT expire - the last fetched Jita / The Forge sell value is always
 # used, regardless of age. A full refresh via `/markets/{region}/orders/` takes
 # ~3 s, and the user usually refreshes once a day.
 
 _JITA_SEM = asyncio.Semaphore(10)
 # The 7-day history is fetched per-type (no bulk endpoint), so it is the dominant
 # part of a refresh (~19k calls). Concurrency 30 = ~2.5x faster than 10 (515 vs
-# 204 req/s measured), while staying safely under the ESI rate limit — from ~45
+# 204 req/s measured), while staying safely under the ESI rate limit - from ~45
 # concurrent, ESI starts returning HTTP 420 (error-limit), which is slower AND
 # damages the shared error budget of the whole app. 30 keeps zero 420s with margin.
 _HIST_SEM = asyncio.Semaphore(30)
@@ -119,9 +119,9 @@ def ensure_price_table(conn: sqlite3.Connection):
 async def fetch_adjusted_prices(client: httpx.AsyncClient) -> dict[int, dict]:
     """
     Returns {type_id: {adjusted_price, average_price}} for all types.
-    A single API call — suitable for a quick estimate.
+    A single API call - suitable for a quick estimate.
 
-    Best-effort: this is only a fallback price estimate. NEVER raises —
+    Best-effort: this is only a fallback price estimate. NEVER raises -
     on a 420 (ESI error-limit), timeout, or any other error it returns {}, so
     an ESI failure never takes down the dashboard / plan. The caller handles an empty dict.
     """
@@ -170,7 +170,7 @@ def _save_cached_price(
 async def fetch_region_history(client: httpx.AsyncClient, region_id: int, type_id: int) -> list[dict] | None:
     """Full daily market history (~1 year) for a type in a region. Returns a list
     of {d, avg, low, high, vol} oldest→newest, or None on error. Same ESI endpoint
-    the 7-day volume already uses — we just keep the whole series."""
+    the 7-day volume already uses - we just keep the whole series."""
     async with _HIST_SEM:
         try:
             r = await client.get(
@@ -203,7 +203,7 @@ async def fetch_region_history(client: httpx.AsyncClient, region_id: int, type_i
 # 304 alone isn't enough to be correct, though: "last 7 CALENDAR days" is a
 # moving window, so an unchanged history can still yield a different number
 # tomorrow. We therefore keep the last _ETAG_KEEP_DAYS daily volumes next to the
-# ETag (a handful of ints) and recompute the window locally on a 304 — exact,
+# ETag (a handful of ints) and recompute the window locally on a 304 - exact,
 # and still zero bytes over the wire.
 _ETAG_KEEP_DAYS = 12          # > 7, so the window can always be recomputed
 _HIST_WINDOW_DAYS = 7
@@ -284,7 +284,7 @@ def _window_sum(days: dict[str, int]) -> int:
 
 
 def _recent_days(history: list[dict]) -> dict[str, int]:
-    """Keep only the newest _ETAG_KEEP_DAYS entries — enough to recompute the
+    """Keep only the newest _ETAG_KEEP_DAYS entries - enough to recompute the
     window later without storing a year of data per type."""
     tail = history[-_ETAG_KEEP_DAYS:] if len(history) > _ETAG_KEEP_DAYS else history
     return {e["date"]: e.get("volume", 0) for e in tail if e.get("date")}
@@ -306,7 +306,7 @@ async def _fetch_region_volume(client: httpx.AsyncClient, region_id: int, type_i
 
     ESI omits days with no trades, so summing the last 7 *entries* over-counts
     for illiquid items (e.g. a SKIN that trades once a week would sum ~2 months
-    of days). We sum only entries dated within the last 7 days — 0 if it hasn't
+    of days). We sum only entries dated within the last 7 days - 0 if it hasn't
     traded recently, which is the truthful answer.
 
     Sends If-None-Match when we already have an ETag: a 304 costs no body at all
@@ -316,7 +316,7 @@ async def _fetch_region_volume(client: httpx.AsyncClient, region_id: int, type_i
     cached = _hist_etags.get(key)
     # ESI rebuilds market history once a day and tells us when the current copy
     # stops being authoritative (Expires). While that hasn't passed, a refetch is
-    # guaranteed to return the same bytes — so skip the round trip entirely and
+    # guaranteed to return the same bytes - so skip the round trip entirely and
     # recompute the moving 7-day window from the stored daily volumes. This is
     # plain HTTP caching (no invented TTL, no staler data), and it turns a repeat
     # refresh on the same day from ~19k requests into zero.
@@ -331,7 +331,7 @@ async def _fetch_region_volume(client: httpx.AsyncClient, region_id: int, type_i
         # column blank for ~half the items. A 200 with an empty history list means
         # the type has simply never traded → 0, which is a real answer (not a
         # failure), so we don't retry that.
-        for attempt in range(2):   # one quick retry — enough for transient blips
+        for attempt in range(2):   # one quick retry - enough for transient blips
             try:
                 r = await client.get(
                     f"{ESI_BASE}/markets/{region_id}/history/",
@@ -379,7 +379,7 @@ async def fetch_jita_price(
 ) -> tuple[float | None, float | None]:
     """
     Returns (best_sell, best_buy) for the given type in Jita.
-    Uses the cache — valid for 30 minutes. force=True skips the cache and always fetches fresh data.
+    Uses the cache - valid for 30 minutes. force=True skips the cache and always fetches fresh data.
     """
     if not force:
         sell_c, buy_c = _get_cached_price(conn, type_id)
@@ -451,7 +451,7 @@ async def fetch_jita_prices_bulk(
 
 
 # ---------------------------------------------------------------------------
-# Bulk Jita orders — fetch all active orders in the region at once (paginated)
+# Bulk Jita orders - fetch all active orders in the region at once (paginated)
 # ---------------------------------------------------------------------------
 
 async def _fetch_orders_page(
@@ -588,7 +588,7 @@ async def fetch_region_orders_bulk(
 
 
 async def _maybe_call(cb, *args):
-    """Helper — the callback can be sync or async."""
+    """Helper - the callback can be sync or async."""
     if asyncio.iscoroutinefunction(cb):
         await cb(*args)
     else:
@@ -596,7 +596,7 @@ async def _maybe_call(cb, *args):
 
 
 # Per-type orders at a custom station (phase A in fetch_station_volumes). Runs
-# sequentially before the history phase (_HIST_SEM), so concurrency does not add up — 30 is
+# sequentially before the history phase (_HIST_SEM), so concurrency does not add up - 30 is
 # safe under the ESI rate limit (same as _HIST_SEM).
 _STATION_SEM = asyncio.Semaphore(30)
 STATION_VOLUME_TTL = 60 * 30
@@ -618,7 +618,7 @@ async def get_region_for_structure(structure_id: int) -> int | None:
                                      params={"datasource": "tranquility"}, timeout=8)
                 sys_id = r.json().get("system_id") if r.status_code == 200 else None
             else:
-                # Player structure — we have no token here, try via DB location_name_cache
+                # Player structure - we have no token here, try via DB location_name_cache
                 return None
 
             if not sys_id:
@@ -649,7 +649,7 @@ def _cached_region_volume(conn: sqlite3.Connection, region_id: int | None) -> di
     The Jita refresh stores The Forge volume in market_price_cache; hub refreshes
     store theirs in hub_price_cache. A custom station's "region vol/7d" is exactly
     that region-wide number, so when the region is one we've already loaded we can
-    reuse it verbatim — the same data the Jita/hub columns show. Returns
+    reuse it verbatim - the same data the Jita/hub columns show. Returns
     {type_id: volume} or None if that region isn't cached yet."""
     if not region_id:
         return None
@@ -686,7 +686,7 @@ async def fetch_structure_market(
     async with esi_client() as client:
         while True:
             r = None
-            for attempt in range(3):   # retry transient failures — a timed-out
+            for attempt in range(3):   # retry transient failures - a timed-out
                 try:                    # page must NOT silently cache blank prices
                     r = await client.get(
                         f"{ESI_BASE}/markets/structures/{structure_id}/",
@@ -736,7 +736,7 @@ async def fetch_structure_market(
             page += 1
 
     # The 7-day "volume" is REGIONAL history (ESI does not publish trade history
-    # for player structures). Fetch it for ALL requested types — even those
+    # for player structures). Fetch it for ALL requested types - even those
     # that currently have no offer in the structure, otherwise "sold in the last
     # 7 days" would be missing for them even though they are traded in the region.
     if region_id is None:
@@ -863,13 +863,13 @@ async def fetch_station_volumes(
         for tid, res in zip(type_ids, order_results):
             order_map[tid] = res if isinstance(res, tuple) else (None, None)
 
-    # 7-day regional volume for ALL types — even those that currently have no
+    # 7-day regional volume for ALL types - even those that currently have no
     # order at the station (otherwise "sold in the last 7 days" would be missing for them).
     history_map: dict[int, int | None] = {}
     if type_ids:
         reuse = _cached_region_volume(conn, region_id)
         if reuse is not None:
-            # Region already loaded (Jita/Forge or a hub) — reuse its 7-day volume
+            # Region already loaded (Jita/Forge or a hub) - reuse its 7-day volume
             # instead of re-fetching ~19k histories. Turns a ~3-minute load into
             # seconds (only the station-specific orders phase remains).
             history_map = {tid: reuse.get(tid) for tid in type_ids}
@@ -931,7 +931,7 @@ def get_cached_station_volumes(
     if any((now - (r[4] or 0)) > STATION_VOLUME_TTL for r in rows):
         return None
     # If there are records with volume>0 but all traded_volume are NULL,
-    # the cache is incomplete (the region was unknown at save time) — force a refetch.
+    # the cache is incomplete (the region was unknown at save time) - force a refetch.
     has_stock = any(r[1] and r[1] > 0 for r in rows)
     all_traded_null = all(r[3] is None for r in rows)
     if has_stock and all_traded_null:
@@ -943,7 +943,7 @@ def get_station_volumes_any_age(
     conn: sqlite3.Connection,
     location_id: int,
 ) -> tuple[dict[int, tuple[int | None, float | None, int | None]], float] | None:
-    """Cached station volumes regardless of age — for restoring a previously
+    """Cached station volumes regardless of age - for restoring a previously
     loaded custom station on page load (like the never-expiring Jita cache).
     Returns (data, newest_cached_at) or None if nothing is cached."""
     rows = conn.execute(

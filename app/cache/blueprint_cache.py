@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.db.database import TypeCache, BlueprintCache, get_session
 from app.esi.client import fetch_type_info, fetch_blueprint_data
 
-CACHE_TTL = 60 * 60 * 24 * 7  # 7 days — blueprints rarely change
+CACHE_TTL = 60 * 60 * 24 * 7  # 7 days - blueprints rarely change
 
 
 def get_type_name(session: Session, type_id: int) -> str | None:
@@ -47,7 +47,7 @@ def save_blueprint(session: Session, type_id: int, blueprint_type_id: int, data:
 
 
 async def resolve_type(client: httpx.AsyncClient, session: Session, type_id: int) -> str:
-    """Return the type name — from cache or from ESI."""
+    """Return the type name - from cache or from ESI."""
     cached = get_type_name(session, type_id)
     if cached:
         return cached

@@ -1,7 +1,7 @@
 """Player-supplied text and skill-name resolution.
 
 Ship, container and citadel names are chosen by players and may legally contain
-anything the client accepts — diacritics, Cyrillic, CJK, box drawing, emoji, and
+anything the client accepts - diacritics, Cyrillic, CJK, box drawing, emoji, and
 the HTML-significant characters & < > " '. All of it has to survive to the screen
 intact, and none of it may execute.
 """
@@ -57,7 +57,7 @@ def test_every_character_class_survives_to_the_page(client, app_module, monkeypa
     try:
         page = client.get(f"/assets?view={CHAR}").text
         # Unescape first: Jinja escapes & < > ' correctly, and the browser turns
-        # them back — asserting on the raw bytes would fail on exactly the names
+        # them back - asserting on the raw bytes would fail on exactly the names
         # that are handled properly.
         text = _html.unescape(page)
         for label, name in NAMES.items():
@@ -76,7 +76,7 @@ def test_every_character_class_survives_to_the_page(client, app_module, monkeypa
 
 def test_names_injected_into_innerhtml_are_escaped(client):
     """Citadels, ships and containers are player-named, and several places build
-    HTML strings from them — an unescaped "&" mangles the name and a "<" is an
+    HTML strings from them - an unescaped "&" mangles the name and a "<" is an
     injection. The helper lives in base.html so every page has it."""
     base = client.get("/").text
     assert "window.escHtml" in base

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Prices — EVE Retroindustry{% endblock %}
+{% block title %}Prices - EVE Retroindustry{% endblock %}
 {% block content %}
 
 <div class="row mb-4 align-items-center">
@@ -16,7 +16,7 @@
 </div>
 {% endif %}
 
-{# Freshness strip — how long ago each market's prices were fetched (age, not date) #}
+{# Freshness strip - how long ago each market's prices were fetched (age, not date) #}
 <div class="card p-3 mb-4">
   <div class="d-flex flex-wrap align-items-center gap-2" style="font-size:.9rem">
     <span class="text-muted me-1"><i class="bi bi-clock-history me-1"></i>Prices last fetched</span>
@@ -39,7 +39,7 @@
     <div class="card p-4 h-100 d-flex flex-column">
       <h6 class="mb-1"><i class="bi bi-cloud-arrow-down me-2 text-primary"></i>Fetch Prices</h6>
       <p class="text-muted small mb-3">
-        Download market data from ESI. Only one download runs at a time — starting one
+        Download market data from ESI. Only one download runs at a time - starting one
         disables the others until it finishes, so ESI is never hit twice at once.
       </p>
 
@@ -69,12 +69,12 @@
         </button>
       </div>
       <p class="text-muted small mt-2 mb-0" style="font-size:.78rem">
-        <strong>Jita</strong> — all materials, components &amp; blueprints (~1–2 min, 30-min cache).
-        <strong>Hubs</strong> — sell/buy + 7-day volume, add comparison columns below.
-        <strong>Custom station</strong> — sell prices at any station/citadel (7-day volume is region-wide).
+        <strong>Jita</strong> - all materials, components &amp; blueprints (~1-2 min, 30-min cache).
+        <strong>Hubs</strong> - sell/buy + 7-day volume, add comparison columns below.
+        <strong>Custom station</strong> - sell prices at any station/citadel (7-day volume is region-wide).
       </p>
 
-      {# Shared progress bar — reused by all three downloads (one at a time) #}
+      {# Shared progress bar - reused by all three downloads (one at a time) #}
       <div id="dl-progress" class="d-none mt-3 pt-3 border-top" style="border-color:var(--eve-border) !important">
         <div class="d-flex justify-content-between mb-1">
           <small id="dl-text" class="text-muted">Preparing…</small>
@@ -152,7 +152,7 @@
           ({{ items|length }} your items · {{ stats.total }} total in cache)
         </span>
       </h6>
-      <small class="text-muted">Search any item by name or category — full cache is loaded on demand.</small>
+      <small class="text-muted">Search any item by name or category - full cache is loaded on demand.</small>
     </div>
     <div class="col-auto">
       <div class="position-relative" style="width:280px">
@@ -227,7 +227,7 @@
           <th class="text-end station-col sortable" data-col="{{ ns.c }}" data-sort-type="num" style="display:none;cursor:pointer;user-select:none" title="Best sell price at station">
             <span class="stn-name">Station</span> sell <span class="sort-indicator"></span>
           </th>{% set ns.c = ns.c + 1 %}
-          <th class="text-end station-col sortable" data-col="{{ ns.c }}" data-sort-type="num" style="display:none;cursor:pointer;user-select:none" title="Trade volume over the last 7 days across the station's whole REGION (ESI market history). Fenris Creations does not publish trade history for individual player structures, so this is region-wide demand — not sales at this specific station/citadel.">
+          <th class="text-end station-col sortable" data-col="{{ ns.c }}" data-sort-type="num" style="display:none;cursor:pointer;user-select:none" title="Trade volume over the last 7 days across the station's whole REGION (ESI market history). Fenris Creations does not publish trade history for individual player structures, so this is region-wide demand - not sales at this specific station/citadel.">
             <span class="stn-name">Station</span> region vol/7d
             <i class="bi bi-info-circle ms-1" style="opacity:.5;font-size:.75rem"></i> <span class="sort-indicator"></span>
           </th>{% set ns.c = ns.c + 1 %}
@@ -241,7 +241,7 @@
          build is 99% of this page's client-side cost (measured). #}
       <tbody>
 {% for item in items -%}
-<tr data-name="{{ item.name | lower }}" data-id="{{ item.type_id }}" data-jita-sell="{{ item.sell_price if item.sell_price is not none else '' }}"><td class="py-1"><img src="/icon/{{ item.type_id }}?size=32" width="24" height="24" class="rounded-1" loading="lazy" onerror="this.style.visibility='hidden'"></td><td class="py-1 align-middle item-hist" role="button" tabindex="0" title="Show price history">{{ item.name }}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-sell ph-jita{% if item.sell_price is none %} text-muted{% endif %}" data-v="{{ item.sell_price if item.sell_price is not none else '' }}">{% if item.sell_price is not none %}{{ item.sell_price | price_eu }}{% else %}—{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-buy ph-jita{% if item.buy_price is none %} text-muted{% endif %}" data-v="{{ item.buy_price if item.buy_price is not none else '' }}">{% if item.buy_price is not none %}{{ item.buy_price | price_eu }}{% else %}—{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-vol ph-jita{% if item.volume is none %} text-muted{% endif %}" data-v="{{ item.volume if item.volume is not none else '' }}">{% if item.volume is not none %}{{ item.volume | count_eu }}{% else %}—{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-avail ph-jita{% if item.jita_available is none %} text-muted{% endif %}" data-v="{{ item.jita_available if item.jita_available is not none else '' }}">{% if item.jita_available is not none %}{{ item.jita_available | count_eu }}{% else %}—{% endif %}</td>{% set ihubs = item.get('hubs') or {} %}{% for h in downloaded_hubs %}{% set hd = ihubs.get(h.region_id) %}<td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-sell ph-{{ h.region_id }}{% if hd and hd.sell is none %} text-muted{% endif %}" data-v="{{ hd.sell if hd and hd.sell is not none else '' }}">{% if hd and hd.sell is not none %}{{ hd.sell | price_eu }}{% else %}—{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-buy ph-{{ h.region_id }}{% if hd and hd.buy is none %} text-muted{% endif %}" data-v="{{ hd.buy if hd and hd.buy is not none else '' }}">{% if hd and hd.buy is not none %}{{ hd.buy | price_eu }}{% else %}—{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-vol ph-{{ h.region_id }}{% if hd and hd.volume is none %} text-muted{% endif %}" data-v="{{ hd.volume if hd and hd.volume is not none else '' }}">{% if hd and hd.volume is not none %}{{ hd.volume | count_eu }}{% else %}—{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-avail ph-{{ h.region_id }}{% if hd and hd.available is none %} text-muted{% endif %}" data-v="{{ hd.available if hd and hd.available is not none else '' }}">{% if hd and hd.available is not none %}{{ hd.available | count_eu }}{% else %}—{% endif %}</td>{% endfor %}</tr>
+<tr data-name="{{ item.name | lower }}" data-id="{{ item.type_id }}" data-jita-sell="{{ item.sell_price if item.sell_price is not none else '' }}"><td class="py-1"><img src="/icon/{{ item.type_id }}?size=32" width="24" height="24" class="rounded-1" loading="lazy" onerror="this.style.visibility='hidden'"></td><td class="py-1 align-middle item-hist" role="button" tabindex="0" title="Show price history">{{ item.name }}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-sell ph-jita{% if item.sell_price is none %} text-muted{% endif %}" data-v="{{ item.sell_price if item.sell_price is not none else '' }}">{% if item.sell_price is not none %}{{ item.sell_price | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-buy ph-jita{% if item.buy_price is none %} text-muted{% endif %}" data-v="{{ item.buy_price if item.buy_price is not none else '' }}">{% if item.buy_price is not none %}{{ item.buy_price | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-vol ph-jita{% if item.volume is none %} text-muted{% endif %}" data-v="{{ item.volume if item.volume is not none else '' }}">{% if item.volume is not none %}{{ item.volume | count_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-avail ph-jita{% if item.jita_available is none %} text-muted{% endif %}" data-v="{{ item.jita_available if item.jita_available is not none else '' }}">{% if item.jita_available is not none %}{{ item.jita_available | count_eu }}{% else %}-{% endif %}</td>{% set ihubs = item.get('hubs') or {} %}{% for h in downloaded_hubs %}{% set hd = ihubs.get(h.region_id) %}<td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-sell ph-{{ h.region_id }}{% if hd and hd.sell is none %} text-muted{% endif %}" data-v="{{ hd.sell if hd and hd.sell is not none else '' }}">{% if hd and hd.sell is not none %}{{ hd.sell | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-buy ph-{{ h.region_id }}{% if hd and hd.buy is none %} text-muted{% endif %}" data-v="{{ hd.buy if hd and hd.buy is not none else '' }}">{% if hd and hd.buy is not none %}{{ hd.buy | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-vol ph-{{ h.region_id }}{% if hd and hd.volume is none %} text-muted{% endif %}" data-v="{{ hd.volume if hd and hd.volume is not none else '' }}">{% if hd and hd.volume is not none %}{{ hd.volume | count_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-avail ph-{{ h.region_id }}{% if hd and hd.available is none %} text-muted{% endif %}" data-v="{{ hd.available if hd and hd.available is not none else '' }}">{% if hd and hd.available is not none %}{{ hd.available | count_eu }}{% else %}-{% endif %}</td>{% endfor %}</tr>
 {% endfor -%}
       </tbody>
     </table>
@@ -253,14 +253,14 @@
 <style>
   .item-hist { cursor: pointer; }
   .item-hist:hover { color: var(--eve-gold); text-decoration: underline; text-underline-offset: 2px; }
-  /* While a price download runs, item chart/market popups are disabled — they'd
+  /* While a price download runs, item chart/market popups are disabled - they'd
      collide with the in-flight ESI fetch. Dim them + wait cursor as a cue. */
   body.dl-busy .item-hist { cursor: wait; opacity: .5; text-decoration: none; }
   body.dl-busy .item-hist:hover { color: inherit; }
   @keyframes dl-flash { 0%,100% { box-shadow: none; } 30% { box-shadow: 0 0 0 3px rgba(230,184,74,.55); } }
   .dl-flash { animation: dl-flash .7s ease; border-radius: 6px; }
   #histModal .modal-content { background: linear-gradient(180deg,#171e28,#131922); border:1px solid var(--eve-border); }
-  /* Dynamic width — grows with the app window (market data likes more room),
+  /* Dynamic width - grows with the app window (market data likes more room),
      capped so it never gets unwieldy on very wide screens. */
   #histModal .hist-dialog { max-width: min(1400px, 94vw); width: 100%; }
   #hist-host canvas { display:block; width:100%; }
@@ -345,7 +345,7 @@
 
 <script>
 (function () {
-  // Downloaded secondary hubs (region_id + name) — server-rendered.
+  // Downloaded secondary hubs (region_id + name) - server-rendered.
   const DL_HUBS = [{% for h in downloaded_hubs %}{id:{{ h.region_id }}, name:{{ h.name|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}];
   // Markets available in the price-history chart (region-level). Jita + all hubs;
   // a loaded custom station is appended at runtime as histCustomStation.
@@ -364,7 +364,7 @@
   const cellOn  = (h, m) => colPrefs.cells[cellKey(h, m)] !== false;   // default visible
   // Column visibility is driven by ONE <style> element (see the pre-paint script
   // above the table), not per-cell inline styles. Two reasons: the inline
-  // version had to touch ~7,800 cells — and it could only run after the table
+  // version had to touch ~7,800 cells - and it could only run after the table
   // was already painted, so hidden columns visibly flashed on every load. CSS
   // also covers rows added later (search results) with no extra work.
   function applyColumnPrefs() {
@@ -403,7 +403,7 @@
   // init, so a span placeholder here would re-create thousands of DOM nodes that
   // the server-side markup deliberately avoids. The muted look comes from a
   // class toggled on the <td> instead.
-  const NA_HTML = '—';
+  const NA_HTML = '-';
   const compactNumbersOn = () => colPrefs.compact === true;
   const spaceThousands = s => s.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
   function fmtNum(v, isPrice, compact) {
@@ -451,7 +451,7 @@
   const tbody     = priceTable?.querySelector('tbody');
   const noResults = document.getElementById('price-no-results');
 
-  // ── Column sorting — click a header to sort (matches the materials-table style) ──
+  // ── Column sorting - click a header to sort (matches the materials-table style) ──
   (function () {
     if (!priceTable || !tbody) return;
     const thead = priceTable.querySelector('thead');
@@ -461,7 +461,7 @@
         return row.dataset.name || (row.children[col]?.textContent || '').trim().toLowerCase();
       const cell = row.children[col];
       if (!cell) return null;
-      // Prefer the raw value in data-v — format-independent, so sorting works the
+      // Prefer the raw value in data-v - format-independent, so sorting works the
       // same whether numbers are shown full or in compact K/M/B form.
       if (cell.hasAttribute('data-v')) {
         const dv = cell.getAttribute('data-v');
@@ -495,7 +495,7 @@
     });
   })();
 
-  // Snapshot original rows — stored as DOM elements so event delegation keeps working
+  // Snapshot original rows - stored as DOM elements so event delegation keeps working
   const originalRows = tbody ? Array.from(tbody.querySelectorAll('tr')) : [];
   let inGroupMode = false;
   let searchDebounce = null;
@@ -515,7 +515,7 @@
     ['station-sell-cell', 'station-traded-cell', 'station-avail-cell'].forEach(c => {
       const td = document.createElement('td');
       td.className = STN_CELL_CLS + c;
-      td.textContent = '—';
+      td.textContent = '-';
       tr.appendChild(td);
     });
     return tr.querySelector('.station-sell-cell');
@@ -551,9 +551,9 @@
     p[0] = p[0].replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
     return p.join('.');
   };
-  const fmt = n => n != null ? euro(n, true) : '<span class="text-muted">—</span>';
-  const fmtInt = n => n != null && n > 0 ? euro(n, false) : '<span class="text-muted">—</span>';
-  const na = '<span class="text-muted">—</span>';
+  const fmt = n => n != null ? euro(n, true) : '<span class="text-muted">-</span>';
+  const fmtInt = n => n != null && n > 0 ? euro(n, false) : '<span class="text-muted">-</span>';
+  const na = '<span class="text-muted">-</span>';
 
   function makeGroupRow(item) {
     return `<tr data-name="${escHtml(item.name.toLowerCase())}" data-id="${item.type_id}"
@@ -643,7 +643,7 @@
             }, 6000);
           }
         } else {
-          // No result from the API — fall back to the client-side filter
+          // No result from the API - fall back to the client-side filter
           restoreOriginal();
           applyNameFilter(q);
         }
@@ -656,7 +656,7 @@
 
   // ── Search autocomplete: suggest market groups + item names. This is how the
   //    user discovers correct group names (e.g. "battlecruiser" → "Combat
-  //    Battlecruiser" / "Attack Battlecruiser") — the exact-match group search
+  //    Battlecruiser" / "Attack Battlecruiser") - the exact-match group search
   //    otherwise returns nothing for a group that isn't literally named that. ──
   (function () {
     const box = document.getElementById('price-suggest');
@@ -710,7 +710,7 @@
 
   // ── Shared download progress + mutual exclusion (one ESI download at a time) ──
   // All three fetches (Jita / hub / custom station) share one progress bar and a
-  // single lock, so a second download can't start while one is running — that
+  // single lock, so a second download can't start while one is running - that
   // would double the load on ESI.
   const dlProgress = document.getElementById('dl-progress');
   const dlBar      = document.getElementById('dl-bar');
@@ -808,7 +808,7 @@
       if (!all.length) {
         stationBox.innerHTML = data.cache_empty
           ? `<div class="px-3 py-2 small"><div class="text-warning mb-1"><i class="bi bi-exclamation-triangle me-1"></i>Location data not loaded yet</div><div class="text-muted" style="font-size:.8rem">Visit <a href="/assets" class="text-muted">Assets</a> first, or type a full system name (e.g. <em>Jita</em>).</div></div>`
-          : `<div class="px-3 py-2 text-muted small">No stations found — try a system name (e.g. "Jita").</div>`;
+          : `<div class="px-3 py-2 text-muted small">No stations found - try a system name (e.g. "Jita").</div>`;
         stationBox.style.display = 'block';
         return;
       }
@@ -872,7 +872,7 @@
 
     function endBtn() { stationLoad.innerHTML = '<i class="bi bi-download me-1"></i>Load'; dlLock(false); }
 
-    // Streamed load with real progress — the volume phase fetches 7-day region
+    // Streamed load with real progress - the volume phase fetches 7-day region
     // history for every cached type (thousands), so it can take a few minutes.
     const es = new EventSource('/prices/refresh/station/stream?location_id=' + encodeURIComponent(locId));
     es.onmessage = (e) => {
@@ -906,7 +906,7 @@
 
   // --- Restore the last custom station from a previous session (cache, any age) ---
   function ageShort(ts) {
-    if (!ts) return '—';
+    if (!ts) return '-';
     const d = Math.max(0, Math.floor(Date.now() / 1000 - ts));
     if (d < 60) return 'now';
     if (d < 3600) return Math.floor(d / 60) + 'm';
@@ -969,7 +969,7 @@
     });
   });
 
-  // ── Price-history chart — opens from an item name (Canvas, app-native) ──────
+  // ── Price-history chart - opens from an item name (Canvas, app-native) ──────
   (function () {
     const modalEl = document.getElementById('histModal');
     if (!modalEl) return;
@@ -1061,7 +1061,7 @@
       return list.map(o => `<tr>
         <td class="text-end font-monospace">${fmtNum(o.price, true, false)}</td>
         <td class="text-end font-monospace">${intS(o.qty)}</td>
-        <td class="text-truncate" style="max-width:240px" title="${escHtml(o.location || '')}">${escHtml(o.location || '—')}</td>
+        <td class="text-truncate" style="max-width:240px" title="${escHtml(o.location || '')}">${escHtml(o.location || '-')}</td>
       </tr>`).join('');
     }
     function loadMarket() {
@@ -1106,7 +1106,7 @@
       const padL = 64, padR = 14, padT = 12, padB = 22, gap = 16;
       const priceH = (cssH - padT - padB - gap) * 0.66, volH = (cssH - padT - padB - gap) * 0.34;
       const px0 = padL, px1 = cssW - padR, py0 = padT, py1 = padT + priceH, vy0 = py1 + gap, vy1 = py1 + gap + volH;
-      // Current sell price for the selected market (from the table row) — drawn
+      // Current sell price for the selected market (from the table row) - drawn
       // as a reference line so history can be compared to today's asking price.
       const opt = marketSel.selectedOptions[0];
       let refSell = (opt && opt.dataset.station === '1') ? histRefSell['station'] : histRefSell[String(+marketSel.value)];
@@ -1213,7 +1213,7 @@
 
   // Open the history chart when an item name is clicked or activated.
   function _openHistFromEl(el) {
-    // A price download is in flight — opening the chart/market popup would fire
+    // A price download is in flight - opening the chart/market popup would fire
     // ESI fetches that collide with it. Point the user at the running download
     // instead of opening a conflicting one.
     if (downloadBusy) {

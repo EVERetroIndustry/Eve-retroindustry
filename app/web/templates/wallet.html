@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Wallet — EVE Retroindustry{% endblock %}
+{% block title %}Wallet - EVE Retroindustry{% endblock %}
 {% block content %}
 
 {# Dropdown of checkboxes, one per distinct value in the table below it. The
@@ -92,7 +92,7 @@
 </div>
 {% endif %}
 
-{# Balance — large, like in-game #}
+{# Balance - large, like in-game #}
 {% if balance is not none %}
 <div class="card mb-3 p-3 text-center" style="background:linear-gradient(135deg,#161b22,#0d1117)">
   <div class="text-muted small text-uppercase" style="letter-spacing:.08em">
@@ -126,7 +126,7 @@
   {{ value_filter("journal", "Type", "bi-funnel") }}
   {% if journal | length >= row_cap %}
   <div class="px-2 pt-2 text-muted" style="font-size:.75rem">
-    <i class="bi bi-info-circle me-1"></i>Showing the newest {{ row_cap | count_eu }} journal entries —
+    <i class="bi bi-info-circle me-1"></i>Showing the newest {{ row_cap | count_eu }} journal entries -
     ESI keeps roughly the last 30 days.
   </div>
   {% endif %}
@@ -149,9 +149,9 @@
             {% if j.reason %}<span class="ms-2" style="opacity:.7">· {{ j.reason }}</span>{% endif %}
           </td>
           <td class="text-end fw-semibold" style="white-space:nowrap;color:{% if j.amount and j.amount < 0 %}#f85149{% else %}#3fb950{% endif %}">
-            {% if j.amount is not none %}{{ j.amount | isk }}{% else %}—{% endif %}
+            {% if j.amount is not none %}{{ j.amount | isk }}{% else %}-{% endif %}
           </td>
-          <td class="text-end text-muted" style="white-space:nowrap">{% if j.balance is not none %}{{ j.balance | isk }}{% else %}—{% endif %}</td>
+          <td class="text-end text-muted" style="white-space:nowrap">{% if j.balance is not none %}{{ j.balance | isk }}{% else %}-{% endif %}</td>
         </tr>
         {% else %}
         <tr><td colspan="5" class="text-muted text-center py-3">No journal entries.</td></tr>
@@ -168,7 +168,7 @@
   {{ value_filter("txns", "Item", "bi-funnel") }}
   {% if transactions | length >= row_cap %}
   <div class="px-2 pt-2 text-muted" style="font-size:.75rem">
-    <i class="bi bi-info-circle me-1"></i>Showing the newest {{ row_cap | count_eu }} transactions —
+    <i class="bi bi-info-circle me-1"></i>Showing the newest {{ row_cap | count_eu }} transactions -
     ESI keeps roughly the last 30 days.
   </div>
   {% endif %}
@@ -238,7 +238,7 @@
 
     const counts = new Map();
     rows.forEach(r => {
-      const v = r.dataset.fval || '—';
+      const v = r.dataset.fval || '-';
       counts.set(v, (counts.get(v) || 0) + 1);
     });
     const values = Array.from(counts.keys()).sort((a, b) => a.localeCompare(b, 'cs'));
@@ -264,7 +264,7 @@
       );
       let shown = 0;
       rows.forEach(r => {
-        const hit = on.has(r.dataset.fval || '—');
+        const hit = on.has(r.dataset.fval || '-');
         r.style.display = hit ? '' : 'none';
         if (hit) shown++;
       });

@@ -112,7 +112,7 @@ from app.web.projects_helper import (
     get_project_detail,
 )
 
-# Path resolution — works in dev mode and when frozen by PyInstaller.
+# Path resolution - works in dev mode and when frozen by PyInstaller.
 # launcher.py sets EVE_APP_DIR / EVE_BUNDLE_DIR before importing this module.
 _APP_DIR = os.environ.get("EVE_APP_DIR") or os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..")
@@ -160,7 +160,7 @@ def _sync_reset() -> None:
 
 
 def _sync_pct() -> int:
-    """Honest completion estimate, 0–100.
+    """Honest completion estimate, 0-100.
 
     Characters share 92 % between them, split again across the four fetches per
     character, so the bar advances several times per character instead of jumping.
@@ -182,13 +182,13 @@ def _sync_pct() -> int:
 app = FastAPI(title="EVE Retroindustry")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-# Vendored front-end assets (Bootstrap CSS/JS + icons) served locally —
+# Vendored front-end assets (Bootstrap CSS/JS + icons) served locally -
 # no CDN dependency (important for Android WebView + offline desktop).
 if STATIC_DIR.is_dir():
     from fastapi.staticfiles import StaticFiles
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-# The Android shell sets EVE_ANDROID=1 — templates then hide the desktop updater
+# The Android shell sets EVE_ANDROID=1 - templates then hide the desktop updater
 # (which downloads the desktop zip) and show a native "Check for updates" button
 # that, via the JS bridge AndroidApp.checkForUpdate(), triggers installing the new APK.
 templates.env.globals["IS_ANDROID"] = bool(os.environ.get("EVE_ANDROID"))
@@ -246,7 +246,7 @@ def _refresh_sde_from_bundle(conn: sqlite3.Connection) -> int:
     instead of ~857 from ESI); without a group row, rig_applies_to_product's INNER
     JOIN silently drops all rig bonuses for that product.
 
-    User data (characters, BP cache, prices, projects, …) is preserved — we only
+    User data (characters, BP cache, prices, projects, …) is preserved - we only
     change the tables in `_SDE_TABLES_TO_REFRESH`.
     """
     bundled = _bundled_sde_path()
@@ -272,7 +272,7 @@ def _refresh_sde_from_bundle(conn: sqlite3.Connection) -> int:
         bundled_count, bundled_groups = _counts(bsrc)
 
         # Also refresh when a table the app now needs is MISSING from the user's
-        # DB but present in the bundle — e.g. a new SDE table (PI schematics,
+        # DB but present in the bundle - e.g. a new SDE table (PI schematics,
         # v0.8.106) added without the type/group counts changing. Without this,
         # an existing eve_cache.db never gains the new table and queries 500.
         user_tables = {
@@ -321,7 +321,7 @@ def _refresh_sde_from_bundle(conn: sqlite3.Connection) -> int:
 async def _startup_populate_groups():
     """Check SDE readiness, refresh from bundled DB if outdated, then
     load group names and rig bonuses."""
-    # Fresh install — if eve_cache.db doesn't exist and we have a bundled SDE,
+    # Fresh install - if eve_cache.db doesn't exist and we have a bundled SDE,
     # copy it straight over (bypasses the old /setup/download page).
     # NOTE: app.db.database already called create_all at import time (before this
     # handler runs), which created eve_cache.db with only the user tables.
@@ -392,7 +392,7 @@ def _isk0(v: float | None) -> str:
     try:
         return f"{round(float(v)):,}".replace(",", " ")
     except (TypeError, ValueError):
-        return "—"
+        return "-"
 
 
 def _format_number(v) -> str:
@@ -439,7 +439,7 @@ def _price_eu(v) -> str:
     try:
         v = float(v)
     except (TypeError, ValueError):
-        return "—"
+        return "-"
     s = f"{v:,.2f}" if abs(v) < 10000 else f"{v:,.0f}"
     return s.replace(",", " ")
 
@@ -449,17 +449,17 @@ def _count_eu(v) -> str:
     try:
         v = int(round(float(v)))
     except (TypeError, ValueError):
-        return "—"
+        return "-"
     return f"{v:,}".replace(",", " ")
 
 
 def _age_short(ts) -> str:
     """Compact relative age of a timestamp: 'now' / '5m' / '10h' / '2d'.
-    Returns '—' when there's no timestamp (never fetched)."""
+    Returns '-' when there's no timestamp (never fetched)."""
     try:
         delta = int(_time.time() - float(ts))
     except (TypeError, ValueError):
-        return "—"
+        return "-"
     if delta < 60:
         return "now"
     if delta < 3600:
@@ -525,7 +525,7 @@ async def setup_download():
                             yield f"data: {json.dumps({'downloaded': downloaded, 'total': total, 'pct': pct})}\n\n"
 
             import shutil
-            # Dispose pooled SQLAlchemy connections BEFORE the move — otherwise
+            # Dispose pooled SQLAlchemy connections BEFORE the move - otherwise
             # they hold an open file descriptor on the empty placeholder DB and
             # subsequent INSERTs fail with SQLITE_READONLY_DBMOVED ("attempt to
             # write a readonly database").
@@ -533,7 +533,7 @@ async def setup_download():
             _alchemy_engine.dispose()
 
             shutil.move(tmp_path, DB_ABS)
-            # The downloaded file is sde_base.db — has SDE tables only, no
+            # The downloaded file is sde_base.db - has SDE tables only, no
             # SQLAlchemy user tables. Recreate them now or the next /plan
             # crashes with "no such table: type_cache".
             ensure_user_tables()
@@ -564,7 +564,7 @@ async def setup_download():
     )
 
 
-# `get_conn()` is on the hot path — runs on every request. The 11
+# `get_conn()` is on the hot path - runs on every request. The 11
 # CREATE TABLE IF NOT EXISTS calls below used to fire on each connection
 # (~10 ms wasted before any real work). Move them to one-shot startup
 # via `ensure_schema()`; later `get_conn()` calls just open the DB.
@@ -606,7 +606,7 @@ def get_conn() -> sqlite3.Connection:
     # WAL + a long busy timeout so concurrent work never trips "database is
     # locked". In the default rollback-journal mode a writer blocks all readers,
     # so the burst when a character is added (background sync writing large asset
-    # caches) collided with rotating-refresh-token writes — a commit that waited
+    # caches) collided with rotating-refresh-token writes - a commit that waited
     # past the timeout raised, the token came back None, and the dashboard showed
     # no location / skill training for every character. WAL lets readers and one
     # writer run concurrently; the timeout absorbs brief writer-writer waits.
@@ -744,7 +744,7 @@ def _market_bucket_token() -> str | None:
     This runs INSIDE the async transport, on the event loop, so it must never
     block. It therefore reads a stored token straight from the table and never
     calls get_valid_token(), which performs a synchronous OAuth refresh when the
-    token has expired — doing that here stalled the whole server, dashboard
+    token has expired - doing that here stalled the whole server, dashboard
     included, for the length of a round trip to the SSO endpoint. (The codebase
     already had _valid_token_async for exactly this reason.) The result is cached
     briefly so a burst of market pages costs one query, not one per request.
@@ -786,16 +786,16 @@ def _science_skill_mult(
     """Return (multiplier, [(skill_name, char_level, bonus_pct, required_level), ...]).
 
     Each required skill with a time bonus contributes (1 - level * bonus_pct/100).
-    Industry and AdvIndustry are handled separately — we skip them here.
+    Industry and AdvIndustry are handled separately - we skip them here.
 
     `preloaded`: [(skill_id, required_level), …] from the bulk fetch in plan_result.
-    If passed, we avoid per-bp DB queries — we only look up names and bonus_pct
+    If passed, we avoid per-bp DB queries - we only look up names and bonus_pct
     from (process-level cached) lookup tables.
     """
     if preloaded is not None:
         # Fast path: bulk-prefetched in caller. Resolve names + bonus_pct
         # from small joined tables; cache them on the function for the rest
-        # of the process — sde_skill_time_bonus has only ~27 rows.
+        # of the process - sde_skill_time_bonus has only ~27 rows.
         if not hasattr(_science_skill_mult, "_bonus_cache"):
             _science_skill_mult._bonus_cache = {  # type: ignore[attr-defined]
                 r[0]: r[1] for r in conn.execute(
@@ -828,7 +828,7 @@ def _science_skill_mult(
             )
         return max(0.01, mult), details
 
-    # Slow path — preloaded not available (single-blueprint callers).
+    # Slow path - preloaded not available (single-blueprint callers).
     try:
         rows = conn.execute(
             """SELECT bs.skill_type_id,
@@ -861,7 +861,7 @@ async def _ensure_groups_populated(conn: sqlite3.Connection) -> None:
     Top-up semantics: fetches only groups referenced by sde_types that are
     MISSING from sde_groups. The previous all-or-nothing early return meant
     a new expansion's groups (e.g. 5120 Command Carrier) never got added for
-    existing users — and rig_applies_to_product's INNER JOIN on sde_groups
+    existing users - and rig_applies_to_product's INNER JOIN on sde_groups
     then silently disabled all rig bonuses for those products.
     """
     group_ids = [r[0] for r in conn.execute(
@@ -908,16 +908,16 @@ def _collect_type_ids(node) -> list[int]:
 
 def _is_real_location(loc_id: int) -> bool:
     """Return True if the ID is a real station/structure, not a container/ship item_id."""
-    # NPC stations: 60_000_000 – 64_000_000
+    # NPC stations: 60_000_000 - 64_000_000
     # Player structures: > 1_000_000_000_000
-    # Solar systems: 30_000_000 – 34_000_000 (things in space)
+    # Solar systems: 30_000_000 - 34_000_000 (things in space)
     # Ship/container item_ids: typically billions but < 1 trillion
     if 60_000_000 <= loc_id < 64_000_000:
         return True
     if loc_id > 1_000_000_000_000:
         return True
     if 30_000_000 <= loc_id < 34_000_000:
-        return True  # solar system — things in space
+        return True  # solar system - things in space
     return False
 
 
@@ -988,7 +988,7 @@ _CORP_DIV_ORDER = list(_CORP_DIV_LABEL.keys())
 
 # Optional override for opening a URL (SSO login) in an external browser.
 # The Android shell (android_main) sets it to a function that fires an Android
-# Intent — desktop leaves it None and uses subprocess/xdg-open below.
+# Intent - desktop leaves it None and uses subprocess/xdg-open below.
 _EXTERNAL_BROWSER_OPENER = None
 
 
@@ -1005,7 +1005,7 @@ def _open_in_external_browser(url: str) -> bool:
     if the spawn succeeded.
 
     The AppImage runtime saves the original values into `APPIMAGE_ORIGINAL_*`
-    and the PyInstaller bootloader into `_PYI_*` — we restore them before
+    and the PyInstaller bootloader into `_PYI_*` - we restore them before
     calling xdg-open.
     """
     # Android: open via the registered Intent opener (subprocess/xdg-open
@@ -1084,7 +1084,7 @@ SUPPORT_URL = "https://ko-fi.com/retrovisor"
 
 # Hosts that the app may open in the system browser. A plain target=_blank link
 # does not open inside the Android WebView, so external links are routed through
-# _open_in_external_browser — restricted to these hosts.
+# _open_in_external_browser - restricted to these hosts.
 _EXTERNAL_HOST_ALLOWLIST = (
     "ko-fi.com", "github.com", "esi.evetech.net",
     "developers.eveonline.com", "evetech.net",
@@ -1106,7 +1106,7 @@ def _external_host_allowed(url: str) -> bool:
 @app.get("/api/support/open")
 async def api_support_open():
     """Open the Ko-fi support page in the system default browser. Routed through
-    the server-side opener so it works on both desktop and Android — a plain
+    the server-side opener so it works on both desktop and Android - a plain
     target=_blank link would not open in the Android WebView."""
     opened = _open_in_external_browser(SUPPORT_URL)
     return {"ok": opened, "url": SUPPORT_URL}
@@ -1386,7 +1386,7 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
     active_char_id = get_active_character_id(request, conn)
     char_rows: dict[int, dict] = {cid: (get_character_row(conn, cid) or {}) for cid, _ in chars}
 
-    # Access tokens — fetched once per char, OFF the event loop (live only).
+    # Access tokens - fetched once per char, OFF the event loop (live only).
     # return_exceptions so one char's refresh error can't blow up the endpoint.
     tokens: dict[int, str | None] = {}
     if live:
@@ -1412,8 +1412,8 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
                 pass
 
     # Assets from cache (always).
-    # all_assets_by_char: everything incl. singletons — for value calculation
-    # assets_by_char: non-singletons only — for location/count display stats
+    # all_assets_by_char: everything incl. singletons - for value calculation
+    # assets_by_char: non-singletons only - for location/count display stats
     all_type_ids_set: set[int] = set()
     assets_by_char: dict[int, list[dict]] = {}
     all_assets_by_char: dict[int, list[dict]] = {}
@@ -1431,7 +1431,7 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
         else:
             prices = get_cached_prices_for_ids(conn, list(all_type_ids_set))
 
-    # Blueprint group_ids — exclude from net worth (matches in-game behavior)
+    # Blueprint group_ids - exclude from net worth (matches in-game behavior)
     bp_group_ids: set[int] = {
         r[0] for r in conn.execute(
             "SELECT group_id FROM sde_groups WHERE name LIKE '%Blueprint%'"
@@ -1621,7 +1621,7 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
                 continue
         if _act and _act.get("skill_id") and _act.get("finish_date"):
             # SP/hour for the skill in training. Derived straight from the queue
-            # entry — SP gained over its wall-clock span — so it already reflects
+            # entry - SP gained over its wall-clock span - so it already reflects
             # this character's attributes, attribute implants and any boosters,
             # and it's specific to the current skill's primary/secondary attrs.
             sp_hr = None
@@ -1687,7 +1687,7 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    """Instant render from cache/DB only — no ESI. The ESI-backed fields load
+    """Instant render from cache/DB only - no ESI. The ESI-backed fields load
     afterwards via /api/dashboard/live, so a slow or rate-limited ESI can never
     make the dashboard (and the app) look frozen."""
     conn = get_conn()
@@ -1865,7 +1865,7 @@ def _resolve_product_local(conn: sqlite3.Connection, query: str) -> tuple[int, s
 # Dropdown entries for the manufacturing implant, cheapest bonus first. Built from
 # planner.MFG_IMPLANTS so the UI can never drift from what calc_job_time accepts.
 _MFG_IMPLANT_OPTIONS: list[dict] = [
-    {"pct": f"{pct:g}", "label": f"{name} (−{pct:g}%)"}
+    {"pct": f"{pct:g}", "label": f"{name} (-{pct:g}%)"}
     for _tid, (name, pct) in sorted(MFG_IMPLANTS.items(), key=lambda kv: kv[1][1])
 ]
 
@@ -1903,7 +1903,7 @@ async def plan_result(
 ):
     conn = get_conn()
     input_basis = "buy" if input_basis == "buy" else "sell"
-    # Zainou 'Beancounter' Industry implant — the UI sends the reduction in %.
+    # Zainou 'Beancounter' Industry implant - the UI sends the reduction in %.
     # Anything not in the real BX-80x set collapses to 0 (no implant).
     try:
         implant_mfg_pct = float(implant_mfg.replace(",", "."))
@@ -1920,7 +1920,7 @@ async def plan_result(
         int(x) for x in stock_stations.split(",") if x.strip().lstrip("-").isdigit()
     }
     stock_explicit = bool(stock_stations.strip())
-    # How many runs one BPC copy has — ME is rounded per job.
+    # How many runs one BPC copy has - ME is rounded per job.
     # 1 (default) = parallel 1-run copies; K = copies of K runs each;
     # empty/0 = one batched job (in-game multi-run window).
     rpj_int: int | None = None
@@ -1935,7 +1935,7 @@ async def plan_result(
     if plan_char_id_int is None:
         plan_char_id_int = get_active_character_id(request, conn)
 
-    # Parse station — friendly error instead of 422 (if missing, raise ValueError below)
+    # Parse station - friendly error instead of 422 (if missing, raise ValueError below)
     try:
         station = int(station.strip()) if isinstance(station, str) and station.strip() else 0
     except ValueError:
@@ -1944,7 +1944,7 @@ async def plan_result(
     # Convert ME/TE to int if provided
     me_override: int | None = int(form_me) if form_me.strip().isdigit() else None
     te_override: int | None = int(form_te) if form_te.strip().isdigit() else None
-    # Safe defaults — overwritten inside try block once BP is known
+    # Safe defaults - overwritten inside try block once BP is known
     me: float = float(me_override) if me_override is not None else 0.0
     te: int   = te_override if te_override is not None else 0
 
@@ -1985,7 +1985,7 @@ async def plan_result(
                 type_id = int(product.strip())
                 type_name = await resolve_type(client, session, type_id)
             else:
-                # Local SDE resolve — exact → prefix → substring; prefers
+                # Local SDE resolve - exact → prefix → substring; prefers
                 # producible, published, shortest name (so "Industrial
                 # Jump Portal Generator" hits "…Generator I", not its
                 # blueprint). ESI /universe/ids/ only as a last resort
@@ -2030,7 +2030,7 @@ async def plan_result(
         me = float(me_override if me_override is not None else (bp.material_efficiency if bp else 0))
         te = int(te_override if te_override is not None else (bp.time_efficiency if bp else 0))
 
-        # Station ME multiplier — per-product (a rig applies only to products
+        # Station ME multiplier - per-product (a rig applies only to products
         # matching its category: Ship rig to ships, Equipment rig to modules, etc.).
         eff_rxn_station_for_me = reaction_station if reaction_station else station
         mfg_facility = get_station_facility(conn, station)
@@ -2041,7 +2041,7 @@ async def plan_result(
 
         # === Manufacturing fee parameters, computed up-front ===
         # The make-vs-buy optimizer needs each job's install fee, not just its
-        # material cost — otherwise it "makes" components whose real install
+        # material cost - otherwise it "makes" components whose real install
         # fees then quietly erase the paper savings. So resolve fee inputs
         # (SCI, tax, structure bonus, adjusted prices) BEFORE building the plan.
         def _safe_pct(s: str, default: float) -> float:
@@ -2053,7 +2053,7 @@ async def plan_result(
         fac_tax_pct  = _safe_pct(facility_tax, 2.5)
         fac_tax_rate = fac_tax_pct / 100
 
-        # Reaction station — 0 means use the same one as manufacturing
+        # Reaction station - 0 means use the same one as manufacturing
         eff_rxn_station = reaction_station if reaction_station else station
         sep_rxn_station = eff_rxn_station != station
 
@@ -2084,11 +2084,11 @@ async def plan_result(
         mfg_te_mult = get_station_te_multiplier(conn, station)
         rxn_te_mult = get_station_te_multiplier(conn, eff_rxn_station) if sep_rxn_station else mfg_te_mult
 
-        # Cost bonus na SCI (Raitaru −3 %, Azbel −4 %, Sotiyo −5 %)
+        # Cost bonus na SCI (Raitaru -3 %, Azbel -4 %, Sotiyo -5 %)
         mfg_cost_bonus = get_station_cost_bonus(conn, station)
         rxn_cost_bonus = get_station_cost_bonus(conn, eff_rxn_station) if sep_rxn_station else mfg_cost_bonus
 
-        # Combined install-fee rate per activity: SCI×(1−structure bonus) + tax + SCC.
+        # Combined install-fee rate per activity: SCI×(1-structure bonus) + tax + SCC.
         rate_mfg = mfg_sci * (1.0 - mfg_cost_bonus) + fac_tax_rate + _SCC
         rate_rxn = rxn_sci * (1.0 - rxn_cost_bonus) + rxn_fac_tax_rate + _SCC
 
@@ -2132,11 +2132,11 @@ async def plan_result(
             plan_data["blueprint"]["me"] = int(me)
             plan_data["blueprint"]["te"] = te
         elif me_override is not None:
-            plan_data["blueprint"] = {"kind": "—", "me": int(me), "te": te, "runs": "—", "manual": True}
+            plan_data["blueprint"] = {"kind": "-", "me": int(me), "te": te, "runs": "-", "manual": True}
 
         # Make-vs-buy decisions go to the UI in every mode (informational
         # tab). Only optimal mode acts on them: bought components are pruned
-        # out of the manufacturing-steps tree — you don't run (or pay job
+        # out of the manufacturing-steps tree - you don't run (or pay job
         # fees for) jobs whose output you buy off market.
         if plan.opt_decisions:
             plan_data["opt_decisions"] = [
@@ -2217,7 +2217,7 @@ async def plan_result(
 
         # Memoize get_product_te_multiplier per (facility-id, type_id).
         # Same product appears across multiple steps when the resolver
-        # aggregates duplicates — without the cache we re-classify it each
+        # aggregates duplicates - without the cache we re-classify it each
         # time and pay the rig_applies_to_product cost again.
         te_mult_cache: dict[tuple[int, int], float] = {}
         def _te_mult_for(prod_facility, type_id: int) -> float:
@@ -2232,7 +2232,7 @@ async def plan_result(
         for step in plan_data["manufacturing_steps"]:
             step_mfg_time = 0
             step_rxn_time = 0
-            # In "components" mode we buy the 1st level from the market — we pay
+            # In "components" mode we buy the 1st level from the market - we pay
             # install fees only for the final job (assembling the product itself).
             skip_fee = (mode == "components" and not step.get("is_final"))
             for job in step["jobs"]:
@@ -2273,7 +2273,7 @@ async def plan_result(
                             preloaded=bp_skills_idx.get((bp_id, activity_name)),
                         )
                         job_te = te if not is_rxn else 0
-                        # Per-product TE multiplier — an Equipment TE rig doesn't speed up building a ship
+                        # Per-product TE multiplier - an Equipment TE rig doesn't speed up building a ship
                         prod_facility = rxn_facility if is_rxn else mfg_facility
                         prod_te_mult = _te_mult_for(prod_facility, job["type_id"])
                         job_secs = calc_job_time(
@@ -2314,7 +2314,7 @@ async def plan_result(
             (n, l, p, r) for n, (l, p, r) in sorted(_seen.items())
         ]
 
-        # Required Industry / Adv Industry levels — max across all BPs in the plan
+        # Required Industry / Adv Industry levels - max across all BPs in the plan
         bp_ids_in_plan: set[int] = set()
         for step in plan_data.get("manufacturing_steps", []):
             for job in step.get("jobs", []):
@@ -2347,9 +2347,9 @@ async def plan_result(
         buy_cost = plan_data.get("total_buy") or 0.0
         rev = plan_data.get("revenue")
 
-        # Market profit: revenue − all materials at market price − job fee
+        # Market profit: revenue - all materials at market price - job fee
         profit_market = (rev - full_mat_cost - total_job_fee) if rev is not None else None
-        # Profit with stock: revenue − only missing materials − job fee
+        # Profit with stock: revenue - only missing materials - job fee
         profit_stock  = (rev - buy_cost - total_job_fee) if rev is not None else None
 
         total_time_s = total_mfg_time_s + total_rxn_time_s
@@ -2422,7 +2422,7 @@ async def plan_result(
         "form_mode": mode,
         "form_input_basis": input_basis,
         "form_runs_per_job": runs_per_job,
-        # After computing, always show the ROOT BP ME/TE (the actual values used in the plan) —
+        # After computing, always show the ROOT BP ME/TE (the actual values used in the plan) -
         # the user sees a concrete number instead of a placeholder.
         "form_me": str(int(me)),
         "form_te": str(int(te)),
@@ -2445,7 +2445,7 @@ async def plan_result(
 
 # location_flag values that mean "inside a ship" (fitted modules, cargo,
 # drone/fighter bay, specialized bay). Such items are NOT counted as manufacturing
-# stock — it makes no sense to strip individual ships' fit/cargo. Hangar,
+# stock - it makes no sense to strip individual ships' fit/cargo. Hangar,
 # AutoFit/Unlocked/Locked (contents of hangar containers), on the other hand, are.
 _SHIP_INTERNAL_FLAGS: frozenset[str] = frozenset({
     "Cargo", "DroneBay", "FleetHangar", "ShipHangar", "FighterBay",
@@ -2466,7 +2466,7 @@ def _is_ship_internal_flag(flag: str) -> bool:
 def _rollup_stock(rows: list[tuple]) -> dict[int, dict[int, int]]:
     """rows: (item_id, location_id, location_flag, type_id, quantity, is_singleton).
 
-    Return {station_id: {type_id: total_qty}} — items rolled up to a real
+    Return {station_id: {type_id: total_qty}} - items rolled up to a real
     station/structure (container contents are summed onto their station),
     EXCLUDING singletons (ships, unique items) and everything inside ships
     (ship cargo / fittings / bays). station_id = the first ancestor in the chain
@@ -2527,7 +2527,7 @@ async def _build_stock_station_options(
     default_station: int,
     explicit: bool,
 ) -> list[dict]:
-    """Stations where the planning character has non-singleton items — options for
+    """Stations where the planning character has non-singleton items - options for
     the stock-source picker. Names are resolved via ESI (resolve_station_names_bulk)
     so bare IDs aren't shown. `selected` = the user's explicit choice,
     otherwise default to the manufacturing station.
@@ -2546,11 +2546,11 @@ async def _build_stock_station_options(
         return bool(n) and not n.startswith("[") and n != str(lid)
 
     # The DB cache holds real names accumulated earlier (Assets resolves them
-    # per-owner with a token and stores them here) — placeholders are never
+    # per-owner with a token and stores them here) - placeholders are never
     # stored in the DB. We use it as the primary source WITHOUT an ESI call.
     db_names = load_location_names_from_db(conn)
 
-    # Resolve via ESI only for stations that don't have a real name yet — and only
+    # Resolve via ESI only for stations that don't have a real name yet - and only
     # with the planning character's token. Resolving all ~79 structures with the
     # tokens of ALL characters (as v0.6.1/0.6.2 did) generates a flood of 403
     # responses and ESI error-limits us (HTTP 420), which then also breaks product
@@ -2640,7 +2640,7 @@ def _build_manufacturing_steps(root, prices: dict, available: dict,
             # Recompute runs from aggregated quantity instead of summing per-branch
             # runs. Per-branch ceil() rounds up locally; summed it over-states the
             # total. Example: Helium Fuel Block (40/run) needed 5 in Carbon Polymers
-            # branch + 5 in Dysporite branch — each rounded to 1 run → sum 2 runs
+            # branch + 5 in Dysporite branch - each rounded to 1 run → sum 2 runs
             # shown to user, but in reality 10 / 40 = 1 run suffices.
             from math import ceil
             per_run = aggregated[tid].get("per_run") or 1
@@ -2717,7 +2717,7 @@ def _plan_to_dict(plan, prices, type_name: str, conn: sqlite3.Connection | None 
                     WHERE t.type_id IN ({ph})""",
                 ids,
             ).fetchall()
-            group_names = {r[0]: (r[1] or "—") for r in rows}
+            group_names = {r[0]: (r[1] or "-") for r in rows}
 
     materials = []
     for m in sorted(plan.materials, key=lambda x: (x.ok, x.coverage_pct)):
@@ -2725,7 +2725,7 @@ def _plan_to_dict(plan, prices, type_name: str, conn: sqlite3.Connection | None 
         materials.append({
             "type_id": m.type_id,
             "name": m.name,
-            "group_name": group_names.get(m.type_id, "—"),
+            "group_name": group_names.get(m.type_id, "-"),
             "required": m.required,
             "available": m.available,
             "missing": m.missing,
@@ -2738,7 +2738,7 @@ def _plan_to_dict(plan, prices, type_name: str, conn: sqlite3.Connection | None 
 
     total_buy = sum(m["buy_price"] for m in materials if m["buy_price"])
     # Revenue always uses the product's sell price (what you receive when
-    # selling) — the input_basis toggle governs only what you PAY for inputs.
+    # selling) - the input_basis toggle governs only what you PAY for inputs.
     sell_p, _ = prices.get(plan.product_type_id, (None, None))
     revenue = sell_p * plan.quantity if sell_p else None
     profit = (revenue - total_buy) if (revenue and total_buy) else None
@@ -2797,7 +2797,7 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
     corp_data: dict[int, tuple[int, list]] = {}  # char_id → (corp_id, assets list)
     # item_ids of blueprint COPIES (BPCs) and ORIGINALS (BPOs). The assets
     # endpoint's is_blueprint_copy flag is unreliable (often missing), so we trust
-    # the blueprints endpoint (authoritative BPO/BPC) — matched to assets by
+    # the blueprints endpoint (authoritative BPO/BPC) - matched to assets by
     # item_id. all_bp_type_ids feeds reaction-formula detection below.
     bpc_item_ids: set[int] = set()
     bpo_item_ids: set[int] = set()
@@ -2842,7 +2842,7 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
         char_name_by_id = {cid: name for cid, name in all_chars}
 
         # Reaction-formula blueprint type_ids (reaction_time set, no manufacturing)
-        # — so we can badge them "RXN" instead of "BPO".
+        # - so we can badge them "RXN" instead of "BPO".
         reaction_bp_types: set[int] = set()
         if all_bp_type_ids:
             _ph_r = ",".join("?" * len(all_bp_type_ids))
@@ -2904,7 +2904,7 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                 is_copy = a.is_blueprint_copy or (a.item_id in bpc_item_ids)
                 # Where it sits inside a ship (empty for hangar rows and plain
                 # containers). Part of the key so the same module fitted in a slot
-                # never merges with spares in cargo — that distinction IS the fit.
+                # never merges with spares in cargo - that distinction IS the fit.
                 slot, slot_order = _slot_info(a.location_flag) if cid is not None else ("", 0)
                 # Key by (type_id, owner, is_copy, slot) so different chars stay
                 # separate AND a BPO never merges with a BPC of the same type
@@ -2928,7 +2928,7 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
         # Pick a primary char_id for legacy container-name lookups
         char_id = selected_chars[0][0]
         token = primary_token
-        # corp_id / corp_assets_list — for single-char view, mirror legacy path;
+        # corp_id / corp_assets_list - for single-char view, mirror legacy path;
         # for "all" mode, aggregate distinct corps
         if len(selected_chars) == 1:
             corp_id, corp_assets_list = corp_data.get(char_id, (0, []))
@@ -2959,7 +2959,7 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                 """
                 loc = a.location_id
                 if loc not in corp_item_ids:
-                    # Item directly at a station/citadel — its own flag IS the division
+                    # Item directly at a station/citadel - its own flag IS the division
                     return loc, a.location_flag, None
 
                 # Walk up the ownership chain to find the station
@@ -2979,11 +2979,11 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
 
                 # Determine the division flag.
                 # If the item itself carries a CorpSAG* flag it is directly in a
-                # division (NPC office case) — use that flag and no container.
+                # division (NPC office case) - use that flag and no container.
                 if a.location_flag in _CORP_DIV_LABEL:
                     return station_id, a.location_flag, None
 
-                # Item is inside a container — scan ancestors for a CorpSAG* flag
+                # Item is inside a container - scan ancestors for a CorpSAG* flag
                 div_flag = "Hangar"
                 for ancestor_id in chain:
                     f = corp_flag_map.get(ancestor_id, "")
@@ -3001,9 +3001,9 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
 
             for a in corp_assets_list:
                 if a.location_flag == "OfficeFolder":
-                    continue  # office container itself — structural, not inventory
+                    continue  # office container itself - structural, not inventory
                 item_name = names.get(a.type_id, f"Unknown ({a.type_id})")
-                # Filtered later by _prune_by_search — see the personal loop above.
+                # Filtered later by _prune_by_search - see the personal loop above.
                 sid, div_flag, cid = _corp_hierarchy(a)
                 div = _get_corp_div(sid, div_flag)
                 bucket = div["hangar"] if cid is None else div["containers"].setdefault(cid, {})
@@ -3022,7 +3022,7 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                         "quantity": a.quantity,
                         "is_blueprint_copy": is_copy,
                         # Corp blueprints aren't fetched, so we can only trust the
-                        # (unreliable) copy flag here — badge BPC only, never guess BPO.
+                        # (unreliable) copy flag here - badge BPC only, never guess BPO.
                         "bp_kind": "bpc" if is_copy else None,
                         "slot": slot,
                         "slot_order": slot_order,
@@ -3109,7 +3109,7 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
             return sorted(bucket.values(), key=lambda x: (x.get("slot_order") or 0, x["name"]))
 
         # Labels first (the search matches against them), then fold the hulls in,
-        # then filter — a ship's own label has to exist before it can be matched.
+        # then filter - a ship's own label has to exist before it can be matched.
         container_labels = {cid: info[0] for cid, info in container_info.items()}
         for sd in station_data.values():
             _fold_ship_hulls(sd, container_type_map, container_owner_map)
@@ -3127,7 +3127,7 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                     "name": cname,
                     # Only a fitted ship has slot labels; a plain container has
                     # none, so the Slot column is skipped there rather than
-                    # rendering a blank one. The folded hull row does not count —
+                    # rendering a blank one. The folded hull row does not count -
                     # every folded container has one.
                     "has_slots": any(i.get("slot") for i in container_assets
                                      if not i.get("is_hull")),
@@ -3147,7 +3147,7 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
             total_items = len(hangar_items) + sum(len(c["assets"]) for c in containers)
             # Pre-compute aggregates so the template doesn't re-run
             # `selectattr | map | sum` over the same lists multiple times
-            # per station (was firing 4–6× in assets.html for big inventories).
+            # per station (was firing 4-6× in assets.html for big inventories).
             stations.append({
                 "loc_id": sid,
                 "name": loc_names.get(sid, str(sid)),
@@ -3307,14 +3307,14 @@ async def assets_distances(request: Request):
     ).fetchall()
     loc_to_sys = {row[0]: row[1] for row in rows}
 
-    # Deduplicate systems — one ESI call per unique destination
+    # Deduplicate systems - one ESI call per unique destination
     unique_sys = list(set(loc_to_sys.values()))
 
     # Jump counts are static: stargates don't move, so a route's length only ever
     # changes when the developer edits the map. Without a cache this endpoint fired one ESI
     # call per unique destination system (482 on this account) EVERY time it ran.
     # The pair is stored normalised (low, high) because the gate network is
-    # undirected — the shortest path is the same in both directions.
+    # undirected - the shortest path is the same in both directions.
     ensure_route_jump_table(conn)
     cached_jumps = load_route_jumps(conn, origin_sys, unique_sys)
     todo = [s for s in unique_sys if s not in cached_jumps and s != origin_sys]
@@ -3420,7 +3420,7 @@ for _i in range(8):
     _SLOT_LABELS[f"SubSystemSlot{_i}"]  = ("Subsystem", 5)
     _SLOT_LABELS[f"FighterTube{_i}"]    = ("Fighter tube", 7)
 
-# Flags that describe a spot in a plain container or hangar, not a ship slot —
+# Flags that describe a spot in a plain container or hangar, not a ship slot -
 # these rows get no slot label, which is also how a container is told apart from
 # a fitted ship (no labels anywhere → no Slot column).
 _NON_SLOT_FLAGS: frozenset[str] = frozenset({
@@ -3437,7 +3437,7 @@ def _slot_info(location_flag: str) -> tuple[str, int]:
     hit = _SLOT_LABELS.get(flag)
     if hit:
         return hit
-    # Unknown flag — most likely a specialized hold (SpecializedFuelBay,
+    # Unknown flag - most likely a specialized hold (SpecializedFuelBay,
     # SpecializedOreHold, …) or one CCP added since. Split the CamelCase so it
     # reads as words instead of leaking the raw ESI token, and drop the
     # "Specialized" prefix, which says nothing to the reader.
@@ -3463,7 +3463,7 @@ def _container_display_name(custom_name: str, type_name: str, container_id: int)
     elsewhere showing the plain type name. So bracket = assembled, no bracket =
     repacked, readable at a glance.
 
-    That is why the type is appended unconditionally — even for a ship named
+    That is why the type is appended unconditionally - even for a ship named
     exactly "Hulk", which becomes "Hulk (Hulk)". Every attempt to suppress the
     "redundant" case has been wrong: a substring test hid the hull from every
     ship named Hulk1/Hulk2/…, and a whole-word test would do the same to
@@ -3513,7 +3513,7 @@ def _fold_ship_hulls(
 ) -> None:
     """Move a ship's hull row out of the hangar and into its own container row.
 
-    A container whose item_id is itself an asset with a ship type IS that ship —
+    A container whose item_id is itself an asset with a ship type IS that ship -
     its "contents" are the fit and cargo. Folding the hull in makes the ship one
     expandable row totalling hull + fit + cargo, which is the number that
     matters, and stops the same ship being listed twice (once as a hangar row,
@@ -3553,7 +3553,7 @@ def _fold_ship_hulls(
             "slot_order": 0,
             # The fold applies to any container whose own type sits in the hangar,
             # not just ships, so this row alone must not switch the Slot column on
-            # for a plain box — see has_slots below.
+            # for a plain box - see has_slots below.
             "is_hull": True,
         }
         if owner_map is not None:
@@ -3608,7 +3608,7 @@ async def _resolve_container_names(
     # Ask this character only about items they actually own. In the "All
     # characters" view the caller passes every container id it found across the
     # whole account, and posting another pilot's item_ids to this endpoint made
-    # the call fail for the whole batch — so nobody got a custom name and every
+    # the call fail for the whole batch - so nobody got a custom name and every
     # assembled ship fell back to its bare hull type. Filtering also keeps the
     # request small instead of sending the same ids once per character.
     owned_ids = [cid for cid in container_ids if cid in asset_map]
@@ -3657,7 +3657,7 @@ async def blueprints_page(request: Request, search: str = "", view: str = ""):
     conn = get_conn()
     all_chars = list_characters(conn)
 
-    # Resolve selected character(s) — same toggle pattern as /assets
+    # Resolve selected character(s) - same toggle pattern as /assets
     selected_chars: list[tuple[int, str]] = []
     if view == "all":
         selected_chars = list(all_chars)
@@ -3862,7 +3862,7 @@ async def prices_page(request: Request):
 async def station_industry_info(request: Request, location_id: int):
     """
     Return SCI, facility tax, ME bonus and security multiplier for the given station/structure.
-    Facility tax is derived from the character's recent jobs (cost/EIV − SCI).
+    Facility tax is derived from the character's recent jobs (cost/EIV - SCI).
     """
     conn = get_conn()
     sys_row = conn.execute(
@@ -3951,7 +3951,7 @@ async def suggest_station(request: Request, q: str = ""):
     all_names = load_location_names_from_db(conn)
     cache_empty = len(all_names) == 0
 
-    # Stations with assets — filter by name
+    # Stations with assets - filter by name
     owned_ids: set[int] = set()
     owned = []
     for loc_id in asset_locs:
@@ -3970,7 +3970,7 @@ async def suggest_station(request: Request, q: str = ""):
             other_ids.add(loc_id)
     other.sort(key=lambda x: x["name"])
 
-    # ESI search — NPC stations + systems + player structures (in parallel)
+    # ESI search - NPC stations + systems + player structures (in parallel)
     try:
         async with esi_client() as client:
             esi_tasks: list = [
@@ -4004,7 +4004,7 @@ async def suggest_station(request: Request, q: str = ""):
             system_search = results[1]
             structure_search = results[2] if len(results) > 2 else None
 
-            # NPC stations — direct result from the ESI search
+            # NPC stations - direct result from the ESI search
             if not isinstance(station_search, Exception) and station_search.status_code == 200:
                 npc_ids = station_search.json().get("station", [])[:20]
                 new_ids = [sid for sid in npc_ids if sid not in all_names]
@@ -4019,7 +4019,7 @@ async def suggest_station(request: Request, q: str = ""):
                         other.append({"location_id": sid, "name": all_names.get(sid, str(sid))})
                         other_ids.add(sid)
 
-            # Player structures — result from the authenticated character search
+            # Player structures - result from the authenticated character search
             if (structure_search and not isinstance(structure_search, Exception)
                     and structure_search.status_code == 200):
                 struct_ids = structure_search.json().get("structure", [])[:20]
@@ -4035,7 +4035,7 @@ async def suggest_station(request: Request, q: str = ""):
                         other.append({"location_id": sid, "name": all_names.get(sid, str(sid))})
                         other_ids.add(sid)
 
-            # Systems — find structures in our cache + NPC stations in the system
+            # Systems - find structures in our cache + NPC stations in the system
             system_ids: list[int] = []
             if not isinstance(system_search, Exception) and system_search.status_code == 200:
                 system_ids = system_search.json().get("solar_system", [])
@@ -4318,7 +4318,7 @@ async def api_plan_contract_price(request: Request, location_id: int, type_id: i
         status = contracts_helper.get_index_status(conn, region_id)
         if not status:
             return {"ok": False, "not_indexed": True, "region_id": region_id,
-                    "error": "The contract region is not indexed — index it in the Public browser."}
+                    "error": "The contract region is not indexed - index it in the Public browser."}
         best = contracts_helper.best_contract_price(conn, region_id, type_id)
         if not best:
             return {"ok": False, "error": "No public contract with this product in the region.",
@@ -4479,7 +4479,7 @@ async def suggest(request: Request, q: str = ""):
         raw_bps = _load_blueprints_from_cache(conn, char_id)
         if raw_bps:
             bp_type_ids = list({bp["type_id"] for bp in raw_bps})
-            # Group by type_id — pick the best one (BPO > BPC, highest ME)
+            # Group by type_id - pick the best one (BPO > BPC, highest ME)
             bp_by_type: dict[int, dict] = {}
             for bp in raw_bps:
                 tid = bp["type_id"]
@@ -4516,7 +4516,7 @@ async def suggest(request: Request, q: str = ""):
                     "runs": "∞" if runs == -1 else runs,
                 })
 
-    # SDE — other blueprints (not owned)
+    # SDE - other blueprints (not owned)
     if owned_product_ids:
         ph2 = ",".join("?" * len(owned_product_ids))
         other_rows = conn.execute(f"""
@@ -4560,10 +4560,10 @@ async def _bg_fetch_prices(type_ids: list[int]) -> None:
 
 
 def _refresh_type_ids(conn) -> list[int]:
-    """Full set of type_ids to refresh — everything tradeable in EVE (market_group_id IS NOT NULL)
+    """Full set of type_ids to refresh - everything tradeable in EVE (market_group_id IS NOT NULL)
     plus user assets/blueprints/materials and currently cached types.
 
-    The tradeable filter covers modules, ammo, ships, skillbooks, structures, etc. — everything
+    The tradeable filter covers modules, ammo, ships, skillbooks, structures, etc. - everything
     that can be bought/sold on the market.
     """
     # Aggregate type IDs across ALL characters
@@ -4653,7 +4653,7 @@ async def prices_refresh_hub_stream(region_id: int):
 
 @app.get("/api/prices/history")
 async def api_price_history(type_id: int, region_id: int = JITA_REGION):
-    """Daily market history (~1 year) for a type — powers the price-history chart
+    """Daily market history (~1 year) for a type - powers the price-history chart
     opened from the Prices table. Defaults to Jita / The Forge."""
     conn = get_conn()
     try:
@@ -4666,7 +4666,7 @@ async def api_price_history(type_id: int, region_id: int = JITA_REGION):
 @app.get("/api/prices/orders")
 async def api_market_orders(request: Request, type_id: int, region_id: int = JITA_REGION,
                             location_id: int = 0):
-    """Live market orders for one type — the "Market" tab of the item popup.
+    """Live market orders for one type - the "Market" tab of the item popup.
 
     Without location_id → region-wide orders (Jita / hub = the in-game regional
     market). With location_id → only THAT station/citadel's orders: a private
@@ -4756,7 +4756,7 @@ async def api_market_orders(request: Request, type_id: int, region_id: int = JIT
                 "range": o.get("range"),
             }
 
-        # Cap to the best 150 per side — enough depth, keeps the payload small
+        # Cap to the best 150 per side - enough depth, keeps the payload small
         # for super-liquid items (which can have thousands of orders).
         return {
             "ok": True, "type_id": type_id, "region_id": region_id,
@@ -4770,7 +4770,7 @@ async def api_market_orders(request: Request, type_id: int, region_id: int = JIT
 @app.get("/api/prices/suggest")
 async def prices_suggest(q: str = ""):
     """Typeahead for the Prices search box: matching market groups + item names.
-    Groups let the user discover the correct group name — e.g. typing
+    Groups let the user discover the correct group name - e.g. typing
     "battlecruiser" surfaces "Combat Battlecruiser" / "Attack Battlecruiser"
     (there is no group literally named "Battlecruiser"), which the exact-match
     group search then resolves."""
@@ -4943,7 +4943,7 @@ async def api_set_custom_price(request: Request):
 
 @app.get("/api/prices/station-volume/cached")
 async def api_station_volume_cached(location_id: int):
-    """Cache-only station volumes (any age) + newest cached_at — used to restore a
+    """Cache-only station volumes (any age) + newest cached_at - used to restore a
     previously loaded custom station on page load without a fresh ESI fetch."""
     conn = get_conn()
     try:
@@ -4962,7 +4962,7 @@ async def api_station_volume_cached(location_id: int):
 @app.get("/prices/refresh/station/stream")
 async def prices_station_stream(request: Request, location_id: int):
     """Streamed custom-station load with real progress. The volume phase fetches
-    7-day region history for every cached type (thousands), which is slow — the
+    7-day region history for every cached type (thousands), which is slow - the
     old fixed 90% fake bar looked frozen. Streams orders/volume progress; on done
     the client reads the now-cached data via /api/prices/station-volume/cached."""
     import json as _json
@@ -4977,7 +4977,7 @@ async def prices_station_stream(request: Request, location_id: int):
     async def gen():
         task = None
         try:
-            # Explicit "Load" always fetches fresh — never serve the 30-min cache
+            # Explicit "Load" always fetches fresh - never serve the 30-min cache
             # here (a previous partial/failed fetch could otherwise be replayed,
             # e.g. blank sell/available with only 7d volume). The cache still backs
             # the silent restore-on-page-load path (/station-volume/cached).
@@ -5009,7 +5009,7 @@ async def prices_station_stream(request: Request, location_id: int):
             if exc is not None:
                 yield f"data: {_json.dumps({'error': str(exc) or 'Fetch failed.'})}\n\n"
                 return
-            task = None   # completed cleanly — don't cancel in finally
+            task = None   # completed cleanly - don't cancel in finally
             yield f"data: {_json.dumps({'done': True, 'cached': False, 'region_id': region_id, 'pct': 100})}\n\n"
         except Exception as e:
             yield f"data: {_json.dumps({'error': str(e)})}\n\n"
@@ -5036,7 +5036,7 @@ async def api_station_volume(request: Request):
     conn = get_conn()
     token = get_active_token(request, conn)
     ensure_price_table(conn)
-    # Region of this location — returned so the price-history chart can offer
+    # Region of this location - returned so the price-history chart can offer
     # "custom station" (history is region-wide; ESI has no per-structure history).
     try:
         region_id = await get_region_for_location(conn, location_id, token)
@@ -5062,7 +5062,7 @@ async def api_station_volume(request: Request):
             for k, v in result.items()
         }}
 
-    # Player structure (Upwell citadel, Fortizar, …) — use the structure market endpoint
+    # Player structure (Upwell citadel, Fortizar, …) - use the structure market endpoint
     if location_id >= 1_000_000_000:
         if not token:
             conn.close()
@@ -5075,7 +5075,7 @@ async def api_station_volume(request: Request):
         conn.close()
         return _fmt(result)
 
-    # NPC station — regional public endpoint
+    # NPC station - regional public endpoint
     if not region_id:
         conn.close()
         return {"ok": False, "error": "Could not determine the region for this location."}
@@ -5100,7 +5100,7 @@ _CORP_DIVISION_NAMES = {
 
 async def _resolve_party_names(ids: set[int]) -> dict[int, str]:
     """Resolve char/corp/alliance/station/type IDs to names via ESI
-    /universe/names/. The endpoint can't handle player structures (>1e12) — we skip them.
+    /universe/names/. The endpoint can't handle player structures (>1e12) - we skip them.
     """
     ids = {i for i in ids if i and i < 1_000_000_000_000}
     out: dict[int, str] = {}
@@ -5151,7 +5151,7 @@ async def wallet_page(request: Request, char: str = "", scope: str = "personal",
     token = _get_valid_token_for(conn, plan_char_id)
     row = get_character_row(conn, plan_char_id)
     if not token or not row:
-        ctx["error"] = "The character token expired — sign in again."
+        ctx["error"] = "The character token expired - sign in again."
         conn.close()
         return _tr("wallet.html", request, ctx)
 
@@ -5219,7 +5219,7 @@ def _party_ids(journal: list[dict], txns: list[dict]) -> set[int]:
         for k in ("first_party_id", "second_party_id"):
             if j.get(k):
                 ids.add(j[k])
-        # context system/station (e.g. the system where the bounty was earned) —
+        # context system/station (e.g. the system where the bounty was earned) -
         # /universe/names/ can handle them (both <1e12)
         if j.get("context_id_type") in ("system_id", "station_id") and j.get("context_id"):
             ids.add(j["context_id"])
@@ -5267,7 +5267,7 @@ def _decorate(conn, journal: list[dict], txns: list[dict],
     sorted newest first."""
     import re as _re
     # Bounty/agent payouts have a machine-readable breakdown of NPC kills in
-    # `reason` ("24067: 2,24068: 3,…") — not shown in-game. We discard a reason
+    # `reason` ("24067: 2,24068: 3,…") - not shown in-game. We discard a reason
     # that is only digits/colons/commas (no readable text).
     _numeric_reason = _re.compile(r"^[\d\s:,]*$")
     dj = []
@@ -5342,11 +5342,11 @@ def _decorate_orders(orders: list[dict], type_names: dict[int, str],
                 base = _dt.datetime.fromisoformat(issued.replace("Z", "+00:00"))
                 exp_dt = base + _dt.timedelta(days=o["duration"])
                 expiry = exp_dt.strftime("%Y-%m-%d")
-                expiry_iso = exp_dt.isoformat()   # exact — for the live d/h countdown
+                expiry_iso = exp_dt.isoformat()   # exact - for the live d/h countdown
         except Exception:
             pass
         price = o.get("price", 0.0) or 0.0
-        # ESI history has state only "expired"/"cancelled" — a fully filled order
+        # ESI history has state only "expired"/"cancelled" - a fully filled order
         # closes as "expired" with volume_remain==0. So distinguish the real state:
         # completed = sold/bought with no remainder; expired = duration ran out with
         # a remainder; cancelled = cancelled by the user.
@@ -5499,7 +5499,7 @@ async def orders_page(request: Request, char: str = "", scope: str = "personal",
     token = _get_valid_token_for(conn, plan_char_id)
     row = get_character_row(conn, plan_char_id)
     if not token or not row:
-        ctx["error"] = "The character token expired — sign in again."
+        ctx["error"] = "The character token expired - sign in again."
         conn.close()
         return _tr("orders.html", request, ctx)
 
@@ -5551,7 +5551,7 @@ async def _finalize_orders(conn, raw_orders: list[dict], type_names_fn, token: s
             loc_names = await resolve_station_names_bulk(loc_ids, token=token, conn=conn)
         except Exception:
             loc_names = load_location_names_from_db(conn)
-    # Region per order location — so clicking an order can open the region-wide
+    # Region per order location - so clicking an order can open the region-wide
     # order book it competes in (cached; failures → None, popup falls back to Jita).
     # Skipped for history (those items aren't clickable) to avoid wasted lookups.
     loc_regions: dict[int, int] = {}
@@ -5685,7 +5685,7 @@ async def contracts_page(request: Request, char: str = "", scope: str = "persona
         token = _get_valid_token_for(conn, plan_char_id) if plan_char_id else None
         row = get_character_row(conn, plan_char_id) if plan_char_id else None
         if not token or not row:
-            ctx["error"] = "The character token expired — sign in again."
+            ctx["error"] = "The character token expired - sign in again."
             conn.close()
             return _tr("contracts.html", request, ctx)
 
@@ -5766,7 +5766,7 @@ _REGIONS_CACHE: list[tuple[int, str]] | None = None
 
 async def _get_all_regions() -> list[tuple[int, str]]:
     """All regions (id, name) from ESI, sorted by name. Cached per process
-    (regions practically never change). Skips wormhole/abyssal (>= 11000000) —
+    (regions practically never change). Skips wormhole/abyssal (>= 11000000) -
     there are no public contracts there."""
     global _REGIONS_CACHE
     if _REGIONS_CACHE is not None:
@@ -5910,7 +5910,7 @@ async def jobs_page(request: Request):
                                           "total_active": 0})
 
     # Fetch all characters' jobs concurrently. _one returns None (not []) when
-    # the fetch could not run — no token or an ESI error — so a transient
+    # the fetch could not run - no token or an ESI error - so a transient
     # failure (e.g. during a background Sync All) isn't shown as "no jobs".
     async def _one(cid: int):
         try:
@@ -5976,7 +5976,7 @@ async def jobs_page(request: Request):
                 remaining = (f"{d}d " if d else "") + (f"{h}h " if (d or h) else "") + f"{m}m"
         except Exception:
             pass
-        # Icon: the image server uses /bp for blueprints (not /icon — that returns
+        # Icon: the image server uses /bp for blueprints (not /icon - that returns
         # HTTP 400). We detect a blueprint by name (covers invention too, where
         # product_type_id is the produced BPC copy = also a blueprint).
         prod_id = j.get("product_type_id")
@@ -6042,7 +6042,7 @@ async def jobs_page(request: Request):
 
 @app.get("/planets", response_class=HTMLResponse)
 async def planets_page(request: Request):
-    """Planetary Interaction — colonies per character with extractor expiry
+    """Planetary Interaction - colonies per character with extractor expiry
     countdowns (à la RIFT: the point is knowing when to go reset PI)."""
     conn = get_conn()
     chars = list_characters(conn)
@@ -6074,7 +6074,7 @@ async def planets_page(request: Request):
     results = await asyncio.gather(*[_one(cid) for cid, _ in chars])
     char_name = {cid: name for cid, name in chars}
 
-    # Ids to resolve: planet names (per-planet endpoint — /universe/names can't do
+    # Ids to resolve: planet names (per-planet endpoint - /universe/names can't do
     # planets), product type names (SDE).
     planet_ids: set[int] = set()
     type_ids: set[int] = set()
@@ -6097,7 +6097,7 @@ async def planets_page(request: Request):
                     if pin.get("schematic_id"):
                         schematic_ids.add(pin["schematic_id"])
 
-    # Factory schematics from the SDE (output + inputs + cycle) — powers the
+    # Factory schematics from the SDE (output + inputs + cycle) - powers the
     # production-chain view. Adds their type_ids so names resolve below.
     # The table arrives with v0.8.106; an older eve_cache.db that predates the
     # startup SDE-refresh won't have it yet, so degrade gracefully (colonies
@@ -6131,7 +6131,7 @@ async def planets_page(request: Request):
             f"SELECT type_id, name FROM sde_types WHERE type_id IN ({ph})", list(type_ids)
         ).fetchall()}
 
-    # Sell prices (for the est. output-value/day hint) — the Jita cache.
+    # Sell prices (for the est. output-value/day hint) - the Jita cache.
     price_map: dict[int, float] = {}
     if type_ids:
         ph = ",".join("?" * len(type_ids))
@@ -6142,7 +6142,7 @@ async def planets_page(request: Request):
 
     # Planet names ("Jita IV", already includes the system). Resolved through the
     # shared cache: names never change, so only ids we've never seen cost an ESI
-    # call — this page used to re-fetch every planet on every visit.
+    # call - this page used to re-fetch every planet on every visit.
     planet_names = await _resolve_planet_names(conn, planet_ids)
 
     def _rem(iso: str):
@@ -6388,13 +6388,13 @@ def save_route_jumps(conn: sqlite3.Connection, origin: int, jumps: dict[int, int
 # from ~1300ms to ~280ms with images off) and made the app depend on the network
 # for something that never changes. Icons are keyed by (type_id, size) and are
 # immutable, so we proxy them once to disk and then answer locally with an
-# immutable Cache-Control — after the first visit the browser stops asking at all.
+# immutable Cache-Control - after the first visit the browser stops asking at all.
 
 _ICON_DIR = os.path.join(_APP_DIR, "icon_cache")
 _ICON_SIZES = {32, 64, 128, 256, 512}          # sizes the image server publishes
 _ICON_VARIANTS = {"icon", "render", "bp", "bpc", "relic"}   # type image flavours
 _ICON_SEM = asyncio.Semaphore(8)               # don't open a socket per visible row
-_ICON_MISSING: set[tuple[int, int, str]] = set()  # upstream 404s — don't retry all session
+_ICON_MISSING: set[tuple[int, int, str]] = set()  # upstream 404s - don't retry all session
 _ICON_MAX_BYTES = 512 * 1024                    # sanity cap per icon
 
 
@@ -6499,7 +6499,7 @@ async def type_icon(type_id: int, size: int = 32, v: str = "icon"):
 # expiry times in the DB so the count can be shown cheaply on every page (nav
 # badge) without hitting ESI; the dashboard tile refreshes the cache live.
 
-_PI_CACHE_TTL = 900.0   # 15 min — extractor programs run for days, so this is plenty
+_PI_CACHE_TTL = 900.0   # 15 min - extractor programs run for days, so this is plenty
 
 
 def _ensure_pi_cache_tables(conn: sqlite3.Connection) -> None:
@@ -6513,7 +6513,7 @@ def _ensure_pi_cache_tables(conn: sqlite3.Connection) -> None:
 
 
 async def _resolve_planet_names(conn: sqlite3.Connection, planet_ids) -> dict[int, str]:
-    """Planet names ("Jita IV" — includes the system). Cached permanently in the
+    """Planet names ("Jita IV" - includes the system). Cached permanently in the
     DB (they never change); only cache-misses hit ESI's per-planet endpoint
     (/universe/names can't resolve planets)."""
     _ensure_pi_cache_tables(conn)
@@ -6677,7 +6677,7 @@ async def api_pi_alerts(force: int = 0):
     one colony-list call per character plus one detail call per planet (80+ ESI
     calls on a 12-character account), and it used to run on EVERY dashboard
     load. Extractor programs last days, so serving a cache younger than
-    _PI_CACHE_TTL is just as accurate — the countdowns are computed against the
+    _PI_CACHE_TTL is just as accurate - the countdowns are computed against the
     current time anyway. `force=1` refreshes regardless."""
     conn = get_conn()
     try:
@@ -6721,7 +6721,7 @@ def _is_bundled() -> bool:
 
 
 def _install_dir() -> Path:
-    """Folder holding the executable + bundled files — the update target.
+    """Folder holding the executable + bundled files - the update target.
     Distinct from EVE_APP_DIR (user data, kept outside the install so updates
     never touch eve_cache.db / config)."""
     return Path(os.environ.get("EVE_INSTALL_DIR") or os.path.dirname(_sys.executable))
@@ -6742,7 +6742,7 @@ async def api_version_check():
     try:
         # follow_redirects matters: if the repository is ever renamed or moved to an
         # organisation, GitHub answers the old path with a 301, and httpx does not
-        # follow redirects by default — raise_for_status() would then fail and the
+        # follow redirects by default - raise_for_status() would then fail and the
         # update check would break for every already-installed copy.
         async with esi_client(timeout=10, follow_redirects=True) as client:
             r = await client.get(
@@ -6757,7 +6757,7 @@ async def api_version_check():
     latest_tag = data.get("tag_name", "").lstrip("v")
 
     def _ver(v: str) -> tuple:
-        # numeric, component-wise — so 0.8.51 > 0.8.9 (string compare got this wrong)
+        # numeric, component-wise - so 0.8.51 > 0.8.9 (string compare got this wrong)
         return tuple(int("".join(c for c in p if c.isdigit()) or 0) for p in v.split("."))
 
     has_update = bool(latest_tag) and _ver(latest_tag) > _ver(APP_VERSION)
@@ -6853,9 +6853,9 @@ async def api_version_download(url: str):
                 #    result is a broken install);
                 #  * robocopy retries locked files (/R:15 /W:1). /E copies the
                 #    tree WITHOUT purging, so user data (eve_cache.db,
-                #    .eve_config.json, webview_data) is preserved — it is not in
+                #    .eve_config.json, webview_data) is preserved - it is not in
                 #    the source and never gets deleted;
-                #  * launch the new exe BEFORE the script deletes itself — a .bat
+                #  * launch the new exe BEFORE the script deletes itself - a .bat
                 #    that dels itself first never reaches the next line.
                 script_path.write_text(
                     '@echo off\r\n'
@@ -6865,7 +6865,7 @@ async def api_version_download(url: str):
                     'timeout /t 1 /nobreak >nul\r\n'
                     f'robocopy "{inner_dir}" "{app_dir}" /E /R:15 /W:1 /NFL /NDL /NJH /NJS /NC /NP >nul\r\n'
                     # If this copy was installed by the Inno Setup installer, keep
-                    # the Apps & features entry honest — a self-update would
+                    # the Apps & features entry honest - a self-update would
                     # otherwise leave it showing the version we just replaced. The
                     # `reg query` guard matters: without it, `reg add` would create
                     # the key and give portable (ZIP) users a bogus uninstall entry.
@@ -6917,7 +6917,7 @@ async def api_version_apply():
     else:
         script = app_dir / "update.sh"
     if not script.exists():
-        return {"error": f"{script.name} not found — run download first"}
+        return {"error": f"{script.name} not found - run download first"}
     if _sys.platform == "win32":
         subprocess.Popen(
             ["cmd", "/c", str(script)],

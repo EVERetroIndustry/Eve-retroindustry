@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Contracts — EVE Retroindustry{% endblock %}
+{% block title %}Contracts - EVE Retroindustry{% endblock %}
 {% block content %}
 
 <div class="row mb-3 align-items-center">
@@ -86,15 +86,15 @@
               <i class="bi bi-box me-1"></i>show items
             </button>
             <div class="contract-items text-muted" style="font-size:.75rem"></div>
-            {% elif not c.title %}<span class="text-muted">—</span>{% endif %}
+            {% elif not c.title %}<span class="text-muted">-</span>{% endif %}
           </td>
           <td class="text-muted text-truncate" style="max-width:220px;font-size:.75rem">
             {% if c.courier %}{{ c.start }} <i class="bi bi-arrow-right"></i> {{ c.end }}
             {% else %}{{ c.start }}{% endif %}
           </td>
-          <td class="text-end" style="white-space:nowrap">{% if c.price %}{{ c.price | isk }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
-          <td class="text-end" style="white-space:nowrap">{% if c.reward %}{{ c.reward | isk }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
-          <td class="text-end" style="white-space:nowrap">{% if c.collateral %}{{ c.collateral | isk }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
+          <td class="text-end" style="white-space:nowrap">{% if c.price %}{{ c.price | isk }}{% else %}<span class="text-muted">-</span>{% endif %}</td>
+          <td class="text-end" style="white-space:nowrap">{% if c.reward %}{{ c.reward | isk }}{% else %}<span class="text-muted">-</span>{% endif %}</td>
+          <td class="text-end" style="white-space:nowrap">{% if c.collateral %}{{ c.collateral | isk }}{% else %}<span class="text-muted">-</span>{% endif %}</td>
           <td class="text-muted text-truncate" style="max-width:130px;font-size:.78rem">{{ c.issuer }}</td>
           <td class="text-end text-muted" style="white-space:nowrap;font-size:.75rem">{{ c.date_expired | replace('T',' ') | replace('Z','') | truncate(10,true,'') }}</td>
           <td>

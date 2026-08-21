@@ -1,12 +1,12 @@
 {% extends "base.html" %}
-{% block title %}Dashboard — EVE Retroindustry{% endblock %}
+{% block title %}Dashboard - EVE Retroindustry{% endblock %}
 {% block content %}
 
 <div class="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-2">
   <h4 class="mb-0"><i class="bi bi-speedometer2 me-2 text-primary"></i>Dashboard</h4>
   {% if logged_in %}
   <div class="d-flex gap-2">
-    {# Sync All lives in the navbar (every page) — no need to duplicate it here. #}
+    {# Sync All lives in the navbar (every page) - no need to duplicate it here. #}
     <a href="/auth/login" class="btn btn-sm btn-outline-secondary">
       <i class="bi bi-plus-lg me-1"></i>Add Character
     </a>
@@ -52,7 +52,7 @@
         <div class="fw-bold text-isk" style="font-size:1.05rem">{{ agg_value | isk0 }}</div>
         <div class="text-muted" style="font-size:.7rem">ISK (all chars)</div>
         {% else %}
-        <div class="fs-4 fw-bold text-muted">—</div>
+        <div class="fs-4 fw-bold text-muted">-</div>
         <div class="text-muted" style="font-size:.7rem">load prices first</div>
         {% endif %}
       </div>
@@ -65,7 +65,7 @@
       <a href="/prices" class="small mt-1 d-block">Refresh →</a>
     </div>
   </div>
-  {# PI extractor alert tile — filled live by loadPiAlerts() #}
+  {# PI extractor alert tile - filled live by loadPiAlerts() #}
   <div class="col">
     <a href="/planets" class="text-decoration-none">
       <div class="card stat-card h-100 p-3" id="pi-tile" style="border-left-color:#3fb950">
@@ -109,21 +109,21 @@
           </div>
         </div>
 
-        {# Re-login warning — shown by loadLive() when EVE rejected the refresh
+        {# Re-login warning - shown by loadLive() when EVE rejected the refresh
            token (invalid_grant). Until then its data is stale. #}
         <div id="relogin-{{ c.char_id }}" class="d-none alert alert-warning py-1 px-2 mb-2" style="font-size:.72rem">
-          <i class="bi bi-shield-exclamation me-1"></i>ESI login expired —
+          <i class="bi bi-shield-exclamation me-1"></i>ESI login expired -
           <a href="/auth/login" class="alert-link">re-add this character</a> to refresh its data.
         </div>
 
         <div class="mb-3">
-          {# Location — ESI-only, filled by loadLive() #}
+          {# Location - ESI-only, filled by loadLive() #}
           <div class="d-flex align-items-center gap-2 mb-1" style="font-size:.82rem" id="loc-{{ c.char_id }}">
             <i class="bi bi-geo-alt text-muted" style="flex-shrink:0"></i>
             <span class="text-muted">Loading location…</span>
             <span class="dash-spin spinner-border spinner-border-sm text-muted ms-auto" style="width:.75rem;height:.75rem"></span>
           </div>
-          {# Active training — ESI-only, filled by loadLive() #}
+          {# Active training - ESI-only, filled by loadLive() #}
           <div class="d-flex align-items-center gap-2" style="font-size:.82rem" id="train-{{ c.char_id }}">
             <i class="bi bi-mortarboard text-info" style="flex-shrink:0"></i>
             <span class="text-muted">Loading…</span>
@@ -131,7 +131,7 @@
           </div>
         </div>
 
-        {# Worth block — asset value from cache now; upgraded to net worth (incl. wallet) by loadLive() #}
+        {# Worth block - asset value from cache now; upgraded to net worth (incl. wallet) by loadLive() #}
         <div id="worth-{{ c.char_id }}"{% if c.asset_value is none %} style="display:none"{% endif %}>
           {% if c.asset_value is not none %}
           <div class="mb-3 p-2 rounded" style="background:#1c2128">
@@ -191,7 +191,7 @@
       h += `<span class="text-truncate">${esc(c.location_name)}</span>`;
       if (st === 'undocked') {
         // Which hull they are out in, sitting just left of the badge. Same
-        // "custom name (Type)" label as an assembled ship in Assets — the custom
+        // "custom name (Type)" label as an assembled ship in Assets - the custom
         // name alone ("Hulk1", "Rorq") does not say what is actually in space.
         if (c.ship_label)
           h += `<span class="text-muted ms-auto text-truncate" style="font-size:.68rem"
@@ -245,7 +245,7 @@
     if (!el) return;
     if (valStr) el.innerHTML = `<div class="fw-bold text-isk" style="font-size:1.05rem">${esc(valStr)}</div>`
       + `<div class="text-muted" style="font-size:.7rem">${sub}</div>`;
-    else el.innerHTML = `<div class="fs-4 fw-bold text-muted">—</div>`
+    else el.innerHTML = `<div class="fs-4 fw-bold text-muted">-</div>`
       + `<div class="text-muted" style="font-size:.7rem">no wallet data</div>`;
   }
 
@@ -289,7 +289,7 @@
   // values (asset value, corp id) stay put.
   function fail() {
     const aw = document.getElementById('agg-wallet');
-    if (aw) aw.innerHTML = `<div class="fs-6 fw-bold text-muted">—</div>`
+    if (aw) aw.innerHTML = `<div class="fs-6 fw-bold text-muted">-</div>`
       + `<div class="text-muted" style="font-size:.7rem">couldn't load live data · `
       + `<a href="#" onclick="return dashRetry()">retry</a></div>`;
     document.querySelectorAll('[id^="loc-"]').forEach(el => el.innerHTML = locHtml(null));
@@ -326,7 +326,7 @@
   loadLive();
 })();
 
-// Manual refresh button on each character card (the ↻ icon) — refreshes the live
+// Manual refresh button on each character card (the ↻ icon) - refreshes the live
 // data, NOT re-authentication (that lives in the navbar's character menu).
 function refreshDashboardData(btn) {
   const icon = btn && btn.querySelector('i');
@@ -365,7 +365,7 @@ function refreshDashboardData(btn) {
   setInterval(tick, 1000);
 })();
 
-// PI extractor alert tile — live count of extractors expiring within 24h.
+// PI extractor alert tile - live count of extractors expiring within 24h.
 (function () {
   const body = document.getElementById('pi-tile-body');
   const tile = document.getElementById('pi-tile');

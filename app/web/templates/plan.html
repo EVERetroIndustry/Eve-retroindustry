@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Production Plan — EVE Retroindustry{% endblock %}
+{% block title %}Production Plan - EVE Retroindustry{% endblock %}
 {% block content %}
 
 <div class="row mb-4 align-items-center">
@@ -25,7 +25,7 @@
   {% endif %}
 </div>
 
-{# Form — compact layout #}
+{# Form - compact layout #}
 <style>
   .plan-form .form-label { font-size: .7rem; color: #8b949e; margin-bottom: .15rem; }
   .plan-form .station-input { background: #0d1117; }
@@ -84,7 +84,7 @@
         </select>
       </div>
           <div style="width:96px">
-        <label class="form-label" title="Which market price to pay for input materials. Sell = instant-buy from sell orders (expensive). Buy = place buy orders (cheaper, ~5–15% less) — how real manufacturers source inputs. Only affects material cost; the product still sells at its sell price.">Inputs</label>
+        <label class="form-label" title="Which market price to pay for input materials. Sell = instant-buy from sell orders (expensive). Buy = place buy orders (cheaper, ~5-15% less) - how real manufacturers source inputs. Only affects material cost; the product still sells at its sell price.">Inputs</label>
         <select name="input_basis" class="form-select form-select-sm">
           <option value="sell" {% if (form_input_basis|default('sell')) == 'sell' %}selected{% endif %}>Jita sell</option>
           <option value="buy"  {% if (form_input_basis|default('sell')) == 'buy'  %}selected{% endif %}>Jita buy</option>
@@ -96,21 +96,21 @@
                min="0" placeholder="all" value="{{ form_runs_per_job if form_runs_per_job is defined else '1' }}">
       </div>
           <div>
-            <label class="form-label" title="Material Efficiency — pre-fills from your blueprint cache when you select a product; you can override here">ME</label>
+            <label class="form-label" title="Material Efficiency - pre-fills from your blueprint cache when you select a product; you can override here">ME</label>
         <input type="number" name="form_me" id="me-input"
                class="form-control form-control-sm me-te-mini"
-               min="0" max="10" placeholder="—" value="{{ form_me or '' }}">
+               min="0" max="10" placeholder="-" value="{{ form_me or '' }}">
       </div>
           <div>
-            <label class="form-label" title="Time Efficiency — pre-fills from your blueprint cache when you select a product; you can override here">TE</label>
+            <label class="form-label" title="Time Efficiency - pre-fills from your blueprint cache when you select a product; you can override here">TE</label>
         <input type="number" name="form_te" id="te-input"
                class="form-control form-control-sm me-te-mini"
-               min="0" max="20" placeholder="—" value="{{ form_te or '' }}">
+               min="0" max="20" placeholder="-" value="{{ form_te or '' }}">
       </div>
         </div>
       </div>
 
-      {# Stations — wrap to their own line below xl #}
+      {# Stations - wrap to their own line below xl #}
       <div class="col-12 col-xl plan-stations-group">
         <div class="row g-2 align-items-end">
           <div class="col-12 col-md-4" style="position:relative">
@@ -132,7 +132,7 @@
       <div class="col-12 col-md-4 plan-rxn-section" style="position:relative">
         <label class="form-label">
           <i class="bi bi-arrows-angle-contract me-1" style="color:#b392f0"></i>Reaction station
-          <span class="text-muted" style="font-size:.7rem;opacity:.6">— defaults to mfg</span>
+          <span class="text-muted" style="font-size:.7rem;opacity:.6">- defaults to mfg</span>
         </label>
         <input type="text" id="rxn-station-display" class="form-control form-control-sm station-input"
                placeholder="same as manufacturing…"
@@ -149,7 +149,7 @@
       <div class="col-12 col-md-4" style="position:relative">
         <label class="form-label">
           <i class="bi bi-currency-exchange me-1 text-isk"></i>Sell station
-          <span class="text-muted" style="font-size:.7rem;opacity:.6">— for pricing</span>
+          <span class="text-muted" style="font-size:.7rem;opacity:.6">- for pricing</span>
         </label>
         <input type="text" id="sell-station-display" class="form-control form-control-sm station-input"
                placeholder="same as manufacturing…"
@@ -198,11 +198,11 @@
             <div style="width:165px">
               <label class="form-label" for="implant-mfg-select">
                 <i class="bi bi-cpu me-1"></i>Implant
-                <span class="text-muted" style="font-size:.7rem;opacity:.6">— time</span>
+                <span class="text-muted" style="font-size:.7rem;opacity:.6">- time</span>
               </label>
               <select name="implant_mfg" id="implant-mfg-select" class="form-select form-select-sm"
-                      title="Zainou 'Beancounter' Industry implant (slot 8). Shortens manufacturing jobs only — it does not change materials, job fees or profit, and reactions are unaffected.">
-                <option value="0" {% if (form_implant_mfg|default('0')) == '0' %}selected{% endif %}>— none —</option>
+                      title="Zainou 'Beancounter' Industry implant (slot 8). Shortens manufacturing jobs only - it does not change materials, job fees or profit, and reactions are unaffected.">
+                <option value="0" {% if (form_implant_mfg|default('0')) == '0' %}selected{% endif %}>- none -</option>
                 {% for opt in mfg_implant_options %}
                 <option value="{{ opt.pct }}" {% if (form_implant_mfg|default('0')) == opt.pct %}selected{% endif %}>{{ opt.label }}</option>
                 {% endfor %}
@@ -216,21 +216,21 @@
             <div class="d-flex align-items-center justify-content-between mb-1">
               <span class="text-muted" style="font-size:.7rem"><i class="bi bi-gear me-1"></i>Rigs</span>
               <span class="badge" style="background:#2d2200;color:#e3b341;font-size:.7rem">
-                ME <span id="mfg-me-bonus-display">−0%</span>
+                ME <span id="mfg-me-bonus-display">-0%</span>
               </span>
             </div>
             <div class="d-flex flex-column gap-1">
               <select id="mfg-rig1-select" class="form-select form-select-sm rig-select"
                       onchange="onRigChange('mfg')">
-                <option value="">— Slot 1: none —</option>
+                <option value="">- Slot 1: none -</option>
               </select>
               <select id="mfg-rig2-select" class="form-select form-select-sm rig-select"
                       onchange="onRigChange('mfg')">
-                <option value="">— Slot 2: none —</option>
+                <option value="">- Slot 2: none -</option>
               </select>
               <select id="mfg-rig3-select" class="form-select form-select-sm rig-select"
                       onchange="onRigChange('mfg')">
-                <option value="">— Slot 3: none —</option>
+                <option value="">- Slot 3: none -</option>
               </select>
             </div>
           </div>
@@ -270,21 +270,21 @@
             <div class="d-flex align-items-center justify-content-between mb-1">
               <span class="text-muted" style="font-size:.7rem"><i class="bi bi-gear me-1"></i>Rigs</span>
               <span class="badge" style="background:#2d2200;color:#b392f0;font-size:.7rem">
-                ME <span id="rxn-me-bonus-display">−0%</span>
+                ME <span id="rxn-me-bonus-display">-0%</span>
               </span>
             </div>
             <div class="d-flex flex-column gap-1">
               <select id="rxn-rig1-select" class="form-select form-select-sm rig-select"
                       onchange="onRigChange('rxn')">
-                <option value="">— Slot 1: none —</option>
+                <option value="">- Slot 1: none -</option>
               </select>
               <select id="rxn-rig2-select" class="form-select form-select-sm rig-select"
                       onchange="onRigChange('rxn')">
-                <option value="">— Slot 2: none —</option>
+                <option value="">- Slot 2: none -</option>
               </select>
               <select id="rxn-rig3-select" class="form-select form-select-sm rig-select"
                       onchange="onRigChange('rxn')">
-                <option value="">— Slot 3: none —</option>
+                <option value="">- Slot 3: none -</option>
               </select>
             </div>
           </div>
@@ -358,7 +358,7 @@ const _PLAN_FACILITY_TAX = {{ (result.fees.facility_tax if result.fees else 0) o
 
 // Switch character: if the form has a product filled in, resubmit with the new
 // character (keeps all fields). Otherwise just go to a clean /plan?char=X.
-// We clear the ME/TE override — a different character has different blueprints,
+// We clear the ME/TE override - a different character has different blueprints,
 // so let them be looked up again.
 function switchPlanChar(charId) {
   const form = document.getElementById('plan-form');
@@ -411,7 +411,7 @@ function switchPlanChar(charId) {
       <div class="mt-1">
         <span class="badge bg-secondary">{{ result.mode }}</span>
         <span class="text-muted small ms-2">Station ID: {{ result.location_id }}</span>
-        <span class="text-muted small ms-2" title="Skill levels loaded from ESI — red = missing">
+        <span class="text-muted small ms-2" title="Skill levels loaded from ESI - red = missing">
           <i class="bi bi-person-gear me-1"></i>
           {% set ind_have = (form_industry or '0') | int %}
           {% set ind_req = result.industry_required or 0 %}
@@ -421,7 +421,7 @@ function switchPlanChar(charId) {
           {% set aind_req = result.adv_industry_required or 0 %}
           <span {% if aind_have < aind_req %}class="text-danger fw-semibold" title="Required L{{ aind_req }}, you have L{{ aind_have }}"{% endif %}>Adv. Industry {{ aind_have }}{% if aind_have < aind_req %}/{{ aind_req }}{% endif %}</span>
           {% if result.all_science_skills %}{% for sname, slevel, spct, sreq in result.all_science_skills %} &nbsp;·&nbsp; <span {% if slevel < sreq %}class="text-danger fw-semibold" title="Required L{{ sreq }}, you have L{{ slevel }}"{% endif %}>{{ sname }} {{ slevel }}{% if slevel < sreq %}/{{ sreq }}{% endif %}</span>{% endfor %}{% endif %}
-          {% if result.fees and result.fees.implant_mfg_name %} &nbsp;·&nbsp; <span title="Zainou 'Beancounter' Industry {{ result.fees.implant_mfg_name }} — manufacturing time only">{{ result.fees.implant_mfg_name }} −{{ result.fees.implant_mfg_pct | round(0) | int }}%</span>{% endif %}
+          {% if result.fees and result.fees.implant_mfg_name %} &nbsp;·&nbsp; <span title="Zainou 'Beancounter' Industry {{ result.fees.implant_mfg_name }} - manufacturing time only">{{ result.fees.implant_mfg_name }} -{{ result.fees.implant_mfg_pct | round(0) | int }}%</span>{% endif %}
         </span>
         {% if result.fees and result.fees.total_time %}
         <span class="badge bg-secondary ms-2" style="font-size:.7rem">
@@ -468,7 +468,7 @@ function switchPlanChar(charId) {
 {% set s_profit = result.fees.profit_stock  if result.fees else result.profit %}
 <div class="card mb-3" style="overflow:hidden">
 
-  {# Header — sell price + station price #}
+  {# Header - sell price + station price #}
   <div class="card-header py-2 d-flex flex-wrap gap-3 align-items-center" style="font-size:.85rem;background:#161b22">
     {% if result.sell_price %}
     <span>
@@ -511,7 +511,7 @@ function switchPlanChar(charId) {
               title="Cheapest price/unit from indexed public contracts in the station's region">
         <i class="bi bi-cloud-download me-1"></i>Fetch contract
       </button>
-      {# Manual price — ESI can't read alliance/private contracts, so let the user
+      {# Manual price - ESI can't read alliance/private contracts, so let the user
          type the price they see in-game. Persisted per product in localStorage. #}
       <input id="contract-manual-input" type="text" inputmode="decimal"
              data-type-id="{{ result.product_type_id }}" placeholder="or type price/unit"
@@ -520,7 +520,7 @@ function switchPlanChar(charId) {
              title="Manually enter a contract price/unit you see in-game (e.g. an alliance contract ESI can't read). Accepts 2.85b / 2850m / 2 850 000 000.">
     </span>
 
-    {# Contract-region indexing progress — inside this header row, wraps full-width directly under it. #}
+    {# Contract-region indexing progress - inside this header row, wraps full-width directly under it. #}
     <div id="contract-index-progress" class="d-none" style="width:100%;margin-top:.15rem">
       <div class="d-flex justify-content-between mb-1 text-muted" style="font-size:.7rem">
         <span id="contract-index-label">Indexing contracts…</span><span id="contract-index-pct">0%</span>
@@ -532,10 +532,10 @@ function switchPlanChar(charId) {
   {# Two variants side by side #}
   <div class="row g-0">
 
-    {# Market — buy all #}
+    {# Market - buy all #}
     <div class="col-sm-6 p-3" style="border-right:1px solid #21262d">
       <div class="mb-2 text-uppercase fw-semibold" style="color:#8b949e;font-size:.68rem;letter-spacing:.07em">
-        <i class="bi bi-shop me-1"></i>Market — buy all
+        <i class="bi bi-shop me-1"></i>Market - buy all
       </div>
       <table class="w-100" style="font-size:.875rem;border-collapse:separate;border-spacing:0 2px">
         <tr>
@@ -640,24 +640,24 @@ function switchPlanChar(charId) {
         <tbody id="profit-compare">
           <tr data-src="jita">
             <td class="text-muted">Jita sell</td>
-            <td class="text-end price">{% if result.sell_price %}{{ result.sell_price | isk }}{% else %}—{% endif %}</td>
-            <td class="text-end pm">—</td><td class="text-end pmu">—</td>
-            <td class="text-end ps">—</td><td class="text-end psu">—</td>
+            <td class="text-end price">{% if result.sell_price %}{{ result.sell_price | isk }}{% else %}-{% endif %}</td>
+            <td class="text-end pm">-</td><td class="text-end pmu">-</td>
+            <td class="text-end ps">-</td><td class="text-end psu">-</td>
           </tr>
           <tr data-src="market">
             <td class="text-muted">{{ selling_station_name }} <span class="badge bg-secondary" style="font-size:.55rem">market</span></td>
-            <td class="text-end price">—</td><td class="text-end pm">—</td><td class="text-end pmu">—</td>
-            <td class="text-end ps">—</td><td class="text-end psu">—</td>
+            <td class="text-end price">-</td><td class="text-end pm">-</td><td class="text-end pmu">-</td>
+            <td class="text-end ps">-</td><td class="text-end psu">-</td>
           </tr>
           <tr data-src="contract">
             <td class="text-muted">Contract <span class="compare-badge"></span></td>
-            <td class="text-end price">—</td><td class="text-end pm">—</td><td class="text-end pmu">—</td>
-            <td class="text-end ps">—</td><td class="text-end psu">—</td>
+            <td class="text-end price">-</td><td class="text-end pm">-</td><td class="text-end pmu">-</td>
+            <td class="text-end ps">-</td><td class="text-end psu">-</td>
           </tr>
         </tbody>
       </table>
     </div>
-    <div class="text-muted" style="font-size:.68rem">Computed from fetched prices × quantity − costs; "Profit/unit" is the profit for a single item. Use "Fetch price" / "Fetch contract" above.</div>
+    <div class="text-muted" style="font-size:.68rem">Computed from fetched prices × quantity - costs; "Profit/unit" is the profit for a single item. Use "Fetch price" / "Fetch contract" above.</div>
   </div>
   <script>
     window._planCalc = {
@@ -669,7 +669,7 @@ function switchPlanChar(charId) {
   </script>
   {% endif %}
 
-  {# Footer — job fee parameters #}
+  {# Footer - job fee parameters #}
   {% if result.fees %}
   <div style="border-top:1px solid #21262d;padding:.4rem .75rem;font-size:.68rem;color:#6e7681">
     <i class="bi bi-info-circle me-1"></i>
@@ -771,7 +771,7 @@ function switchPlanChar(charId) {
             {% if m.total_price %}
             {{ m.total_price | isk }}
             {% else %}
-            <span class="text-muted">—</span>
+            <span class="text-muted">-</span>
             {% endif %}
           </td>
           <td class="text-end cell-avail">{{ m.available | int | format_number }}</td>
@@ -779,14 +779,14 @@ function switchPlanChar(charId) {
             {% if m.missing > 0 %}
             <span class="text-danger fw-semibold">{{ m.missing | int | format_number }}</span>
             {% else %}
-            <span class="text-muted">—</span>
+            <span class="text-muted">-</span>
             {% endif %}
           </td>
           <td class="text-end cell-buy">
             {% if m.buy_price %}
             <span class="text-warning fw-semibold">{{ m.buy_price | isk }}</span>
             {% else %}
-            <span class="text-muted">—</span>
+            <span class="text-muted">-</span>
             {% endif %}
           </td>
           <td class="text-end cell-coverage">
@@ -814,7 +814,7 @@ function switchPlanChar(charId) {
               id="mat-footer-total"
               data-with="{{ result.total_buy or 0 }}"
               data-without="{{ full_cost }}">
-            {% if result.total_buy %}{{ result.total_buy | isk }}{% else %}—{% endif %}
+            {% if result.total_buy %}{{ result.total_buy | isk }}{% else %}-{% endif %}
           </td>
           <td></td>
         </tr>
@@ -823,7 +823,7 @@ function switchPlanChar(charId) {
   </div>
 </div>
 
-{# Shopping list — with/without stock #}
+{# Shopping list - with/without stock #}
 {# (tab-pane materials closes below) #}
 {% set shop_items = result.materials | selectattr('required', '>', 0) | sort(attribute='total_price', reverse=True) | list %}
 {% set missing_count = result.materials | selectattr('missing', '>', 0) | list | length %}
@@ -905,7 +905,7 @@ function switchPlanChar(charId) {
     {% endif %}
   </div>
 
-  {# Jobs in this step — accordion #}
+  {# Jobs in this step - accordion #}
   <div class="accordion" id="step{{ step.step }}acc">
     {% for job in step.jobs %}
     {% set job_id = "step" ~ step.step ~ "job" ~ loop.index %}
@@ -929,7 +929,7 @@ function switchPlanChar(charId) {
           </span>
           {% endif %}
           <span style="flex:1"></span>
-          {# Fixed-aligned columns on the right — gap separates the values #}
+          {# Fixed-aligned columns on the right - gap separates the values #}
           <span style="display:flex;gap:2rem;align-items:center;flex-shrink:0;margin-right:1.5rem;font-variant-numeric:tabular-nums;font-size:.875rem">
             <span class="text-muted" style="width:8ch;text-align:right;white-space:nowrap">
               ×{{ job.quantity | int | format_number }}
@@ -993,11 +993,11 @@ function switchPlanChar(charId) {
                   {% if missing_qty > 0 %}
                   <span class="text-danger fw-semibold">{{ missing_qty | int | format_number }}</span>
                   {% else %}
-                  <span class="text-muted">—</span>
+                  <span class="text-muted">-</span>
                   {% endif %}
                 </td>
                 <td class="text-end text-isk">
-                  {% if inp.total_price %}{{ inp.total_price | isk }}{% else %}<span class="text-muted opacity-50">—</span>{% endif %}
+                  {% if inp.total_price %}{{ inp.total_price | isk }}{% else %}<span class="text-muted opacity-50">-</span>{% endif %}
                 </td>
               </tr>
               {% endfor %}
@@ -1008,7 +1008,7 @@ function switchPlanChar(charId) {
                 <td colspan="5" class="text-muted small">
                   Inputs at Jita price
                   <i class="bi bi-info-circle ms-1" style="font-size:.7rem"
-                     title="Market value of this step's direct inputs (buy them ready-made). Intermediate components are actually built in earlier steps, so this is NOT the build cost — see the headline Total cost for that."></i>
+                     title="Market value of this step's direct inputs (buy them ready-made). Intermediate components are actually built in earlier steps, so this is NOT the build cost - see the headline Total cost for that."></i>
                 </td>
                 <td class="text-end fw-semibold text-isk">{{ job.input_cost | isk }}</td>
               </tr>
@@ -1022,7 +1022,7 @@ function switchPlanChar(charId) {
                   <span class="ms-2" style="font-size:.7rem">
                     {% for sname, slevel, spct, sreq in job.science_skills %}
                     {% if slevel < sreq %}
-                    <span class="badge bg-danger" title="MISSING — required L{{ sreq }}, you have L{{ slevel }}">{{ sname }} L{{ slevel }}/{{ sreq }}</span>
+                    <span class="badge bg-danger" title="MISSING - required L{{ sreq }}, you have L{{ slevel }}">{{ sname }} L{{ slevel }}/{{ sreq }}</span>
                     {% else %}
                     <span class="badge bg-secondary" title="{{ spct }}% per level (required L{{ sreq }})">{{ sname }} L{{ slevel }}</span>
                     {% endif %}
@@ -1065,10 +1065,10 @@ function switchPlanChar(charId) {
     <span class="fw-semibold"><i class="bi bi-arrow-left-right me-2"></i>Make vs Buy decisions</span>
     <span class="text-muted small">
       {% if form_mode == 'optimal' %}
-      Components marked <span class="badge bg-warning text-dark">BUY</span> are cheaper on market —
+      Components marked <span class="badge bg-warning text-dark">BUY</span> are cheaper on market -
       they're in your Materials shopping list and their sub-jobs are excluded from Manufacturing Steps.
       {% else %}
-      Informational — components marked <span class="badge bg-warning text-dark">BUY</span> would be
+      Informational - components marked <span class="badge bg-warning text-dark">BUY</span> would be
       cheaper to buy than to build. Switch Mode to <strong>Optimal</strong> to apply these decisions
       to the shopping list and Manufacturing Steps.
       {% endif %}
@@ -1101,14 +1101,14 @@ function switchPlanChar(charId) {
             {% if d.unit_price is not none %}
             <span class="text-isk">{{ d.unit_price | isk }}</span>
             {% else %}
-            <span class="text-muted">—</span>
+            <span class="text-muted">-</span>
             {% endif %}
           </td>
           <td class="text-end {% if d.action == 'make' %}fw-semibold text-success{% else %}text-muted{% endif %}">
-            {% if d.make_cost is not none %}{{ d.make_cost | isk }}{% else %}—{% endif %}
+            {% if d.make_cost is not none %}{{ d.make_cost | isk }}{% else %}-{% endif %}
           </td>
           <td class="text-end {% if d.action == 'buy' %}fw-semibold text-warning{% else %}text-muted{% endif %}">
-            {% if d.buy_cost is not none %}{{ d.buy_cost | isk }}{% else %}—{% endif %}
+            {% if d.buy_cost is not none %}{{ d.buy_cost | isk }}{% else %}-{% endif %}
           </td>
           <td class="text-center">
             {% if d.action == 'buy' %}
@@ -1125,7 +1125,7 @@ function switchPlanChar(charId) {
               {{ d.savings | abs | isk }}
             </span>
             {% else %}
-            <span class="text-muted">—</span>
+            <span class="text-muted">-</span>
             {% endif %}
           </td>
         </tr>
@@ -1181,7 +1181,7 @@ function switchPlanChar(charId) {
 
 {% block scripts %}
 <script>
-// === Stock sources — station selection for counting stock ===
+// === Stock sources - station selection for counting stock ===
 function _refreshStockSummary() {
   const cbs = document.querySelectorAll('.stock-station-cb');
   const sel = document.querySelectorAll('.stock-station-cb:checked').length;
@@ -1191,7 +1191,7 @@ function _refreshStockSummary() {
   }
 }
 function updateStockStations() {
-  // Called only when the user changes a checkbox — from that point the selection
+  // Called only when the user changes a checkbox - from that point the selection
   // is EXPLICIT. Sentinel "0" = intentionally nothing (otherwise an empty value
   // would fall back to the default = manufacturing station).
   const ids = [];
@@ -1224,8 +1224,8 @@ const _FORM_FIELD_NAMES = [
   'station','reaction_station','selling_station',
   'facility_tax','reaction_facility_tax',
   'facility_me_bonus','reaction_me_bonus',
-  'implant_mfg',      // Beancounter Industry implant — a character constant, keep it across plans
-  'stock_stations',   // stock source station selection (hidden input) — keep it preserved
+  'implant_mfg',      // Beancounter Industry implant - a character constant, keep it across plans
+  'stock_stations',   // stock source station selection (hidden input) - keep it preserved
 ];
 
 function savePlanState() {
@@ -1270,7 +1270,7 @@ function restoreUiState() {
   }
 }
 
-// An EMPTY form field never reaches the backend as "" — FastAPI treats a blank value
+// An EMPTY form field never reaches the backend as "" - FastAPI treats a blank value
 // as missing and substitutes the field default ("1"), so "empty = one batched job"
 // silently became "1 run per job" and inflated material totals. 0 is the documented
 // batch signal the backend does see, so send that instead.
@@ -1314,7 +1314,7 @@ document.addEventListener('DOMContentLoaded', () => {
       btn.addEventListener('shown.bs.tab', saveUiState)
     );
   } else if (prefilledProduct) {
-    // We came from blueprints — the product is pre-filled, show the form without restore
+    // We came from blueprints - the product is pre-filled, show the form without restore
   } else {
     restoreAndSubmitPlan();
   }
@@ -1356,7 +1356,7 @@ function saveRecentStation(item) {
   });
 
   input.addEventListener('focus', () => {
-    // Recents show even over a pre-filled field — so the user can quickly
+    // Recents show even over a pre-filled field - so the user can quickly
     // switch to another recent blueprint without clearing the text.
     // Typing (input event, ≥2 chars) switches the dropdown to search.
     showRecentBPs();
@@ -1497,7 +1497,7 @@ function saveRecentStation(item) {
 </style>
 
 <script>
-// Generic factory station selector — used for both manufacturing and reaction stations
+// Generic factory station selector - used for both manufacturing and reaction stations
 function makeStationSelector({ displayId, hiddenId, boxId, onSelect }) {
   const display = document.getElementById(displayId);
   const hidden  = document.getElementById(hiddenId);
@@ -1516,7 +1516,7 @@ function makeStationSelector({ displayId, hiddenId, boxId, onSelect }) {
   });
 
   display.addEventListener('focus', () => {
-    // Recents even over a pre-filled field — quick station switch without
+    // Recents even over a pre-filled field - quick station switch without
     // clearing. Typing (≥2 chars) switches the dropdown to search.
     showRecentStations();
   });
@@ -1675,7 +1675,7 @@ function makeStationSelector({ displayId, hiddenId, boxId, onSelect }) {
           <div class="text-muted" style="font-size:.8rem">Go to <a href="/assets" class="text-muted">Assets</a> to load your stations, or type a full system name (e.g. <em>Jita</em>) to search via ESI.</div>
         </div>`;
       } else {
-        html += `<div class="px-3 py-2 text-muted small">No stations found — try a system name (e.g. "Jita") or paste a station ID below.</div>`;
+        html += `<div class="px-3 py-2 text-muted small">No stations found - try a system name (e.g. "Jita") or paste a station ID below.</div>`;
       }
     }
     html += `<div class="px-3 py-2 text-muted" style="font-size:.72rem;line-height:1.4;border-top:1px solid #30363d">
@@ -1700,7 +1700,7 @@ makeStationSelector({
   },
 });
 
-// Submit fallback — if hidden is empty and display contains a number
+// Submit fallback - if hidden is empty and display contains a number
 document.getElementById('plan-form')?.addEventListener('submit', () => {
   normalizeRunsPerJob();
   ['station-display|station-id', 'rxn-station-display|rxn-station-id', 'sell-station-display|sell-station-id'].forEach(pair => {
@@ -1733,7 +1733,7 @@ makeStationSelector({
 let _stockMode = 'with';
 
 function _isk(n) {
-  if (n == null || isNaN(n)) return '—';
+  if (n == null || isNaN(n)) return '-';
   return Number(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})
                   .replace(/,/g, ' ');
 }
@@ -1820,10 +1820,10 @@ function toggleStockMode(checked) {
       if (cellAvail) cellAvail.textContent = _fmtInt(avail);
       if (cellMissing) cellMissing.innerHTML = missing > 0
         ? `<span class="text-danger fw-semibold">${_fmtInt(missing)}</span>`
-        : '<span class="text-muted">—</span>';
+        : '<span class="text-muted">-</span>';
       if (cellBuy) cellBuy.innerHTML = buyP > 0
         ? `<span class="text-warning fw-semibold">${_isk(buyP)}</span>`
-        : '<span class="text-muted">—</span>';
+        : '<span class="text-muted">-</span>';
       if (cellCoverage) {
         const bc = ok ? 'bg-success' : (coverage >= 50 ? 'bg-warning' : 'bg-danger');
         const tc = ok ? 'text-success' : (coverage >= 50 ? 'text-warning' : 'text-danger');
@@ -1837,10 +1837,10 @@ function toggleStockMode(checked) {
       if (cellAvail) cellAvail.textContent = '0';
       if (cellMissing) cellMissing.innerHTML = required > 0
         ? `<span class="text-danger fw-semibold">${_fmtInt(required)}</span>`
-        : '<span class="text-muted">—</span>';
+        : '<span class="text-muted">-</span>';
       if (cellBuy) cellBuy.innerHTML = totalP > 0
         ? `<span class="text-warning fw-semibold">${_isk(totalP)}</span>`
-        : '<span class="text-muted">—</span>';
+        : '<span class="text-muted">-</span>';
       if (cellCoverage) {
         cellCoverage.innerHTML = required > 0
           ? `<div><span class="text-danger fw-semibold">0%</span></div>
@@ -1859,7 +1859,7 @@ function toggleStockMode(checked) {
   const footerTotal = document.getElementById('mat-footer-total');
   if (footerTotal) {
     const v = parseFloat(withMode ? footerTotal.dataset.with : footerTotal.dataset.without);
-    footerTotal.textContent = (!isNaN(v) && v > 0) ? _isk(v) : '—';
+    footerTotal.textContent = (!isNaN(v) && v > 0) ? _isk(v) : '-';
   }
 
   // shopping list rows
@@ -1890,7 +1890,7 @@ function toggleStockMode(checked) {
   const shopTotal = document.getElementById('shop-footer-total');
   if (shopTotal) {
     const v = parseFloat(withMode ? shopTotal.dataset.with : shopTotal.dataset.without);
-    shopTotal.textContent = (!isNaN(v) && v > 0) ? _isk(v) : '—';
+    shopTotal.textContent = (!isNaN(v) && v > 0) ? _isk(v) : '-';
   }
 }
 
@@ -1942,7 +1942,7 @@ async function _loadRigOptions(prefix, structureType, selectedRigs = [null, null
     container?.classList.add('d-none');
     if (bonusInput) bonusInput.value = '0';
     const disp = document.getElementById(`${prefix}-me-bonus-display`);
-    if (disp) disp.textContent = '−0%';
+    if (disp) disp.textContent = '-0%';
     return;
   }
 
@@ -1955,7 +1955,7 @@ async function _loadRigOptions(prefix, structureType, selectedRigs = [null, null
       const sel = document.getElementById(`${prefix}-${slot}-select`);
       if (!sel) return;
       const curVal = selectedRigs[i] ? String(selectedRigs[i]) : '';
-      sel.innerHTML = '<option value="">— none —</option>';
+      sel.innerHTML = '<option value="">- none -</option>';
       (data.rigs || []).forEach(rig => {
         const opt = document.createElement('option');
         opt.value = rig.type_id;
@@ -1982,7 +1982,7 @@ function _recalcMeBonus(prefix) {
   const bonusInput = document.getElementById(`${prefix}-me-bonus-input`);
   if (bonusInput) bonusInput.value = total.toFixed(1);
   const disp = document.getElementById(`${prefix}-me-bonus-display`);
-  if (disp) disp.textContent = total > 0 ? `−${total.toFixed(1)}%` : '−0%';
+  if (disp) disp.textContent = total > 0 ? `-${total.toFixed(1)}%` : '-0%';
 }
 
 async function onStructureTypeChange(prefix, structureType) {
@@ -2020,7 +2020,7 @@ function _autoSaveRigs(prefix) {
 // Profit comparison: recompute the row from the fetched price/unit.
 function _profitCell(price, cost) {
   const c = window._planCalc;
-  if (!c || !c.qty) return '—';
+  if (!c || !c.qty) return '-';
   const profit = price * c.qty - cost;
   const color = profit >= 0 ? '#3fb950' : '#f85149';
   return `<span style="color:${color}">${profit >= 0 ? '+' : ''}${_isk(profit)}</span>`;
@@ -2028,7 +2028,7 @@ function _profitCell(price, cost) {
 // Per-unit profit (profit for a single item = total profit / quantity).
 function _profitUnitCell(price, cost) {
   const c = window._planCalc;
-  if (!c || !c.qty) return '—';
+  if (!c || !c.qty) return '-';
   const per = (price * c.qty - cost) / c.qty;
   const color = per >= 0 ? '#3fb950' : '#f85149';
   return `<span style="color:${color}">${per >= 0 ? '+' : ''}${_isk(per)}</span>`;
@@ -2079,13 +2079,13 @@ function indexContractRegion(regionId) {
       }
       if (d.done) {
         es.close();
-        if (lbl) lbl.textContent = 'Done — loading price…';
+        if (lbl) lbl.textContent = 'Done - loading price…';
         setTimeout(() => { if (prog) prog.classList.add('d-none'); resolve(true); }, 400);
       }
     };
     es.onerror = () => {
       es.close();
-      if (lbl) lbl.textContent = 'Indexing failed — try again';
+      if (lbl) lbl.textContent = 'Indexing failed - try again';
       setTimeout(() => { if (prog) prog.classList.add('d-none'); }, 2000);
       resolve(false);
     };
@@ -2101,7 +2101,7 @@ async function fetchContractPrice(btn) {
   const valEl = document.getElementById('contract-price-val');
   const badgeEl = document.getElementById('contract-price-badge');
   const cmpBadge = document.querySelector('#profit-compare tr[data-src="contract"] .compare-badge');
-  // Contract prices are volatile — a cached index goes out of date fast. Re-index
+  // Contract prices are volatile - a cached index goes out of date fast. Re-index
   // when: the region was never indexed, OR the user hit the ↻ refresh (fetched
   // once already), OR the cached index is older than this TTL. Otherwise a newer,
   // cheaper contract in-game never shows (it's not in the stale cache).
@@ -2117,7 +2117,7 @@ async function fetchContractPrice(btn) {
     }
     if (d.ok && d.price) {
       const badge = d.is_bundle
-        ? '<span class="badge bg-warning text-dark" style="font-size:.55rem" title="Price from a bundle contract — approximate (also includes other items)">bundle</span>'
+        ? '<span class="badge bg-warning text-dark" style="font-size:.55rem" title="Price from a bundle contract - approximate (also includes other items)">bundle</span>'
         : '<span class="badge bg-success" style="font-size:.55rem" title="Only this item">single</span>';
       if (valEl) { valEl.textContent = _isk(d.price) + ' ISK/unit'; valEl.classList.remove('d-none'); valEl.style.color = ''; valEl.style.fontSize = ''; }
       if (badgeEl) badgeEl.innerHTML = badge;
@@ -2151,7 +2151,7 @@ function _parseIsk(s) {
 }
 function _contractManualKey(typeId) { return 'contractManualPrice:' + typeId; }
 
-// Manual contract price — ESI can't read alliance/private contracts, so the user
+// Manual contract price - ESI can't read alliance/private contracts, so the user
 // types the price they see in-game. Feeds the profit calc exactly like a fetched
 // contract price; persisted per product so it survives a recalculate/reload.
 function applyManualContract(value) {
@@ -2269,7 +2269,7 @@ async function openSaveToProject() {
   const d = await r.json();
   const section = document.getElementById('project-list-section');
   if (!d.projects.length) {
-    section.innerHTML = '<div class="text-muted small">No projects — create a new one below.</div>';
+    section.innerHTML = '<div class="text-muted small">No projects - create a new one below.</div>';
   } else {
     let html = '<div class="text-muted small mb-2">Add to existing project:</div>';
     html += '<div class="d-flex flex-column gap-1">';
@@ -2338,7 +2338,7 @@ document.getElementById('save-new-project-name')?.addEventListener('keydown', e 
   if (e.key === 'Enter') saveToNewProject();
 });
 
-// ── Materials table — click-to-sort on any column header ────────────────────
+// ── Materials table - click-to-sort on any column header ────────────────────
 (function initMaterialsSort() {
   const table = document.getElementById('materials-table');
   if (!table) return;

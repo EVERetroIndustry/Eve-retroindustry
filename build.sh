@@ -2,7 +2,7 @@
 set -e
 
 echo "============================================================"
-echo "  EVE Retroindustry — Linux/Mac build"
+echo "  EVE Retroindustry - Linux/Mac build"
 echo "============================================================"
 echo
 

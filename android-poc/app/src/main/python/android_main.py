@@ -1,6 +1,6 @@
 """
 Android entry point. Runs the real FastAPI app (app.web.main) via uvicorn
-on 127.0.0.1, just like launcher.py on desktop — but without pywebview/PyQt.
+on 127.0.0.1, just like launcher.py on desktop - but without pywebview/PyQt.
 Java (MainActivity) calls start_server(files_dir) in the background; the UI
 thread then waits for the port and loads a WebView at http://127.0.0.1:<port>.
 """
@@ -9,13 +9,13 @@ import socket
 
 PORT = 8000
 
-# Reference to the Android Activity — passed in from Java via set_context().
+# Reference to the Android Activity - passed in from Java via set_context().
 # Needed to open the system browser (ESI SSO login) via an Intent.
 _activity = None
 
 
 def _log(msg):
-    # Goes to logcat (python.stdout) — useful when debugging on the device.
+    # Goes to logcat (python.stdout) - useful when debugging on the device.
     print(f"[android_main] {msg}", flush=True)
 
 
@@ -28,7 +28,7 @@ def set_context(activity):
 def _open_url_intent(url):
     """Opens a URL in the system browser via an Android Intent (ACTION_VIEW).
     Replacement for webbrowser/xdg-open, which don't work on Chaquopy.
-    After login, EVE SSO then redirects to http://localhost:5173/callback —
+    After login, EVE SSO then redirects to http://localhost:5173/callback -
     loopback is shared on the device, so the app's callback server catches it.
     """
     from android.content import Intent
@@ -40,7 +40,7 @@ def _open_url_intent(url):
 
 
 def start_server(files_dir, port=PORT):
-    """Blocking — runs in a Java background thread for the whole app lifetime.
+    """Blocking - runs in a Java background thread for the whole app lifetime.
 
     files_dir = app-private storage (Context.getFilesDir()). MainActivity has
     unpacked sde_base.db + app/web/templates here beforehand. It serves both as
@@ -62,7 +62,7 @@ def start_server(files_dir, port=PORT):
     _log(f"EVE_APP_DIR=EVE_BUNDLE_DIR={files_dir}")
 
     try:
-        # Import only after setting env (app.web.main reads paths at import time —
+        # Import only after setting env (app.web.main reads paths at import time -
         # SDE bootstrap from EVE_BUNDLE_DIR/sde_base.db into EVE_APP_DIR/eve_cache.db).
         from app.web import main as webmain
         # Register the Android Intent opener for SSO login (instead of xdg-open/webbrowser).
@@ -76,7 +76,7 @@ def start_server(files_dir, port=PORT):
             host="127.0.0.1",
             port=port,
             log_level="info",
-            # uvicorn installs signal handlers only on the main thread — on a background
+            # uvicorn installs signal handlers only on the main thread - on a background
             # thread it skips them itself, so running in a thread is fine.
         )
         server = uvicorn.Server(config)

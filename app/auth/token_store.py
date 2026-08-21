@@ -33,8 +33,8 @@ _DEFAULT_CLIENT_ID = "50cc73daf13d4109a06821c143cb5ca4"
 
 # Per-character refresh locks. EVE rotates the refresh token on every use, so two
 # concurrent refreshes with the same token invalidate each other (one gets
-# invalid_grant → None). Serializing refreshes per character — whoever wins the
-# lock refreshes and stores the new token; everyone else re-reads it — removes
+# invalid_grant → None). Serializing refreshes per character - whoever wins the
+# lock refreshes and stores the new token; everyone else re-reads it - removes
 # that race (e.g. "Sync All" running while the dashboard fetches live data).
 _refresh_locks: dict[int, threading.Lock] = {}
 _refresh_locks_guard = threading.Lock()
@@ -49,7 +49,7 @@ def _refresh_lock_for(character_id: int) -> threading.Lock:
         return lk
 
 
-# Characters whose refresh token EVE has rejected (invalid_grant) — the token is
+# Characters whose refresh token EVE has rejected (invalid_grant) - the token is
 # dead and only a re-login fixes it. Tracked in-process so the UI can prompt the
 # user; self-corrects (set on a 400 invalid_grant, cleared once a valid token is
 # obtained again, e.g. after re-login). Not persisted: a restart just re-detects.
@@ -268,10 +268,10 @@ def update_last_sync(conn: sqlite3.Connection, character_id: int) -> None:
 # ---------------------------------------------------------------------------
 
 def get_valid_token(conn: sqlite3.Connection, character_id: int) -> str | None:
-    """Return a valid access_token for the given char — auto-refresh on expiry.
+    """Return a valid access_token for the given char - auto-refresh on expiry.
 
     Refreshes are serialized per character (see _refresh_locks) so concurrent
-    callers — e.g. "Sync All" and the dashboard live fetch — can't invalidate
+    callers - e.g. "Sync All" and the dashboard live fetch - can't invalidate
     each other's rotating refresh token.
     """
     row = get_character_row(conn, character_id)
@@ -323,7 +323,7 @@ def get_valid_token(conn: sqlite3.Connection, character_id: int) -> str | None:
                   f"{r.text[:200]}", flush=True)
             # 400 invalid_grant = the refresh token is dead → only a re-login
             # fixes it. Flag it so the UI can prompt. (5xx / timeouts are
-            # transient — leave the flag alone so we don't nag on a blip.)
+            # transient - leave the flag alone so we don't nag on a blip.)
             if r.status_code == 400 and "invalid_grant" in r.text.lower():
                 _invalid_refresh.add(int(character_id))
             return None

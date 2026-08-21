@@ -2,7 +2,7 @@
 
 ESI runs two limiters side by side: the old error limit (client-wide, HTTP 420)
 and a token bucket (per rate-limit group, HTTP 429 + Retry-After). Client code
-cannot choose between them — the server picks per route — so both have to be
+cannot choose between them - the server picks per route - so both have to be
 survivable, and a drained bucket in one group must not stall the others.
 """
 from __future__ import annotations
@@ -82,7 +82,7 @@ def test_signature_collapses_ids_so_all_regions_share_a_bucket_key():
 
 
 def test_limit_header_is_tokens_per_window():
-    # "12000/15m" — the window is not a token count.
+    # "12000/15m" - the window is not a token count.
     assert esi._limit_header_total("12000/15m") == 12000
     assert esi._limit_header_total("150/15m") == 150
     assert esi._limit_header_total(None) is None
@@ -113,7 +113,7 @@ def test_429_without_headers_is_still_survived():
 
 
 def test_429_pauses_only_its_own_group():
-    """A drained market bucket must not stall wallet or asset calls — that is the
+    """A drained market bucket must not stall wallet or asset calls - that is the
     whole reason this governor is per group rather than client-wide."""
     esi._TOKEN_LIMIT._group_of["/latest/markets/{}/orders/"] = "market-order"
     esi._TOKEN_LIMIT._pause_until["market-order"] = time.monotonic() + 30
@@ -232,7 +232,7 @@ def test_market_token_provider_never_triggers_an_oauth_refresh(app_module, monke
 
     get_valid_token() does a synchronous httpx.post to the SSO endpoint with a
     15 s timeout, behind a per-character lock, whenever the access token has
-    expired — and EVE access tokens last about 20 minutes. Calling it from the
+    expired - and EVE access tokens last about 20 minutes. Calling it from the
     transport stalled every request in the process, the dashboard included, for
     the length of that round trip. The provider therefore reads a stored, still
     valid token and nothing else.

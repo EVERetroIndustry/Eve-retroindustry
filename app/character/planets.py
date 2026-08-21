@@ -1,11 +1,11 @@
 """
-Planetary Interaction — a character's planet colonies and extractor timers.
+Planetary Interaction - a character's planet colonies and extractor timers.
 
 ESI: GET /characters/{id}/planets/            (colony list)
      GET /characters/{id}/planets/{planet_id}/ (pins incl. extractor expiry)
 Scope: esi-planets.manage_planets.v1
 
-The headline value (à la RIFT) is the extractor expiry countdown — PI is
+The headline value (à la RIFT) is the extractor expiry countdown - PI is
 "set and forget until the extractor program runs out", so knowing when to go
 reset it is what matters.
 """
