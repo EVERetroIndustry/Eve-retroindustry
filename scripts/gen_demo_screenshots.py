@@ -390,7 +390,15 @@ def main() -> None:
              f"--virtual-time-budget={vtb}", f"--window-size={SHOT_WIDTH},{h}",
              f"--screenshot={out}", url],
             check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["magick", out, "-fuzz", "3%", "-trim", "+repage", out],
+        # Trim the EMPTY SPACE BELOW the content only. A plain -trim also eats
+        # the top, because the navbar band (#0f141b) is just 2.4 % away from the
+        # page background (#0b0e13) and the fuzz is 3 % — so ImageMagick treated
+        # the navbar's own padding as border and shaved it off, leaving the logo
+        # flush against the top edge. The header then looked cut compared to the
+        # running app, which is what a tester reported. Left/right never needed
+        # trimming anyway: the capture is exactly SHOT_WIDTH wide.
+        subprocess.run(["magick", out, "-fuzz", "3%",
+                        "-define", "trim:edges=south", "-trim", "+repage", out],
                        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print("wrote", out)
 
