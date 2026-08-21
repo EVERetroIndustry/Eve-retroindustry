@@ -4,7 +4,7 @@
 Takes the local (real) eve_cache.db, builds an anonymized copy - fake pilot
 names/ids, fake corporations, generated wallet balances, renamed private
 structures - then starts the app against that copy and screenshots the
-Dashboard, Production Plan and Assets pages into docs/screenshots/.
+Dashboard, Manufacturing Plan and Assets pages into docs/screenshots/.
 
 Nothing traceable to the real account ends up in the images: item/blueprint
 structure is kept so the screenshots look realistic, but every identifying

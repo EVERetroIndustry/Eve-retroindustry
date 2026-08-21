@@ -13,11 +13,11 @@ A local industry calculator for EVE Online. Runs as a web app on your machine - 
 ## Features
 
 - **Multi-character Dashboard** - log in any number of alts via EVE SSO; see all characters at a glance with portrait, corporation, current docked location, the skill in training with a live countdown, asset count, and estimated net worth. A **Total available cash** tile sums wallet ISK across every character
-- **Production Planner** - enter any ship or component, pick a station, get a full bill of materials with Jita buy/sell prices, your asset coverage, manufacturing job time and fees (EIV × SCI × facility tax × SCC), profit vs. market and vs. stock, and the cheapest make-vs-buy decomposition. Inputs can be priced at **Jita sell** (instant-buy) or **Jita buy** (buy orders, how manufacturers actually source), and the **make-vs-buy optimiser weighs job install fees** - so it only builds a component when building genuinely wins
+- **Manufacturing Planner** - enter any ship or component, pick a station, get a full bill of materials with Jita buy/sell prices, your asset coverage, manufacturing job time and fees (EIV × SCI × facility tax × SCC), profit vs. market and vs. stock, and the cheapest make-vs-buy decomposition. Inputs can be priced at **Jita sell** (instant-buy) or **Jita buy** (buy orders, how manufacturers actually source), and the **make-vs-buy optimiser weighs job install fees** - so it only builds a component when building genuinely wins
 - **Blueprint Library** - full character (and alt) blueprint list with ME/TE levels, BPO vs BPC, runs remaining, organised by station and container
 - **Asset Tracking** - character + corporation inventory grouped by location and container (incl. all corp hangar divisions), with estimated ISK value per stack and per station
 
-![Production Plan - Raven (ME 10 / TE 20)](docs/screenshots/production-plan.png)
+![Manufacturing Plan - Raven (ME 10 / TE 20)](docs/screenshots/production-plan.png)
 
 - **Jita Price Cache** - fetches live market data from ESI, caches locally, refresh on demand; secondary trade hubs (Amarr / Dodixie / Rens / Hek) and any custom station/citadel can be pulled in for side-by-side price comparison. Click any item for a **price-history chart** and the **live regional order book**, as you'd see it in-game
 

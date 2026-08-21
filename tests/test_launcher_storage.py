@@ -148,14 +148,16 @@ class _WV:
 
 
 def test_default_width_clears_the_navbar_label_threshold(launcher):
-    """The navbar keeps its labels from 1800 px up (measured); 1680 did not.
+    """Labels need ~1840 px with the current nav labels (measured 2026-08-22).
 
     It collapses by measuring real overflow rather than a media query, so the
     default has to sit above that with headroom - the measurement depends on the
-    font, and Windows does not lay text out exactly like Linux.
+    font, and Windows does not lay text out exactly like Linux. Renaming a nav
+    item moves this threshold, which is why the number is measured, not guessed:
+    "Manufacturing" instead of "Plan" pushed it from 1800 to 1845.
     """
     w, h = launcher._default_window_size(_WV([_Screen(3840, 2160)]))
-    assert w >= 1800 + 50
+    assert w >= 1845 + 50
     assert h == 1000
 
 
@@ -167,12 +169,12 @@ def test_window_never_opens_wider_than_the_screen(launcher):
         assert w >= 900 and h >= 600           # never below the min_size
     # A portrait panel next to a landscape one must not shrink the window to it.
     w, _ = launcher._default_window_size(_WV([_Screen(3840, 2160), _Screen(2160, 3840)]))
-    assert w >= 1800
+    assert w >= 1845
 
 
 def test_falls_back_when_the_screen_size_is_unknown(launcher):
     class _Broken:
         @property
         def screens(self): raise RuntimeError("no display")
-    assert launcher._default_window_size(_WV([])) == (1880, 1000)
-    assert launcher._default_window_size(_Broken()) == (1880, 1000)
+    assert launcher._default_window_size(_WV([])) == (1920, 1000)
+    assert launcher._default_window_size(_Broken()) == (1920, 1000)
