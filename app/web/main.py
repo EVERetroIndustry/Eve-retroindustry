@@ -5711,6 +5711,91 @@ async def _finalize_orders(conn, raw_orders: list[dict], type_names_fn, token: s
 CORP_CONTRACT_SCOPE = "esi-contracts.read_corporation_contracts.v1"
 
 
+def _corp_contract_tokens(conn: sqlite3.Connection,
+                          chars: list[tuple[int, str]]) -> dict[int, list[str]]:
+    """corporation_id -> usable tokens, the ones that carry CORP_CONTRACT_SCOPE first.
+
+    Taking simply the first character of a corporation used to hide that whole
+    corporation behind a 403 whenever that character predated the scope.
+    """
+    out: dict[int, list[str]] = {}
+    for cid, _cn in chars:
+        tok = _get_valid_token_for(conn, cid)
+        if not tok:
+            continue
+        corp_id = (get_character_row(conn, cid) or {}).get("corporation_id")
+        if not corp_id:
+            continue
+        out.setdefault(corp_id, []).append(tok)
+    for toks in out.values():
+        # Scope carriers first; the rest stay as a fallback in case the claim and
+        # reality ever disagree.
+        toks.sort(key=lambda t: not token_has_scope(t, CORP_CONTRACT_SCOPE))
+    return out
+
+
+# Corporations change alliance rarely and the endpoint is public, so a day is plenty.
+_CORP_ALLIANCE_TTL = 24 * 3600
+
+
+def _ensure_corp_alliance_cache(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS corp_alliance_cache (
+        corporation_id INTEGER PRIMARY KEY,
+        alliance_id    INTEGER,
+        cached_at      REAL)""")
+    conn.commit()
+
+
+async def _corp_alliance_ids(conn: sqlite3.Connection, corp_ids) -> dict[int, int]:
+    """corporation_id -> alliance_id (only corporations that are in one).
+
+    A stale value keeps being served if the refresh fails: a corp that left its
+    alliance is a far rarer event than a hiccup on the way to ESI.
+    """
+    _ensure_corp_alliance_cache(conn)
+    out: dict[int, int] = {}
+    miss: list[int] = []
+    now = _time.time()
+    for cid in corp_ids:
+        row = conn.execute(
+            "SELECT alliance_id, cached_at FROM corp_alliance_cache WHERE corporation_id=?",
+            (cid,)).fetchone()
+        if row and (now - (row[1] or 0)) < _CORP_ALLIANCE_TTL:
+            if row[0]:
+                out[cid] = row[0]
+        else:
+            miss.append(cid)
+            if row and row[0]:
+                out[cid] = row[0]
+    if miss:
+        async def _one(client, cid):
+            try:
+                r = await client.get(
+                    f"https://esi.evetech.net/latest/corporations/{cid}/", timeout=10)
+                if r.status_code == 200:
+                    return cid, r.json().get("alliance_id")
+            except Exception:
+                pass
+            return cid, None
+        try:
+            async with esi_client(timeout=10) as client:
+                for cid, aid in await asyncio.gather(*[_one(client, c) for c in miss]):
+                    if aid is None and cid in out:
+                        continue          # keep the last known value
+                    conn.execute(
+                        "INSERT OR REPLACE INTO corp_alliance_cache"
+                        " (corporation_id, alliance_id, cached_at) VALUES (?,?,?)",
+                        (cid, aid, _time.time()))
+                    if aid:
+                        out[cid] = aid
+                    else:
+                        out.pop(cid, None)
+            conn.commit()
+        except Exception:
+            pass
+    return out
+
+
 def _decorate_contracts(raw: list[dict], party_names: dict[int, str],
                         loc_names: dict[int, str]) -> list[dict]:
     out = []
@@ -5796,19 +5881,7 @@ async def contracts_page(request: Request, char: str = "", scope: str = "persona
                 # a character used to hide that corporation's contracts entirely
                 # (the error was dropped here), which is exactly how alliance
                 # contracts ended up looking like they belonged to another corp.
-                corp_cands: dict[int, list[str]] = {}
-                for cid, _cn in chars:
-                    tok = _get_valid_token_for(conn, cid)
-                    if not tok:
-                        continue
-                    corp_id = (get_character_row(conn, cid) or {}).get("corporation_id")
-                    if not corp_id:
-                        continue
-                    corp_cands.setdefault(corp_id, []).append(tok)
-                for corp_id, toks in corp_cands.items():
-                    # Scope carriers first; the rest stay as a fallback in case the
-                    # claim and reality ever disagree.
-                    toks.sort(key=lambda t: not token_has_scope(t, CORP_CONTRACT_SCOPE))
+                corp_cands = _corp_contract_tokens(conn, chars)
                 corp_names = await _resolve_party_names(set(corp_cands)) if corp_cands else {}
                 unreadable: list[str] = []
                 async with esi_client() as client:
@@ -6034,6 +6107,159 @@ async def public_contracts_page(request: Request, region: str = "", item: str = 
             ctx["results"] = results
     conn.close()
     return _tr("contracts_public.html", request, ctx)
+
+
+async def _alliance_sources(conn: sqlite3.Connection) -> tuple[dict[int, list[tuple[int, str]]], list[str]]:
+    """alliance_id -> [(corp_id, token)] for every alliance we can read, plus notes.
+
+    Alliance contracts are only visible through the corporation endpoint, so every
+    corporation we have a capable token for is a window into its alliance.
+    """
+    chars = list_characters(conn)
+    corp_tokens = _corp_contract_tokens(conn, chars)
+    alliances = await _corp_alliance_ids(conn, list(corp_tokens))
+    out: dict[int, list[tuple[int, str]]] = {}
+    notes: list[str] = []
+    for corp_id, toks in corp_tokens.items():
+        aid = alliances.get(corp_id)
+        if not aid:
+            continue                      # corporation is not in an alliance
+        capable = [t for t in toks if token_has_scope(t, CORP_CONTRACT_SCOPE)]
+        if not capable:
+            notes.append(str(corp_id))    # resolved to a name by the caller
+            continue
+        # EVERY capable character is kept: the item endpoint's rate-limit bucket is
+        # per character, so more characters means a bigger allowance per index run.
+        out.setdefault(aid, []).extend((corp_id, t) for t in capable)
+    return out, notes
+
+
+def _own_party_ids(conn: sqlite3.Connection) -> tuple[int, ...]:
+    """Our own character and corporation ids - for "hide my own contracts"."""
+    ids: set[int] = set()
+    for cid, _cn in list_characters(conn):
+        ids.add(cid)
+        corp = (get_character_row(conn, cid) or {}).get("corporation_id")
+        if corp:
+            ids.add(corp)
+    return tuple(ids)
+
+
+def _f(v: str) -> float | None:
+    try:
+        return float(str(v).replace(" ", "").replace(",", ".")) if str(v).strip() else None
+    except ValueError:
+        return None
+
+
+def _i(v: str) -> int | None:
+    try:
+        return int(str(v).strip()) if str(v).strip() else None
+    except ValueError:
+        return None
+
+
+@app.get("/contracts/alliance", response_class=HTMLResponse)
+async def alliance_contracts_page(
+        request: Request, alliance: int = 0, item: str = "", exact: str = "",
+        ctype: str = "", status: str = "outstanding", min_price: str = "",
+        max_price: str = "", min_reward: str = "", max_collateral: str = "",
+        max_volume: str = "", location: str = "", issuer: str = "", title: str = "",
+        expires: str = "", hide_own: str = "", sort: str = "expires"):
+    """Contracts offered to the alliance. Indexed locally, then filtered without ESI."""
+    conn = get_conn()
+    ctx: dict = {
+        "alliances": [], "alliance_id": 0, "alliance_name": "", "status_info": None,
+        "results": [], "total": 0, "error": None, "note": None, "limit": 500,
+        "f": {"item": item, "exact": bool(exact), "ctype": ctype, "status": status,
+              "min_price": min_price, "max_price": max_price, "min_reward": min_reward,
+              "max_collateral": max_collateral, "max_volume": max_volume,
+              "location": location, "issuer": issuer, "title": title,
+              "expires": expires, "hide_own": bool(hide_own), "sort": sort},
+    }
+    try:
+        if not list_characters(conn):
+            ctx["error"] = "You are not signed in."
+            return _tr("contracts_alliance.html", request, ctx)
+        sources, blocked = await _alliance_sources(conn)
+        names = await _resolve_party_names(set(sources) | {int(b) for b in blocked})
+        ctx["alliances"] = sorted(
+            ({"id": aid, "name": names.get(aid, str(aid)),
+              "corps": len({c for c, _t in v}), "readers": len(v)}
+             for aid, v in sources.items()), key=lambda a: -a["corps"])
+        if blocked:
+            ctx["note"] = ("No character with corporation contract access in: "
+                           + ", ".join(names.get(int(b), b) for b in blocked)
+                           + ". Its alliance contracts stay hidden until one of its "
+                             "characters is re-added.")
+        if not sources:
+            if not ctx["note"]:
+                ctx["note"] = ("None of your corporations is in an alliance, or none has "
+                               "a character with corporation contract access.")
+            return _tr("contracts_alliance.html", request, ctx)
+        alliance_id = alliance if alliance in sources else ctx["alliances"][0]["id"]
+        ctx["alliance_id"] = alliance_id
+        ctx["alliance_name"] = names.get(alliance_id, str(alliance_id))
+        ctx["status_info"] = contracts_helper.get_alliance_index_status(conn, alliance_id)
+        if ctx["status_info"]:
+            rows, total = contracts_helper.search_alliance_contracts(
+                conn, alliance_id, item=item, exact_item=bool(exact), ctype=ctype,
+                status=status, min_price=_f(min_price), max_price=_f(max_price),
+                min_reward=_f(min_reward), max_collateral=_f(max_collateral),
+                max_volume=_f(max_volume), location=location, issuer=issuer, title=title,
+                expires_days=_i(expires), hide_own=bool(hide_own),
+                own_ids=_own_party_ids(conn), sort=sort, limit=ctx["limit"])
+            for r in rows:
+                r["type_label"] = contracts_api.type_label(r["type"])
+                r["status_label"] = contracts_api.status_label(r["status"])
+            ctx["results"], ctx["total"] = rows, total
+    except Exception as exc:
+        ctx["error"] = f"Error loading alliance contracts: {exc}"
+    finally:
+        conn.close()
+    return _tr("contracts_alliance.html", request, ctx)
+
+
+@app.get("/api/contracts/alliance/index")
+async def api_alliance_index(request: Request, alliance_id: int):
+    """SSE stream: index the alliance's contracts (listing + missing items)."""
+    async def gen():
+        conn = get_conn()
+        try:
+            sources, _blocked = await _alliance_sources(conn)
+            srcs = sources.get(alliance_id) or []
+            if not srcs:
+                yield ("data: " + json.dumps(
+                    {"done": True, "pct": 100, "error": "No readable corporation "
+                     "in this alliance."}) + "\n\n")
+                return
+
+            async def _parties(ids):
+                return await _resolve_party_names(set(ids))
+
+            async def _locations(ids):
+                try:
+                    return await resolve_station_names_bulk(
+                        list(ids), token=srcs[0][1], conn=conn)
+                except Exception:
+                    return load_location_names_from_db(conn)
+
+            async for chunk in contracts_helper.stream_alliance_index(
+                    conn, alliance_id, srcs, _parties, _locations):
+                yield chunk
+        finally:
+            conn.close()
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.get("/api/contracts/alliance/items")
+async def api_alliance_contract_items(request: Request, contract_id: int):
+    """Items of an indexed alliance contract - straight from the cache, no ESI."""
+    conn = get_conn()
+    try:
+        return {"items": contracts_helper.get_alliance_contract_items(conn, contract_id)}
+    finally:
+        conn.close()
 
 
 @app.get("/api/contracts/public/index")

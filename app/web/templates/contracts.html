@@ -45,6 +45,9 @@
     <a class="nav-link {% if scope == 'corp' %}active{% endif %}"
        href="/contracts?char={{ char_param }}&scope=corp"><i class="bi bi-building me-1"></i>Corporation</a>
   </li>
+  <li class="nav-item">
+    <a class="nav-link" href="/contracts/alliance"><i class="bi bi-people me-1"></i>Alliance</a>
+  </li>
 </ul>
 
 {% if scope == 'corp' and corp_error %}

@@ -1,0 +1,298 @@
+{% extends "base.html" %}
+{% block title %}Alliance Contracts - EVE Retroindustry{% endblock %}
+{% block content %}
+
+<div class="d-flex align-items-center justify-content-between mb-3 flex-wrap gap-2">
+  <h4 class="mb-0"><i class="bi bi-people me-2 text-primary"></i>Contracts</h4>
+  <a href="/contracts/public" class="btn btn-sm btn-outline-secondary">
+    <i class="bi bi-globe me-1"></i>Public contracts</a>
+</div>
+
+<ul class="nav nav-tabs mb-3">
+  <li class="nav-item">
+    <a class="nav-link" href="/contracts?scope=personal"><i class="bi bi-person me-1"></i>Personal</a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link" href="/contracts?scope=corp"><i class="bi bi-building me-1"></i>Corporation</a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link active" href="/contracts/alliance"><i class="bi bi-people me-1"></i>Alliance</a>
+  </li>
+</ul>
+
+{% if error %}
+<div class="alert alert-danger"><i class="bi bi-exclamation-circle me-2"></i>{{ error }}</div>
+{% endif %}
+{% if note %}
+<div class="alert alert-warning py-2"><i class="bi bi-shield-lock me-2"></i>{{ note }}</div>
+{% endif %}
+
+{% if alliance_id %}
+{# Index state + alliance picker #}
+<div class="card mb-3">
+  <div class="card-body d-flex align-items-center justify-content-between flex-wrap gap-2">
+    <div>
+      {% if alliances | length > 1 %}
+      <form method="get" action="/contracts/alliance" class="d-inline-flex align-items-center gap-2">
+        <select name="alliance" class="form-select form-select-sm" style="width:auto"
+                onchange="this.form.submit()">
+          {% for a in alliances %}
+          <option value="{{ a.id }}" {% if a.id == alliance_id %}selected{% endif %}>{{ a.name }}</option>
+          {% endfor %}
+        </select>
+      </form>
+      {% else %}
+      <span class="fw-semibold">{{ alliance_name }}</span>
+      {% endif %}
+      {% if status_info %}
+      <span class="text-muted small ms-2">
+        {{ "{:,}".format(status_info.contract_count) }} contracts
+        ({{ "{:,}".format(status_info.outstanding) }} outstanding) &middot; contents for
+        {{ "{:,}".format(status_info.with_items) }}/{{ "{:,}".format(status_info.contract_count) }}
+        &middot; indexed
+        <span id="idx-age" data-ts="{{ status_info.indexed_at }}"></span>
+      </span>
+      {% else %}
+      <span class="text-warning small ms-2">not indexed yet</span>
+      {% endif %}
+    </div>
+    <button class="btn btn-sm {% if status_info %}btn-outline-secondary{% else %}btn-eve{% endif %}"
+            id="index-btn" onclick="indexAlliance({{ alliance_id }})">
+      <i class="bi bi-cloud-download me-1"></i>{% if status_info %}Refresh{% else %}Index alliance contracts{% endif %}
+    </button>
+  </div>
+  <div id="index-progress" class="d-none px-3 pb-3">
+    <div class="d-flex justify-content-between small text-muted mb-1">
+      <span id="idx-label">Working…</span><span id="idx-pct">0%</span>
+    </div>
+    <div class="progress" style="height:6px"><div id="idx-bar" class="progress-bar bg-warning" style="width:0%"></div></div>
+    <div class="text-muted mt-1" style="font-size:.72rem">
+      Contract contents never change, so only contracts the app has not seen before are
+      fetched - the first index is the slow one.
+    </div>
+  </div>
+</div>
+
+{% if status_info %}
+{# Filters, in the spirit of the in-game contract search #}
+<form method="get" action="/contracts/alliance" class="card mb-3">
+  <input type="hidden" name="alliance" value="{{ alliance_id }}">
+  <div class="card-body">
+    <div class="row g-2 align-items-end">
+      <div class="col-md-4">
+        <label class="form-label small text-muted mb-1">Item (contract contents)</label>
+        <input type="text" name="item" value="{{ f.item }}" class="form-control form-control-sm"
+               placeholder="e.g. Hulk, Tritanium, Nanite Repair Paste…">
+      </div>
+      <div class="col-md-2">
+        <div class="form-check mt-4">
+          <input class="form-check-input" type="checkbox" name="exact" value="1" id="exact"
+                 {% if f.exact %}checked{% endif %}>
+          <label class="form-check-label small text-muted" for="exact">Exact type name</label>
+        </div>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small text-muted mb-1">Contract type</label>
+        <select name="ctype" class="form-select form-select-sm">
+          <option value="" {% if not f.ctype %}selected{% endif %}>All</option>
+          <option value="item_exchange" {% if f.ctype=='item_exchange' %}selected{% endif %}>Item Exchange</option>
+          <option value="auction" {% if f.ctype=='auction' %}selected{% endif %}>Auction</option>
+          <option value="courier" {% if f.ctype=='courier' %}selected{% endif %}>Courier</option>
+          <option value="loan" {% if f.ctype=='loan' %}selected{% endif %}>Loan</option>
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small text-muted mb-1">Status</label>
+        <select name="status" class="form-select form-select-sm">
+          <option value="outstanding" {% if f.status=='outstanding' %}selected{% endif %}>Outstanding</option>
+          <option value="in_progress" {% if f.status=='in_progress' %}selected{% endif %}>In Progress</option>
+          <option value="finished" {% if f.status=='finished' %}selected{% endif %}>Finished</option>
+          <option value="deleted" {% if f.status=='deleted' %}selected{% endif %}>Deleted</option>
+          <option value="any" {% if f.status=='any' %}selected{% endif %}>Any</option>
+        </select>
+      </div>
+
+      <div class="col-md-2">
+        <label class="form-label small text-muted mb-1">Min price</label>
+        <input type="text" name="min_price" value="{{ f.min_price }}" class="form-control form-control-sm" placeholder="-">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small text-muted mb-1">Max price</label>
+        <input type="text" name="max_price" value="{{ f.max_price }}" class="form-control form-control-sm" placeholder="-">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small text-muted mb-1">Min reward</label>
+        <input type="text" name="min_reward" value="{{ f.min_reward }}" class="form-control form-control-sm" placeholder="-">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small text-muted mb-1">Max collateral</label>
+        <input type="text" name="max_collateral" value="{{ f.max_collateral }}" class="form-control form-control-sm" placeholder="-">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small text-muted mb-1">Max volume m&sup3;</label>
+        <input type="text" name="max_volume" value="{{ f.max_volume }}" class="form-control form-control-sm" placeholder="-">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small text-muted mb-1">Expires within (days)</label>
+        <input type="text" name="expires" value="{{ f.expires }}" class="form-control form-control-sm" placeholder="-">
+      </div>
+
+      <div class="col-md-3">
+        <label class="form-label small text-muted mb-1">Location</label>
+        <input type="text" name="location" value="{{ f.location }}" class="form-control form-control-sm"
+               placeholder="station or system">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small text-muted mb-1">Issuer (pilot or corp)</label>
+        <input type="text" name="issuer" value="{{ f.issuer }}" class="form-control form-control-sm" placeholder="-">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small text-muted mb-1">Title contains</label>
+        <input type="text" name="title" value="{{ f.title }}" class="form-control form-control-sm" placeholder="-">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small text-muted mb-1">Sort by</label>
+        <select name="sort" class="form-select form-select-sm">
+          <option value="expires" {% if f.sort=='expires' %}selected{% endif %}>Expires soonest</option>
+          <option value="issued" {% if f.sort=='issued' %}selected{% endif %}>Newest first</option>
+          <option value="price" {% if f.sort=='price' %}selected{% endif %}>Price, lowest</option>
+          <option value="price_hi" {% if f.sort=='price_hi' %}selected{% endif %}>Price, highest</option>
+          <option value="reward" {% if f.sort=='reward' %}selected{% endif %}>Reward, highest</option>
+        </select>
+      </div>
+
+      <div class="col-12 d-flex align-items-center gap-3 pt-1">
+        <div class="form-check mb-0">
+          <input class="form-check-input" type="checkbox" name="hide_own" value="1" id="hide_own"
+                 {% if f.hide_own %}checked{% endif %}>
+          <label class="form-check-label small text-muted" for="hide_own">
+            Hide contracts issued by my own characters or corporations</label>
+        </div>
+        <div class="ms-auto d-flex gap-2">
+          <a href="/contracts/alliance?alliance={{ alliance_id }}" class="btn btn-sm btn-outline-secondary">Reset</a>
+          <button class="btn btn-sm btn-eve"><i class="bi bi-search me-1"></i>Search</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</form>
+
+{% if f.item and status_info.with_items < status_info.contract_count %}
+<div class="alert alert-secondary py-2 small">
+  <i class="bi bi-info-circle me-1"></i>Searching by item only looks inside the
+  {{ "{:,}".format(status_info.with_items) }} contracts whose contents are indexed
+  ({{ "{:,}".format(status_info.contract_count) }} listed). Use Refresh to fetch more -
+  each run takes as many as the ESI rate limit allows, and it resumes where it stopped.
+</div>
+{% endif %}
+
+{% if results %}
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-hover tbl-compact table-sm mb-0 align-middle">
+      <thead><tr>
+        <th>Type</th><th>Contract</th><th>Location</th>
+        <th class="text-end">Price</th><th class="text-end">Reward</th>
+        <th class="text-end">Collateral</th><th class="text-end">Volume</th>
+        <th>Issuer</th><th class="text-end">Expires</th><th>Status</th>
+      </tr></thead>
+      <tbody>
+        {% for c in results %}
+        <tr>
+          <td><span class="badge {% if c.type == 'courier' %}badge-courier{% elif c.type == 'auction' %}badge-rxn{% elif c.type == 'loan' %}badge-neutral{% else %}badge-mfg{% endif %}" style="font-size:.65rem">{{ c.type_label }}</span></td>
+          <td style="max-width:280px">
+            {% if c.title %}<div class="text-truncate" title="{{ c.title }}">{{ c.title }}</div>{% endif %}
+            {% if c.type in ('item_exchange', 'auction') %}
+            <button class="btn btn-link p-0 text-decoration-none" style="font-size:.72rem"
+                    onclick="allyItems(this, {{ c.contract_id }})"><i class="bi bi-box me-1"></i>items</button>
+            <div class="ally-items text-muted" style="font-size:.75rem"></div>
+            {% elif not c.title %}<span class="text-muted">-</span>{% endif %}
+          </td>
+          <td class="text-muted text-truncate" style="max-width:200px;font-size:.75rem">
+            {% if c.type == 'courier' %}{{ c.start_name }} <i class="bi bi-arrow-right"></i> {{ c.end_name }}
+            {% else %}{{ c.start_name }}{% endif %}
+          </td>
+          <td class="text-end" style="white-space:nowrap">{% if c.price %}{{ c.price | isk }}{% else %}<span class="text-muted">-</span>{% endif %}</td>
+          <td class="text-end" style="white-space:nowrap">{% if c.reward %}{{ c.reward | isk }}{% else %}<span class="text-muted">-</span>{% endif %}</td>
+          <td class="text-end" style="white-space:nowrap">{% if c.collateral %}{{ c.collateral | isk }}{% else %}<span class="text-muted">-</span>{% endif %}</td>
+          <td class="text-end text-muted" style="white-space:nowrap;font-size:.75rem">{% if c.volume %}{{ c.volume | count_eu }}{% else %}-{% endif %}</td>
+          <td class="text-muted text-truncate" style="max-width:140px;font-size:.78rem"
+              title="{{ c.issuer_name }}{% if c.issuer_corp_name %} ({{ c.issuer_corp_name }}){% endif %}">
+            {% if c.for_corp and c.issuer_corp_name %}{{ c.issuer_corp_name }}{% else %}{{ c.issuer_name }}{% endif %}</td>
+          <td class="text-end text-muted" style="white-space:nowrap;font-size:.75rem">{{ c.date_expired | replace('T',' ') | replace('Z','') | truncate(10,true,'') }}</td>
+          <td><span class="text-muted" style="font-size:.72rem">{{ c.status_label }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+<div class="text-muted small mt-2">
+  {{ "{:,}".format(total) }} matching contracts{% if total > results | length %},
+  showing the first {{ results | length }} (change the sort or narrow the filter to see others){% endif %}.
+</div>
+{% else %}
+<div class="card"><div class="text-muted text-center py-4">
+  No contracts match this filter.
+  {% if f.item and status_info and status_info.with_items < status_info.contract_count %}
+  <div class="small mt-1">Items are indexed for {{ status_info.with_items }} of
+    {{ status_info.contract_count }} contracts - refresh to fetch the rest.</div>
+  {% endif %}
+</div></div>
+{% endif %}
+{% endif %}
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function(){
+  const el = document.getElementById('idx-age');
+  if (!el) return;
+  const ts = parseFloat(el.dataset.ts) * 1000;
+  const mins = Math.floor((Date.now() - ts) / 60000);
+  el.textContent = mins < 1 ? 'just now' : (mins < 60 ? mins + ' min' : Math.floor(mins/60) + ' h') + ' ago';
+})();
+
+function indexAlliance(allianceId) {
+  const btn = document.getElementById('index-btn');
+  const prog = document.getElementById('index-progress');
+  btn.disabled = true;
+  prog.classList.remove('d-none');
+  const es = new EventSource('/api/contracts/alliance/index?alliance_id=' + allianceId);
+  es.onmessage = (e) => {
+    const d = JSON.parse(e.data);
+    document.getElementById('idx-bar').style.width = (d.pct || 0) + '%';
+    document.getElementById('idx-pct').textContent = (d.pct || 0) + '%';
+    const label = document.getElementById('idx-label');
+    if (d.phase === 'list') label.textContent = `Listing: ${d.done}/${d.total} corporations`;
+    else if (d.phase === 'items') label.textContent = `Contents: ${d.done}/${d.total} contracts`;
+    else if (d.phase === 'names') label.textContent = 'Resolving names…';
+    if (d.done) {
+      es.close();
+      label.textContent = d.error ? d.error : 'Done, loading…';
+      if (!d.error) setTimeout(() => location.reload(), 800);
+      else btn.disabled = false;
+    }
+  };
+  es.onerror = () => { es.close(); document.getElementById('idx-label').textContent = 'Connection error'; btn.disabled = false; };
+}
+
+async function allyItems(btn, contractId) {
+  const box = btn.parentElement.querySelector('.ally-items');
+  if (btn.dataset.loaded) { box.classList.toggle('d-none'); return; }
+  btn.disabled = true; const orig = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+  try {
+    const r = await fetch('/api/contracts/alliance/items?contract_id=' + contractId);
+    const d = await r.json();
+    box.innerHTML = (d.items && d.items.length)
+      ? d.items.map(it => `<div class="${it.included ? '' : 'text-danger'}">${it.included ? '' : '↩ '}${(it.quantity || 0).toLocaleString()}× ${escHtml(it.name)}${it.is_bpc ? ' <span class="badge badge-bpc" style="font-size:.6rem">BPC</span>' : ''}</div>`).join('')
+      : '<span class="text-muted">(contents not indexed yet - use Refresh)</span>';
+    btn.dataset.loaded = '1'; btn.innerHTML = '<i class="bi bi-box me-1"></i>items';
+  } catch (e) { box.innerHTML = '<span class="text-danger">load failed</span>'; btn.innerHTML = orig; }
+  btn.disabled = false;
+}
+</script>
+{% endblock %}
