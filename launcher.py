@@ -339,20 +339,18 @@ def _default_window_size(webview) -> tuple[int, int]:
     """Startup window size: wide enough to keep the navbar labels.
 
     The navbar drops to icon-only by measuring real overflow, not a fixed
-    breakpoint, so the default has to clear that flip with headroom - the
-    measurement is font-dependent and Windows does not lay text out identically
-    to Linux. Measured with the current labels (2026-08-22, after "Plan" became
-    "Manufacturing"): the bar needs 1845 px of content, so labels survive from
-    about 1840 px of window width and are gone at 1820. The previous threshold
-    was 1800 with the old label. 1920 keeps roughly the same reserve above the
-    flip as the old 1880 did. The height is unchanged.
+    breakpoint. Measured here, it keeps the labels from 1800 px up and loses them
+    at 1750 - and the old 1680 default sat just under that, so testers got
+    unlabelled icons every single time. 1880 leaves headroom above the flip,
+    which matters because the measurement is font-dependent and Windows does not
+    lay text out identically to Linux. The height is unchanged.
 
     Clamped to the screen, because a window wider than the display is worse than
     a few missing labels - it opens with its edges (and possibly the close
     button) off-screen. A laptop at 1366 px simply gets the largest window that
     fits and the icon-only navbar it would have had anyway.
     """
-    want_w, want_h = 1920, 1000
+    want_w, want_h = 1880, 1000
     try:
         screens = list(getattr(webview, "screens", None) or [])
         if screens:
