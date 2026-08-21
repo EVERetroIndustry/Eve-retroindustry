@@ -94,6 +94,29 @@ SCOPES = [
 ]
 
 
+def token_has_scope(access_token: str | None, scope: str) -> bool:
+    """True if the access token carries `scope`.
+
+    EVE SSO access tokens are JWTs whose `scp` claim lists the granted scopes, so
+    this answers "can this character call that endpoint?" without spending an ESI
+    request on a 403. Characters authorized before a scope was added keep working
+    for everything else, so the app has to pick a token that actually has it.
+    Signature is not verified - the claim is only used to choose between our own
+    stored tokens, never to authorize anything.
+    """
+    if not access_token:
+        return False
+    try:
+        claims = jwt.decode(access_token, options={"verify_signature": False})
+    except Exception:
+        return False
+    scp = claims.get("scp") or []
+    if isinstance(scp, str):
+        scp = [scp]
+    return scope in scp
+
+
+
 # ---------------------------------------------------------------------------
 # PKCE helpers
 # ---------------------------------------------------------------------------

@@ -34,7 +34,7 @@ from app.auth.token_store import (
     update_corporation_id,
     update_last_sync,
 )
-from app.auth.esi_oauth import start_web_login, cancel_web_login
+from app.auth.esi_oauth import start_web_login, cancel_web_login, token_has_scope
 from app.character.blueprints import fetch_blueprints, ensure_bp_table
 from app.character import wallet as wallet_api
 from app.character import orders as orders_api
@@ -5706,6 +5706,11 @@ async def _finalize_orders(conn, raw_orders: list[dict], type_names_fn, token: s
 
 # ── Contracts (personal / corporate) ───────────────────────────────────────────
 
+# The corporation contracts endpoint needs this scope. Characters authorized
+# before v0.8.30 do not have it and answer 403, so the app has to check.
+CORP_CONTRACT_SCOPE = "esi-contracts.read_corporation_contracts.v1"
+
+
 def _decorate_contracts(raw: list[dict], party_names: dict[int, str],
                         loc_names: dict[int, str]) -> list[dict]:
     out = []
@@ -5735,7 +5740,12 @@ def _decorate_contracts(raw: list[dict], party_names: dict[int, str],
             "for_corp":     c.get("for_corporation", False),
             "char_id":      c.get("_char_id") or 0,
             "corp_id":      c.get("_corp_id") or 0,
-            "party_label":  c.get("_party_label") or "",
+            # Who the contract is actually for. In the corporation view this is
+            # NOT the corporation we queried: /corporations/{id}/contracts/ also
+            # returns everything assigned to that corporation's ALLIANCE, issued
+            # by other member corps, so labelling rows with the queried corp told
+            # a straight lie. Fall back to the resolved assignee.
+            "party_label":  c.get("_party_label") or (party_names.get(aid, "") if aid else ""),
         })
     out.sort(key=lambda x: x["date_issued"], reverse=True)
     return out
@@ -5780,22 +5790,46 @@ async def contracts_page(request: Request, char: str = "", scope: str = "persona
         if all_chars:
             raw: list[dict] = []
             if scope == "corp":
-                corp_token: dict[int, str] = {}
+                # One token per corporation, but NOT just the first character we
+                # find: the endpoint needs CORP_CONTRACT_SCOPE, and a character
+                # authorized before the app asked for it answers 403. Picking such
+                # a character used to hide that corporation's contracts entirely
+                # (the error was dropped here), which is exactly how alliance
+                # contracts ended up looking like they belonged to another corp.
+                corp_cands: dict[int, list[str]] = {}
                 for cid, _cn in chars:
                     tok = _get_valid_token_for(conn, cid)
                     if not tok:
                         continue
                     corp_id = (get_character_row(conn, cid) or {}).get("corporation_id")
-                    if corp_id and corp_id not in corp_token:
-                        corp_token[corp_id] = tok
-                corp_names = await _resolve_party_names(set(corp_token)) if corp_token else {}
+                    if not corp_id:
+                        continue
+                    corp_cands.setdefault(corp_id, []).append(tok)
+                for corp_id, toks in corp_cands.items():
+                    # Scope carriers first; the rest stay as a fallback in case the
+                    # claim and reality ever disagree.
+                    toks.sort(key=lambda t: not token_has_scope(t, CORP_CONTRACT_SCOPE))
+                corp_names = await _resolve_party_names(set(corp_cands)) if corp_cands else {}
+                unreadable: list[str] = []
                 async with esi_client() as client:
-                    for corp_id, tok in corp_token.items():
-                        lst, _err = await contracts_api.fetch_corp_contracts(client, corp_id, tok)
-                        for c in (lst or []):
+                    for corp_id, toks in corp_cands.items():
+                        lst, err = None, None
+                        for tok in toks:
+                            lst, err = await contracts_api.fetch_corp_contracts(client, corp_id, tok)
+                            if lst is not None:
+                                break
+                        if lst is None:
+                            unreadable.append(corp_names.get(corp_id, str(corp_id)))
+                            continue
+                        for c in lst:
                             c["_corp_id"] = corp_id
-                            c["_party_label"] = corp_names.get(corp_id, str(corp_id))
                             raw.append(c)
+                if unreadable:
+                    ctx["corp_error"] = (
+                        "No character with corporation contract access for: "
+                        + ", ".join(unreadable)
+                        + ". Re-add one of its characters (the permission is newer "
+                          "than they are) or use one with the Accountant role.")
             else:
                 async with esi_client() as client:
                     for cid, cname in chars:
@@ -5839,6 +5873,14 @@ async def contracts_page(request: Request, char: str = "", scope: str = "persona
                             update_corporation_id(conn, plan_char_id, corp_id)
                 if not corp_id:
                     ctx["corp_error"] = "Could not determine the character's corporation."
+                    raw = []
+                elif not token_has_scope(token, CORP_CONTRACT_SCOPE):
+                    # Would be a guaranteed 403. Say why instead of blaming a role.
+                    ctx["corp_error"] = (
+                        "This character was added before the app asked for corporation "
+                        "contract access - re-add it to grant that permission, or pick "
+                        "All characters, which reads the corporation through another "
+                        "of its members.")
                     raw = []
                 else:
                     lst, err = await contracts_api.fetch_corp_contracts(client, corp_id, token)
