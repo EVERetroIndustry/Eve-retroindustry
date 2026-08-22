@@ -4,7 +4,8 @@
 Takes the local (real) eve_cache.db, builds an anonymized copy - fake pilot
 names/ids, fake corporations, generated wallet balances, renamed private
 structures - then starts the app against that copy and screenshots the
-Dashboard, Production Plan and Assets pages into docs/screenshots/.
+Dashboard, Production Plan, Assets, Alliance contracts and more into
+docs/screenshots/.
 
 Nothing traceable to the real account ends up in the images: item/blueprint
 structure is kept so the screenshots look realistic, but every identifying
@@ -302,6 +303,55 @@ def main() -> None:
                       list(names.items()))
         c.commit(); c.close()
 
+    # Alliance contracts come from ESI at runtime; the page itself only needs the
+    # local index, so seed a small anonymised one. Names here are invented on
+    # purpose - never ship real alliance data in a screenshot.
+    def _seed_alliance_contracts(db_path: str) -> None:
+        import sqlite3 as _sq
+        import time as _t
+        from app.web import contracts_helper as _ch
+        ALLY = 99000001
+        rows = [
+            # cid, type, price, reward, coll, vol, title, station, issuer, corp, type_id, qty
+            (9001, "item_exchange", 1_240_000_000, 0, 0, 118_000, "Ishtar - fitted, rigs in cargo",
+             "Ourapheh V - Moon 3 - Trade Post", "Vera Nightfall", "Retro Logistics.", 12005, 1),
+            (9002, "item_exchange", 86_000_000, 0, 0, 2_400, "T2 ammo bundle - 4 types",
+             "Ashab VII - Trade Hub", "Kel Sarrin", "Retro Logistics.", 12608, 5000),
+            (9003, "courier", 0, 42_000_000, 1_100_000_000, 335_000, "Ashab -> Ourapheh, 6 jumps",
+             "Ashab VII - Trade Hub", "Dax Orlenard", "Deep Space Freight", 0, 0),
+            (9004, "item_exchange", 315_000_000, 0, 0, 27_500, "Hulk - mining fit",
+             "Ashab IV - Refinery", "Mira Vex", "Orehaulers United", 22544, 1),
+            (9005, "auction", 0, 0, 0, 5, "Faction BPC lot - starting bid",
+             "Ourapheh V - Moon 3 - Trade Post", "Sen Talvar", "Retro Logistics.", 12005, 1),
+        ]
+        c = _sq.connect(db_path)
+        _ch.ensure_alliance_contract_tables(c)
+        now = _t.time()
+        for (cid, kind, price, rew, coll, vol, title, where, issuer, corp, tid, qty) in rows:
+            c.execute(
+                "INSERT OR REPLACE INTO alliance_contracts (contract_id, alliance_id,"
+                " source_corp_id, type, status, price, reward, collateral, buyout, volume,"
+                " date_issued, date_expired, days_to_complete, title, start_location_id,"
+                " end_location_id, start_name, end_name, issuer_id, issuer_corp_id,"
+                " issuer_name, issuer_corp_name, for_corp)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (cid, ALLY, 98000001, kind, "outstanding", price, rew, coll, 0, vol,
+                 "2026-08-18T09:00:00Z", "2026-09-14T09:00:00Z", 0, title,
+                 60003760, 0, where, "", 2100000000 + cid, 98000002, issuer, corp, 0))
+            if tid:
+                c.execute("INSERT INTO alliance_contract_items (contract_id, type_id,"
+                          " quantity, is_included, is_bpc) VALUES (?,?,?,?,?)",
+                          (cid, tid, qty, 1, 0))
+        c.execute("INSERT OR REPLACE INTO alliance_contract_meta (alliance_id, indexed_at,"
+                  " contract_count) VALUES (?,?,?)", (ALLY, now, len(rows)))
+        c.execute("CREATE TABLE IF NOT EXISTS corp_alliance_cache (corporation_id INTEGER"
+                  " PRIMARY KEY, alliance_id INTEGER, cached_at REAL)")
+        c.execute("INSERT OR REPLACE INTO corp_alliance_cache VALUES (?,?,?)",
+                  (98000001, ALLY, now))
+        c.commit(); c.close()
+
+    _seed_alliance_contracts(demo_db)
+
     _seed_planet_names(demo_db)
 
     @m.app.get("/demo/assetsshot")
@@ -375,6 +425,7 @@ def main() -> None:
         "orders":          f"http://127.0.0.1:{PORT}/orders?char=all",
         "prices":          f"http://127.0.0.1:{PORT}/demo/pricesshot",
         "planets":         f"http://127.0.0.1:{PORT}/planets",
+        "alliance-contracts": f"http://127.0.0.1:{PORT}/contracts/alliance?alliance=99000001",
     }
     HEIGHT = {"assets": 1750}
     VTB = {"assets": 13000, "prices": 12000}

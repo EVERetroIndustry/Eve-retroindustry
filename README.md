@@ -15,7 +15,7 @@ A local industry calculator for EVE Online. Runs as a web app on your machine - 
 - **Multi-character Dashboard** - log in any number of alts via EVE SSO; see all characters at a glance with portrait, corporation, current docked location, the skill in training with a live countdown, asset count, and estimated net worth. A **Total available cash** tile sums wallet ISK across every character
 - **Production Planner** - enter any ship or component, pick a station, get a full bill of materials with Jita buy/sell prices, your asset coverage, manufacturing job time and fees (EIV × SCI × facility tax × SCC), profit vs. market and vs. stock, and the cheapest make-vs-buy decomposition. Inputs can be priced at **Jita sell** (instant-buy) or **Jita buy** (buy orders, how manufacturers actually source), and the **make-vs-buy optimiser weighs job install fees** - so it only builds a component when building genuinely wins
 - **Blueprint Library** - full character (and alt) blueprint list with ME/TE levels, BPO vs BPC, runs remaining, organised by station and container
-- **Asset Tracking** - character + corporation inventory grouped by location and container (incl. all corp hangar divisions), with estimated ISK value per stack and per station
+- **Asset Tracking** - character + corporation inventory grouped by location and container (incl. all corp hangar divisions, under the corporation's own names for them), with estimated ISK value per stack and per station. Assembled ships open up into an in-game style fitting layout - high / mid / low / rigs / drone bay / cargo
 
 ![Production Plan - Raven (ME 10 / TE 20)](docs/screenshots/production-plan.png)
 
@@ -37,8 +37,12 @@ A local industry calculator for EVE Online. Runs as a web app on your machine - 
 
 ![Planetary Interaction - colonies, extractor timers and factory chains](docs/screenshots/planets.png)
 
-- **Contracts** - browse your own **personal + corporation** contracts, plus a **public contract browser**: index a whole region once, then search it locally by item, type, or price (ESI exposes no contract search, so the region is fully indexed into a local cache). Public contract prices can be pulled straight into the Production Planner for a side-by-side profit comparison against market prices
-- **Wallet** - personal and corporation wallet balances
+- **Contracts** - **personal, corporation and alliance** contracts side by side, plus a **public contract browser**. Every tab shares the same filter bar in the spirit of the in-game contract search: item inside the contract, type, status, price / reward / collateral / volume bounds, location, issuer, title, days left, "hide my own", and click-to-sort columns
+- **Alliance contracts** - the contracts your alliance offers, which is not something ESI advertises: they arrive through the corporation endpoint, and the app indexes them locally so you can search **by the items inside them**. It fills itself in the background (contents for open contracts only, spread over every character that can read them) and says how far the search can see while it works. Contract prices - public **or** alliance, or whichever is cheaper - feed straight into the Production Planner's profit comparison
+
+![Alliance contracts - the whole alliance's offers, searchable by item](docs/screenshots/alliance-contracts.png)
+
+- **Wallet** - personal and corporation wallet balances, per corporation wallet division, using the corporation's **own division names** where it has set them
 - **In-app updates** - check for new releases and apply them without leaving the app
 - **System tray** - runs in the system tray; right-click for **Open App** and **Quit**
 
