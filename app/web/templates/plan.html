@@ -505,14 +505,25 @@ function switchPlanChar(charId) {
       <span class="text-muted" style="font-size:.8rem">Contract&nbsp;</span>
       <span id="contract-price-val" class="fw-semibold d-none"></span>
       <span id="contract-price-badge"></span>
+      {# Which contracts the price may come from. A select rather than checkboxes:
+         it is one number with alternative origins, and the case for ticking two
+         boxes ("whichever is cheaper") is the third option. #}
+      <select id="contract-source" onchange="rememberContractSource(this.value)"
+              class="form-select form-select-sm" style="width:118px;font-size:.7rem;height:24px;padding:1px 20px 1px 6px"
+              title="Where the contract price may come from. Alliance uses the app's own alliance contract index; Public needs the region indexed in the Public browser.">
+        <option value="public">Public</option>
+        <option value="alliance">Alliance</option>
+        <option value="both">Cheapest</option>
+      </select>
       <button type="button" data-location-id="{{ _sell_loc_id }}" data-type-id="{{ result.product_type_id }}"
               onclick="fetchContractPrice(this)"
               class="btn btn-sm btn-ghost" style="font-size:.75rem;padding:1px 7px"
-              title="Cheapest price/unit from indexed public contracts in the station's region">
+              title="Cheapest price/unit from contracts, using the source picked next to this button">
         <i class="bi bi-cloud-download me-1"></i>Fetch contract
       </button>
-      {# Manual price - ESI can't read alliance/private contracts, so let the user
-         type the price they see in-game. Persisted per product in localStorage. #}
+      {# Manual price - alliance contracts ARE readable now (see the source select),
+         but contracts assigned to a single character or to a corporation are not
+         indexed, so let the user type what they see in-game. Persisted per product. #}
       <input id="contract-manual-input" type="text" inputmode="decimal"
              data-type-id="{{ result.product_type_id }}" placeholder="or type price/unit"
              onchange="applyManualContract(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();applyManualContract(this.value);this.blur();}"
@@ -2050,8 +2061,26 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // Fetch the contract price once (no side effects).
+function contractSource() {
+  const sel = document.getElementById('contract-source');
+  return (sel && sel.value) || 'public';
+}
+function rememberContractSource(v) {
+  try { localStorage.setItem('contractSource', v); } catch (e) {}
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const sel = document.getElementById('contract-source');
+  if (!sel) return;
+  try {
+    const v = localStorage.getItem('contractSource');
+    if (v) sel.value = v;
+  } catch (e) {}
+});
+
 async function _fetchContractOnce(locationId, typeId) {
-  const r = await fetch(`/api/plan/contract-price?location_id=${locationId}&type_id=${typeId}`);
+  const p = new URLSearchParams({location_id: locationId, type_id: typeId,
+                                 source: contractSource()});
+  const r = await fetch('/api/plan/contract-price?' + p);
   return r.json();
 }
 
@@ -2111,14 +2140,19 @@ async function fetchContractPrice(btn) {
     let d = await _fetchContractOnce(locationId, typeId);
     const ageStale = d.indexed_at && (Date.now() / 1000 - d.indexed_at) > CONTRACT_TTL;
     // Index / re-index the region inline (with progress), then retry.
-    if (d.region_id && ((!d.ok && d.not_indexed) || isRefresh || ageStale)) {
+    const usesPublic = contractSource() !== 'alliance';
+    if (usesPublic && d.region_id && ((!d.ok && d.not_indexed) || isRefresh || ageStale)) {
       const ok = await indexContractRegion(d.region_id);
       if (ok) d = await _fetchContractOnce(locationId, typeId);
     }
     if (d.ok && d.price) {
-      const badge = d.is_bundle
+      const badge = (d.is_bundle
         ? '<span class="badge bg-warning text-dark" style="font-size:.55rem" title="Price from a bundle contract - approximate (also includes other items)">bundle</span>'
-        : '<span class="badge bg-success" style="font-size:.55rem" title="Only this item">single</span>';
+        : '<span class="badge bg-success" style="font-size:.55rem" title="Only this item">single</span>')
+        // Which source actually won, and for an alliance contract also where it is.
+        + (d.source === 'alliance'
+            ? ` <span class="badge bg-secondary" style="font-size:.55rem" title="${escHtml(d.location || 'alliance contract')}">alliance</span>`
+            : '');
       if (valEl) { valEl.textContent = _isk(d.price) + ' ISK/unit'; valEl.classList.remove('d-none'); valEl.style.color = ''; valEl.style.fontSize = ''; }
       if (badgeEl) badgeEl.innerHTML = badge;
       if (cmpBadge) cmpBadge.innerHTML = badge;

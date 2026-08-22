@@ -728,6 +728,47 @@ def search_alliance_contracts(conn: sqlite3.Connection, alliance_id: int, *,
     return [dict(zip(cols, r)) for r in rows], total
 
 
+def best_alliance_contract_price(conn: sqlite3.Connection, alliance_ids,
+                                 type_id: int) -> dict | None:
+    """Cheapest price/unit of a product from OPEN alliance item-exchange contracts.
+
+    Same shape and same reasoning as best_contract_price for public contracts:
+    prefer a contract holding only this product (a clean price per unit), fall back
+    to a bundle and say so, because there the price also covers the other items.
+    Alliance contracts are not region-scoped here - an alliance offer three jumps
+    away is still an offer - so the winning contract's location comes back with it.
+    """
+    ensure_alliance_contract_tables(conn)
+    ids = [int(a) for a in (alliance_ids or []) if a]
+    if not ids:
+        return None
+    ph = ",".join("?" * len(ids))
+    rows = conn.execute(f"""
+        SELECT c.contract_id, c.price, i.quantity, c.start_name,
+               (SELECT COUNT(*) FROM alliance_contract_items x
+                 WHERE x.contract_id = c.contract_id AND x.is_included = 1) AS incl
+        FROM alliance_contracts c
+        JOIN alliance_contract_items i ON i.contract_id = c.contract_id
+        WHERE c.alliance_id IN ({ph}) AND c.type = 'item_exchange'
+          AND c.status = 'outstanding' AND c.price > 0
+          AND i.type_id = ? AND i.is_included = 1
+    """, (*ids, type_id)).fetchall()
+    singles: list[tuple] = []
+    bundles: list[tuple] = []
+    for cid, price, qty, where, incl in rows:
+        if not qty or qty <= 0:
+            continue
+        (singles if incl == 1 else bundles).append((price / qty, cid, where))
+    pick, is_bundle = (min(singles), False) if singles else (
+        (min(bundles), True) if bundles else (None, False))
+    if not pick:
+        return None
+    per_unit, cid, where = pick
+    return {"price": per_unit, "is_bundle": is_bundle, "contract_id": cid,
+            "location": where or "", "single_count": len(singles),
+            "bundle_count": len(bundles)}
+
+
 def get_alliance_contract_items(conn: sqlite3.Connection, contract_id: int) -> list[dict]:
     """Contents of an indexed contract, grouped like the in-game window.
 

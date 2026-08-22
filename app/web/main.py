@@ -4362,26 +4362,70 @@ async def fetch_plan_sell_price(request: Request, location_id: int, type_id: int
 
 
 @app.get("/api/plan/contract-price")
-async def api_plan_contract_price(request: Request, location_id: int, type_id: int):
-    """Cheapest price per unit of the product from indexed public contracts in
-    the given station's region. Requires the region to have been indexed first (Public browser)."""
+async def api_plan_contract_price(request: Request, location_id: int, type_id: int,
+                                  source: str = "public"):
+    """Cheapest price per unit of the product from contracts.
+
+    `source`: "public" (indexed public contracts in the station's region),
+    "alliance" (the open alliance contracts the app indexes), or "both" - the
+    cheaper of the two, saying which one won. Alliance used to be impossible here,
+    which is why the manual price field exists; it is not impossible any more.
+    """
+    if source not in ("public", "alliance", "both"):
+        source = "public"
     conn = get_conn()
     try:
-        token = get_active_token(request, conn)
-        region_id = await get_region_for_location(conn, location_id, token)
-        if not region_id:
-            return {"ok": False, "error": "Could not determine the station's region."}
-        status = contracts_helper.get_index_status(conn, region_id)
-        if not status:
-            return {"ok": False, "not_indexed": True, "region_id": region_id,
-                    "error": "The contract region is not indexed - index it in the Public browser."}
-        best = contracts_helper.best_contract_price(conn, region_id, type_id)
-        if not best:
-            return {"ok": False, "error": "No public contract with this product in the region.",
-                    "region_id": region_id, "indexed_at": status.get("indexed_at")}
+        out: dict = {"source_asked": source}
+        pub = None
+        pub_err = None
+        if source in ("public", "both"):
+            token = get_active_token(request, conn)
+            region_id = await get_region_for_location(conn, location_id, token)
+            if not region_id:
+                pub_err = {"ok": False, "error": "Could not determine the station's region."}
+            else:
+                status = contracts_helper.get_index_status(conn, region_id)
+                out["region_id"] = region_id
+                if not status:
+                    pub_err = {"ok": False, "not_indexed": True, "region_id": region_id,
+                               "error": "The contract region is not indexed - index it"
+                                        " in the Public browser."}
+                else:
+                    out["indexed_at"] = status.get("indexed_at")
+                    pub = contracts_helper.best_contract_price(conn, region_id, type_id)
+                    if pub:
+                        pub["source"] = "public"
+                    else:
+                        pub_err = {"ok": False, "region_id": region_id,
+                                   "indexed_at": status.get("indexed_at"),
+                                   "error": "No public contract with this product in"
+                                            " the region."}
+
+        ally = None
+        ally_err = None
+        if source in ("alliance", "both"):
+            alliances = contracts_helper.indexed_alliances(conn)
+            if not alliances:
+                ally_err = {"ok": False, "error": "No alliance contracts indexed yet -"
+                                                  " open the Contracts / Alliance tab once."}
+            else:
+                ally = contracts_helper.best_alliance_contract_price(
+                    conn, alliances, type_id)
+                if ally:
+                    ally["source"] = "alliance"
+                else:
+                    ally_err = {"ok": False,
+                                "error": "No open alliance contract with this product."}
+
+        cands = [c for c in (pub, ally) if c]
+        if not cands:
+            # Report the failure of what was actually asked for.
+            err = (pub_err or ally_err) if source != "alliance" else (ally_err or pub_err)
+            out.update(err or {"ok": False, "error": "No contract with this product."})
+            return out
+        best = min(cands, key=lambda c: c["price"])
+        best.update(out)
         best["ok"] = True
-        best["region_id"] = region_id
-        best["indexed_at"] = status.get("indexed_at")   # so the client can re-index a stale index
         return best
     finally:
         conn.close()

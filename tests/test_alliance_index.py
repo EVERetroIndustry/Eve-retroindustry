@@ -616,3 +616,81 @@ def test_fill_status_is_harmless_for_an_alliance_nobody_indexed(client, app_modu
     d = client.get("/api/contracts/alliance/fill-status?alliance_id=42").json()
     assert d["contract_count"] == 0 and d["missing"] == 0
     assert d["phase"] == "starting"
+
+
+# ── feeding the Plan page's contract price ────────────────────────────────────
+
+def test_best_alliance_price_prefers_a_contract_holding_only_that_item(conn):
+    """Same rule as the public browser: a bundle price also covers other items."""
+    listings = {CORP_A: [
+        _contract(1, price=100_000_000),      # 10 units of the product -> 10M/unit
+        _contract(2, price=60_000_000),       # 1 unit + something else (bundle)
+        _contract(3, price=5_000_000, status="finished"),   # cannot be accepted
+    ]}
+    items = {1: [{"type_id": 22544, "quantity": 10}],
+             2: [{"type_id": 22544, "quantity": 1}, {"type_id": 34, "quantity": 500}],
+             3: [{"type_id": 22544, "quantity": 1}]}
+    _run_index(conn, [(CORP_A, "t1")], listings, items=items)
+    best = ch.best_alliance_contract_price(conn, [ALLIANCE], 22544)
+    assert best["contract_id"] == 1 and best["price"] == 10_000_000
+    assert best["is_bundle"] is False
+    assert best["single_count"] == 1 and best["bundle_count"] == 1
+    # Nothing for a product nobody offers, and nothing without an alliance.
+    assert ch.best_alliance_contract_price(conn, [ALLIANCE], 645) is None
+    assert ch.best_alliance_contract_price(conn, [], 22544) is None
+
+
+def test_best_alliance_price_falls_back_to_a_bundle_and_says_so(conn):
+    listings = {CORP_A: [_contract(1, price=60_000_000)]}
+    items = {1: [{"type_id": 22544, "quantity": 2}, {"type_id": 34, "quantity": 500}]}
+    _run_index(conn, [(CORP_A, "t1")], listings, items=items)
+    best = ch.best_alliance_contract_price(conn, [ALLIANCE], 22544)
+    assert best["is_bundle"] is True and best["price"] == 30_000_000
+
+
+def test_plan_contract_price_can_read_the_alliance_index(client, app_module, conn):
+    """The Plan page could only use public contracts; alliance is now a real source."""
+    listings = {CORP_A: [_contract(1, price=50_000_000)]}
+    _run_index(conn, [(CORP_A, "t1")], listings,
+               items={1: [{"type_id": 22544, "quantity": 5}]})
+    d = client.get("/api/plan/contract-price?location_id=60003760&type_id=22544"
+                   "&source=alliance").json()
+    assert d["ok"] and d["price"] == 10_000_000
+    assert d["source"] == "alliance"
+    # A product nobody offers is a clean "no", not an error about public indexes.
+    d = client.get("/api/plan/contract-price?location_id=60003760&type_id=645"
+                   "&source=alliance").json()
+    assert not d["ok"] and "alliance" in d["error"]
+
+
+def test_cheapest_source_picks_the_cheaper_of_public_and_alliance(client, app_module, conn):
+    listings = {CORP_A: [_contract(1, price=50_000_000)]}          # 10M/unit
+    _run_index(conn, [(CORP_A, "t1")], listings,
+               items={1: [{"type_id": 22544, "quantity": 5}]})
+
+    def _public(price):
+        async def _region(conn_, loc, token=None):
+            return 10000002
+        return _region, {"price": price, "is_bundle": False, "contract_id": 99,
+                         "single_count": 1, "bundle_count": 0}
+
+    real = (app_module.get_region_for_location, app_module.contracts_helper.get_index_status,
+            app_module.contracts_helper.best_contract_price)
+    try:
+        region, pub = _public(4_000_000)
+        app_module.get_region_for_location = region
+        app_module.contracts_helper.get_index_status = lambda c, r: {"indexed_at": 1.0}
+        app_module.contracts_helper.best_contract_price = lambda c, r, t: dict(pub)
+        d = client.get("/api/plan/contract-price?location_id=60003760&type_id=22544"
+                       "&source=both").json()
+        assert d["ok"] and d["price"] == 4_000_000 and d["source"] == "public"
+
+        app_module.contracts_helper.best_contract_price = lambda c, r, t: {
+            "price": 25_000_000, "is_bundle": False, "contract_id": 99,
+            "single_count": 1, "bundle_count": 0}
+        d = client.get("/api/plan/contract-price?location_id=60003760&type_id=22544"
+                       "&source=both").json()
+        assert d["ok"] and d["price"] == 10_000_000 and d["source"] == "alliance"
+    finally:
+        (app_module.get_region_for_location, app_module.contracts_helper.get_index_status,
+         app_module.contracts_helper.best_contract_price) = real
