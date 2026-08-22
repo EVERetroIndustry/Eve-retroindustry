@@ -6279,6 +6279,146 @@ def _i(v: str) -> int | None:
         return None
 
 
+# ── Alliance contracts: keeping the index filled without anyone clicking ──────
+#
+# Listing an alliance is cheap; its contract CONTENTS are one ESI call each, inside
+# a bucket of 600 tokens / 15 min per character (2 per call = 300 calls). Contents
+# are only fetched for contracts that can still be accepted, which on a real
+# alliance is ~575 instead of ~2900 - so with two or more capable characters the
+# whole thing lands in a single pass. When it does not (one character, a huge
+# alliance), the worker waits out the window and continues by itself.
+#
+# The state lives here, in the process, so the page can show it no matter how much
+# the user clicks around - a spinner and a countdown that survive navigation.
+_ALLIANCE_FILL: dict[int, dict] = {}
+_ALLIANCE_WORKER: dict[str, object] = {}
+_ALLIANCE_LIST_TTL = 30 * 60        # re-list an alliance at most this often
+_ALLIANCE_WAIT = 15 * 60 + 30       # the ESI token window, plus a little slack
+
+
+def alliance_fill_state(alliance_id: int) -> dict:
+    st = dict(_ALLIANCE_FILL.get(alliance_id) or {})
+    if st.get("retry_at"):
+        st["retry_in"] = max(0, int(st["retry_at"] - _time.time()))
+    return st
+
+
+def _set_fill(alliance_id: int, **kw) -> None:
+    st = _ALLIANCE_FILL.setdefault(alliance_id, {})
+    st.update(kw)
+    st["updated"] = _time.time()
+
+
+async def _alliance_fill_pass(conn: sqlite3.Connection, alliance_id: int,
+                              sources: list) -> dict:
+    """One pass for one alliance: re-list if stale, then top up the contents."""
+    async def _parties(ids):
+        return await _resolve_party_names(set(ids))
+
+    async def _locations(ids):
+        try:
+            return await resolve_station_names_bulk(list(ids), token=sources[0][1],
+                                                    conn=conn)
+        except Exception:
+            return load_location_names_from_db(conn)
+
+    status = contracts_helper.get_alliance_index_status(conn, alliance_id)
+    age = _time.time() - (status or {}).get("indexed_at", 0)
+    if not status or age > _ALLIANCE_LIST_TTL:
+        _set_fill(alliance_id, phase="listing", retry_at=0)
+        listed = await contracts_helper.list_and_store_alliance(
+            conn, alliance_id, sources, _parties, _locations)
+        _set_fill(alliance_id, listed=listed)
+
+    missing = len(contracts_helper.contracts_missing_items(conn, alliance_id))
+    if not missing:
+        _set_fill(alliance_id, phase="idle", missing=0, retry_at=0)
+        return {"rate_limited": False, "worked": False}
+
+    _set_fill(alliance_id, phase="contents", missing=missing, done=0,
+              total=missing, retry_at=0)
+
+    def _progress(done, total, failed):
+        _set_fill(alliance_id, done=done, total=total, failed=failed)
+
+    res = await contracts_helper.fill_alliance_items(
+        conn, alliance_id, sources, progress=_progress)
+    if res["rate_limited"]:
+        _set_fill(alliance_id, phase="waiting", missing=res["remaining"],
+                  retry_at=_time.time() + _ALLIANCE_WAIT)
+    else:
+        left = len(contracts_helper.contracts_missing_items(conn, alliance_id))
+        _set_fill(alliance_id, phase="idle" if not left else "contents", missing=left,
+                  retry_at=0)
+    return {"rate_limited": res["rate_limited"], "worked": True}
+
+
+async def _alliance_fill_loop() -> None:
+    """Keeps every readable alliance's index listed and its contents complete."""
+    while True:
+        delay = 5 * 60
+        conn = get_conn()
+        try:
+            sources, _blocked = await _alliance_sources(conn)
+            targets = set(sources) | set(contracts_helper.indexed_alliances(conn))
+            for aid in targets:
+                srcs = sources.get(aid) or []
+                if not srcs:
+                    continue
+                st = _ALLIANCE_FILL.get(aid) or {}
+                if st.get("retry_at", 0) > _time.time():
+                    delay = min(delay, 60)      # waiting out the ESI window
+                    continue
+                try:
+                    res = await _alliance_fill_pass(conn, aid, srcs)
+                except Exception as exc:
+                    _set_fill(aid, phase="error", error=str(exc)[:200])
+                    continue
+                if res["rate_limited"]:
+                    delay = min(delay, 60)
+                elif (_ALLIANCE_FILL.get(aid) or {}).get("missing"):
+                    delay = min(delay, 5)       # more to fetch, keep going
+        except Exception:
+            pass
+        finally:
+            conn.close()
+        await asyncio.sleep(delay)
+
+
+def ensure_alliance_filler() -> None:
+    """Start the background filler once, on demand (visiting the tab is enough)."""
+    task = _ALLIANCE_WORKER.get("task")
+    if task is not None and not task.done():        # type: ignore[union-attr]
+        return
+    try:
+        _ALLIANCE_WORKER["task"] = asyncio.create_task(_alliance_fill_loop())
+    except RuntimeError:
+        pass                                        # no running loop (tests, CLI)
+
+
+@app.get("/api/contracts/alliance/fill-status")
+async def api_alliance_fill_status(alliance_id: int):
+    """What the background filler is doing - polled by the page, so the spinner and
+    the countdown are the same however often the user navigates away."""
+    conn = get_conn()
+    try:
+        status = contracts_helper.get_alliance_index_status(conn, alliance_id) or {}
+        missing = len(contracts_helper.contracts_missing_items(conn, alliance_id))
+    finally:
+        conn.close()
+    st = alliance_fill_state(alliance_id)
+    return {
+        "phase": st.get("phase") or ("idle" if status else "starting"),
+        "done": st.get("done") or 0, "total": st.get("total") or 0,
+        "retry_in": st.get("retry_in") or 0,
+        "missing": missing,
+        "contract_count": status.get("contract_count") or 0,
+        "with_items": status.get("with_items") or 0,
+        "outstanding": status.get("outstanding") or 0,
+        "error": st.get("error"),
+    }
+
+
 @app.get("/contracts/alliance", response_class=HTMLResponse)
 async def alliance_contracts_page(
         request: Request, alliance: int = 0, item: str = "", exact: str = "",
@@ -6335,6 +6475,10 @@ async def alliance_contracts_page(
             return _tr("contracts_alliance.html", request, ctx)
         alliance_id = alliance if alliance in known else ctx["alliances"][0]["id"]
         ctx["alliance_id"] = alliance_id
+        # Opening the tab is all it takes: from here the index keeps itself listed
+        # and its contents complete, without anyone pressing a button.
+        if sources:
+            ensure_alliance_filler()
         ctx["alliance_name"] = names.get(alliance_id, str(alliance_id))
         ctx["status_info"] = contracts_helper.get_alliance_index_status(conn, alliance_id)
         if ctx["status_info"]:
@@ -6359,6 +6503,8 @@ async def alliance_contracts_page(
 @app.get("/api/contracts/alliance/index")
 async def api_alliance_index(request: Request, alliance_id: int):
     """SSE stream: index the alliance's contracts (listing + missing items)."""
+    ensure_alliance_filler()
+
     async def gen():
         conn = get_conn()
         try:

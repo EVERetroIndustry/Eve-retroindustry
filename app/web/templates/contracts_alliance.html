@@ -35,18 +35,23 @@
       {% if status_info %}
       <span class="text-muted small ms-2">
         {{ "{:,}".format(status_info.contract_count) }} contracts
-        ({{ "{:,}".format(status_info.outstanding) }} outstanding) &middot; contents for
-        {{ "{:,}".format(status_info.with_items) }}/{{ "{:,}".format(status_info.contract_count) }}
-        &middot; indexed
+        ({{ "{:,}".format(status_info.outstanding) }} outstanding) &middot; indexed
         <span id="idx-age" data-ts="{{ status_info.indexed_at }}"></span>
       </span>
       {% else %}
-      <span class="text-warning small ms-2">not indexed yet</span>
+      <span class="text-muted small ms-2">reading the alliance's contracts…</span>
       {% endif %}
+      {# Filled in by the poll below: the app tops the index up on its own, so this
+         reports what is happening rather than asking for another click. It reads the
+         state from the server, so it survives navigating away and back. #}
+      <span class="small ms-2" id="fill-state" data-alliance="{{ alliance_id }}"
+            data-contracts="{{ status_info.contract_count if status_info else 0 }}"
+            data-items="{{ status_info.with_items if status_info else 0 }}"></span>
     </div>
-    <button class="btn btn-sm {% if status_info %}btn-outline-secondary{% else %}btn-eve{% endif %}"
-            id="index-btn" onclick="indexAlliance({{ alliance_id }})">
-      <i class="bi bi-cloud-download me-1"></i>{% if status_info %}Refresh{% else %}Index alliance contracts{% endif %}
+    <button class="btn btn-sm btn-outline-secondary" id="index-btn"
+            title="The index keeps itself up to date; this just does it now"
+            onclick="indexAlliance({{ alliance_id }})">
+      <i class="bi bi-cloud-download me-1"></i>Refresh now
     </button>
   </div>
   <div id="index-progress" class="d-none px-3 pb-3">
@@ -154,6 +159,54 @@
   const ts = parseFloat(el.dataset.ts) * 1000;
   const mins = Math.floor((Date.now() - ts) / 60000);
   el.textContent = mins < 1 ? 'just now' : (mins < 60 ? mins + ' min' : Math.floor(mins/60) + ' h') + ' ago';
+})();
+
+// ── what the background filler is doing ───────────────────────────────────────
+(function(){
+  const el = document.getElementById('fill-state');
+  if (!el) return;
+  const aid = el.dataset.alliance;
+  if (!aid || aid === '0') return;
+  const had = {contracts: +el.dataset.contracts, items: +el.dataset.items};
+  let reloaded = false;
+  const spin = '<span class="spinner-border spinner-border-sm me-1" style="width:.7rem;height:.7rem"></span>';
+  const mmss = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+
+  async function poll() {
+    let d;
+    try {
+      d = await (await fetch('/api/contracts/alliance/fill-status?alliance_id=' + aid)).json();
+    } catch (e) { return; }
+    if (d.phase === 'listing') {
+      el.className = 'small ms-2 text-muted';
+      el.innerHTML = spin + 'reading the contract list…';
+    } else if (d.phase === 'contents' && d.total) {
+      el.className = 'small ms-2 text-muted';
+      el.innerHTML = spin + `contents ${d.done.toLocaleString()}/${d.total.toLocaleString()}`;
+    } else if (d.phase === 'waiting') {
+      // The one case worth a countdown: ESI's 15-minute window has to pass.
+      el.className = 'small ms-2 text-warning';
+      el.innerHTML = spin + `waiting for the ESI limit - ${d.missing.toLocaleString()} to go, `
+        + `retrying in ${mmss(d.retry_in)}`;
+    } else if (d.missing) {
+      el.className = 'small ms-2 text-muted';
+      el.innerHTML = `${d.missing.toLocaleString()} contracts still without contents`;
+    } else if (d.error) {
+      el.className = 'small ms-2 text-danger';
+      el.textContent = d.error;
+    } else {
+      el.className = 'small ms-2 text-muted';
+      el.innerHTML = `contents complete (${(d.with_items || 0).toLocaleString()})`;
+    }
+    // The page was rendered before this data existed - show it.
+    const grew = d.contract_count > had.contracts || d.with_items >= had.items + 50;
+    if (!reloaded && grew && d.phase !== 'contents' && d.phase !== 'listing') {
+      reloaded = true;
+      setTimeout(() => location.reload(), 500);
+    }
+  }
+  poll();
+  setInterval(poll, 4000);
 })();
 
 function indexAlliance(allianceId) {

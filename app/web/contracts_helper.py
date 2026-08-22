@@ -253,6 +253,11 @@ _ITEM_FLUSH_EVERY = 100
 # Consecutive-ish failures that mean "the rate limit is saying no". Stop rather than
 # spend the rest of the run on requests that come back empty.
 _ITEM_FAIL_LIMIT = 25
+# Contents are only fetched for contracts somebody could still accept. Finished and
+# deleted ones cannot be taken, so their contents answer no question anyone asks -
+# and skipping them is what turns "three runs over 45 minutes" into a single run:
+# on a real alliance that is 574 contracts instead of 2875.
+_ITEM_STATUSES = ("outstanding",)
 
 def ensure_alliance_contract_tables(conn: sqlite3.Connection) -> None:
     conn.executescript("""
@@ -331,12 +336,14 @@ def contracts_missing_items(conn: sqlite3.Connection, alliance_id: int) -> list[
     """Indexed item_exchange/auction contracts whose items were never fetched.
     Contract contents never change, so a reindex only has to fetch these."""
     ensure_alliance_contract_tables(conn)
+    ph = ",".join("?" * len(_ITEM_STATUSES))
     return [r[0] for r in conn.execute(
-        "SELECT c.contract_id FROM alliance_contracts c"
-        " WHERE c.alliance_id=? AND c.type IN ('item_exchange','auction')"
-        "   AND NOT EXISTS (SELECT 1 FROM alliance_contract_items i"
-        "                    WHERE i.contract_id = c.contract_id)",
-        (alliance_id,)).fetchall()]
+        f"SELECT c.contract_id FROM alliance_contracts c"
+        f" WHERE c.alliance_id=? AND c.type IN ('item_exchange','auction')"
+        f"   AND c.status IN ({ph})"
+        f"   AND NOT EXISTS (SELECT 1 FROM alliance_contract_items i"
+        f"                    WHERE i.contract_id = c.contract_id)",
+        (alliance_id, *_ITEM_STATUSES)).fetchall()]
 
 
 def _store_alliance(conn: sqlite3.Connection, alliance_id: int, contracts: list[dict],
@@ -395,6 +402,103 @@ def _store_alliance_items(conn: sqlite3.Connection, items_by_cid: dict[int, list
     conn.commit()
 
 
+async def list_and_store_alliance(conn: sqlite3.Connection, alliance_id: int,
+                                   sources: list[tuple[int, str]],
+                                   resolve_parties, resolve_locations) -> int:
+    """Fetch the alliance's contract list through every corporation we can read and
+    store it (names resolved first). Returns how many contracts are listed.
+
+    Cheap: a few pages per corporation. The expensive half is the contents.
+    """
+    ensure_alliance_contract_tables(conn)
+    found: dict[int, dict] = {}
+    per_corp: dict[int, str] = {}
+    for corp_id, token in sources:
+        per_corp.setdefault(corp_id, token)
+    for corp_id, token in per_corp.items():
+        async with esi_client() as client:
+            lst, _err = await contracts_api.fetch_corp_contracts(client, corp_id, token)
+        for c in (lst or []):
+            if c.get("assignee_id") != alliance_id:
+                continue
+            cid = c.get("contract_id")
+            if cid and cid not in found:
+                c["_corp_id"] = corp_id
+                found[cid] = c
+    contracts = list(found.values())
+    if not contracts:
+        return 0
+    party_ids = {c[k] for c in contracts for k in ("issuer_id", "issuer_corporation_id")
+                 if c.get(k)}
+    loc_ids = {c[k] for c in contracts for k in ("start_location_id", "end_location_id")
+               if c.get(k)}
+    names = await resolve_parties(party_ids) if party_ids else {}
+    loc_names = await resolve_locations(loc_ids) if loc_ids else {}
+    _store_alliance(conn, alliance_id, contracts, names, loc_names)
+    return len(contracts)
+
+
+async def fill_alliance_items(conn: sqlite3.Connection, alliance_id: int,
+                              sources: list[tuple[int, str]], progress=None) -> dict:
+    """Fetch the missing contract contents, spread over every capable character.
+
+    Stores in batches, so being interrupted costs nothing. Stops early when ESI
+    starts refusing (the corp-contract bucket is 600 tokens / 15 min PER CHARACTER,
+    2 per call) and says so, instead of spending the rest of the run on refusals.
+
+    Returns {"fetched", "failed", "attempted", "remaining", "rate_limited"}.
+    """
+    ensure_alliance_contract_tables(conn)
+    todo = contracts_missing_items(conn, alliance_id)
+    if not todo:
+        return {"fetched": 0, "failed": 0, "attempted": 0, "remaining": 0,
+                "rate_limited": False}
+    budget = _ITEM_CALLS_PER_TOKEN * max(1, len(sources))
+    need, left_over = todo[:budget], max(0, len(todo) - budget)
+    stored = [0]
+    failed = [0]
+    done = [0]
+    batch: dict[int, list[dict]] = {}
+    lock = asyncio.Lock()
+    give_up = asyncio.Event()
+
+    async def _one(client, contract_id, corp_id, token):
+        if give_up.is_set():
+            return
+        async with _ALLIANCE_ITEM_SEM:
+            its = await contracts_api.fetch_corp_contract_items(
+                client, corp_id, contract_id, token)
+        async with lock:
+            if its is None:
+                failed[0] += 1
+                if failed[0] >= _ITEM_FAIL_LIMIT:
+                    give_up.set()
+                return
+            done[0] += 1
+            if its:
+                batch[contract_id] = its
+            if len(batch) >= _ITEM_FLUSH_EVERY:
+                flush = dict(batch)
+                batch.clear()
+                _store_alliance_items(conn, flush)
+                stored[0] += len(flush)
+            if progress:
+                progress(done[0], len(need), failed[0])
+
+    async with esi_client() as client:
+        jobs = []
+        for n, cid in enumerate(need):
+            corp_id, token = sources[n % len(sources)]
+            jobs.append(_one(client, cid, corp_id, token))
+        await asyncio.gather(*jobs, return_exceptions=True)
+    if batch:
+        _store_alliance_items(conn, batch)
+        stored[0] += len(batch)
+    return {"fetched": stored[0], "failed": failed[0], "attempted": done[0],
+            "remaining": left_over + max(0, len(need) - done[0]),
+            "rate_limited": give_up.is_set()}
+
+
 async def stream_alliance_index(conn: sqlite3.Connection, alliance_id: int,
                                 sources: list[tuple[int, str]],
                                 resolve_parties, resolve_locations):
@@ -448,9 +552,10 @@ async def stream_alliance_index(conn: sqlite3.Connection, alliance_id: int,
     have = {r[0] for r in conn.execute(
         "SELECT DISTINCT contract_id FROM alliance_contract_items").fetchall()}
     missing = [c for c in contracts
-               if c.get("type") in ("item_exchange", "auction") and c["contract_id"] not in have]
-    # Outstanding first: those are the ones somebody may actually want to accept.
-    missing.sort(key=lambda c: (c.get("status") != "outstanding", c.get("date_expired") or ""))
+               if c.get("type") in ("item_exchange", "auction")
+               and c.get("status") in _ITEM_STATUSES
+               and c["contract_id"] not in have]
+    missing.sort(key=lambda c: c.get("date_expired") or "")
     budget = _ITEM_CALLS_PER_TOKEN * max(1, len(sources))
     need = missing[:budget]
     left_over = len(missing) - len(need)

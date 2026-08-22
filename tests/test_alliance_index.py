@@ -538,3 +538,81 @@ def test_searching_for_something_that_is_not_there_is_an_empty_result_not_an_err
                           f"/contracts/alliance?alliance={ALLIANCE}&item=nycx")
     assert "No contracts match this filter" in html
     assert "Not Found" not in html and "Internal Server Error" not in html
+
+
+# ── keeping the index filled without anyone clicking ──────────────────────────
+
+def test_contents_are_only_fetched_for_contracts_you_could_still_accept(conn):
+    """This is what makes it one run instead of three: on a real alliance the
+    finished and deleted contracts outnumber the open ones five to one, and their
+    contents answer no question anybody asks."""
+    listings = {CORP_A: [_contract(1, status="outstanding"),
+                         _contract(2, status="finished"),
+                         _contract(3, status="deleted"),
+                         _contract(4, status="in_progress")]}
+    calls: list = []
+    _run_index(conn, [(CORP_A, "t1")], listings,
+               items={i: [{"type_id": 34, "quantity": 1}] for i in range(1, 5)},
+               item_calls=calls)
+    assert [c[1] for c in calls] == [1]
+    # And the same rule decides what is still considered missing.
+    assert ch.contracts_missing_items(conn, ALLIANCE) == []
+
+
+def test_the_filler_lists_then_fetches_and_reports_being_rate_limited(app_module, conn,
+                                                                      monkeypatch):
+    import asyncio
+    contracts = [_contract(i) for i in range(1, 6)]
+
+    async def _list(client, corp_id, token):
+        return list(contracts), None
+
+    calls = []
+
+    async def _items(client, corp_id, contract_id, token):
+        calls.append(contract_id)
+        return None if len(calls) > 2 else [{"type_id": 34, "quantity": 1}]
+
+    monkeypatch.setattr(ch, "_ITEM_FAIL_LIMIT", 1)
+    monkeypatch.setattr(ch.contracts_api, "fetch_corp_contracts", _list)
+    monkeypatch.setattr(ch.contracts_api, "fetch_corp_contract_items", _items)
+
+    async def _names(ids):
+        return {i: "x" for i in ids}
+
+    monkeypatch.setattr(app_module, "_resolve_party_names", _names)
+    monkeypatch.setattr(app_module, "resolve_station_names_bulk",
+                        lambda ids, token=None, conn=None: _names(ids))
+
+    res = asyncio.run(app_module._alliance_fill_pass(conn, ALLIANCE, [(CORP_A, "t1")]))
+    assert res["rate_limited"] is True
+    state = app_module.alliance_fill_state(ALLIANCE)
+    assert state["phase"] == "waiting"
+    # A countdown the page can show, and it does not lie about what is left.
+    assert 0 < state["retry_in"] <= app_module._ALLIANCE_WAIT
+    assert state["missing"] >= 1
+    # Whatever was fetched before the refusal is stored.
+    assert conn.execute("SELECT COUNT(DISTINCT contract_id)"
+                        " FROM alliance_contract_items").fetchone()[0] >= 1
+
+
+def test_fill_status_endpoint_reports_progress_across_page_loads(client, app_module,
+                                                                indexed):
+    """The state lives on the server, so clicking around does not lose it."""
+    app_module._ALLIANCE_FILL[ALLIANCE] = {
+        "phase": "waiting", "done": 40, "total": 100,
+        "retry_at": __import__("time").time() + 300, "missing": 60,
+    }
+    try:
+        d = client.get(f"/api/contracts/alliance/fill-status?alliance_id={ALLIANCE}").json()
+    finally:
+        app_module._ALLIANCE_FILL.pop(ALLIANCE, None)
+    assert d["phase"] == "waiting" and d["done"] == 40
+    assert 250 < d["retry_in"] <= 300
+    assert d["contract_count"] == 5          # from the indexed fixture
+
+
+def test_fill_status_is_harmless_for_an_alliance_nobody_indexed(client, app_module, conn):
+    d = client.get("/api/contracts/alliance/fill-status?alliance_id=42").json()
+    assert d["contract_count"] == 0 and d["missing"] == 0
+    assert d["phase"] == "starting"
