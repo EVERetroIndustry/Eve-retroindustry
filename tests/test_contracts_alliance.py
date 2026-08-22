@@ -250,3 +250,13 @@ def test_rendered_rows_carry_what_the_client_filter_reads(client, app_module):
                 "expires:text", "statuslabel:text", "location:text"):
         assert f'data-sort="{col}"' in html, col
     assert 'id="contract-filters"' in html and 'id="contract-table"' in html
+    # The same fields as the Alliance tab (item search is the only one that needs
+    # an index, so it is the only one missing here).
+    for field in ('id="cf-q"', 'id="cf-type"', 'id="cf-status"', 'id="cf-minp"',
+                  'id="cf-maxp"', 'id="cf-minr"', 'id="cf-maxc"', 'id="cf-maxv"',
+                  'id="cf-days"', 'id="cf-loc"', 'id="cf-issuer"', 'id="cf-title"',
+                  'id="cf-sort"', 'id="cf-own"'):
+        assert field in html, field
+    assert 'id="cf-item"' not in html          # contents are not indexed here
+    assert 'data-mode="client"' in html        # filters in the browser, no ESI round trip
+    assert 'data-issued=' in html              # the "Newest first" sort needs it

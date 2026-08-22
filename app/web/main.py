@@ -6273,7 +6273,7 @@ def _i(v: str) -> int | None:
 @app.get("/contracts/alliance", response_class=HTMLResponse)
 async def alliance_contracts_page(
         request: Request, alliance: int = 0, item: str = "", exact: str = "",
-        ctype: str = "", status: str = "outstanding", min_price: str = "",
+        q: str = "", ctype: str = "", status: str = "outstanding", min_price: str = "",
         max_price: str = "", min_reward: str = "", max_collateral: str = "",
         max_volume: str = "", location: str = "", issuer: str = "", title: str = "",
         expires: str = "", hide_own: str = "", sort: str = "expires"):
@@ -6282,7 +6282,7 @@ async def alliance_contracts_page(
     ctx: dict = {
         "alliances": [], "alliance_id": 0, "alliance_name": "", "status_info": None,
         "results": [], "total": 0, "error": None, "note": None, "limit": 500,
-        "f": {"item": item, "exact": bool(exact), "ctype": ctype, "status": status,
+        "f": {"item": item, "exact": bool(exact), "q": q, "ctype": ctype, "status": status,
               "min_price": min_price, "max_price": max_price, "min_reward": min_reward,
               "max_collateral": max_collateral, "max_volume": max_volume,
               "location": location, "issuer": issuer, "title": title,
@@ -6293,28 +6293,34 @@ async def alliance_contracts_page(
             ctx["error"] = "You are not signed in."
             return _tr("contracts_alliance.html", request, ctx)
         sources, blocked = await _alliance_sources(conn)
-        names = await _resolve_party_names(set(sources) | {int(b) for b in blocked})
+        # An alliance that was indexed once stays browsable even when no token is
+        # usable right now (expired session, offline): the rows are local. Only
+        # Refresh needs a working token, and it says so itself.
+        indexed = contracts_helper.indexed_alliances(conn)
+        known = set(sources) | set(indexed)
+        names = await _resolve_party_names(known | {int(b) for b in blocked})
         ctx["alliances"] = sorted(
             ({"id": aid, "name": names.get(aid, str(aid)),
-              "corps": len({c for c, _t in v}), "readers": len(v)}
-             for aid, v in sources.items()), key=lambda a: -a["corps"])
+              "corps": len({c for c, _t in sources.get(aid, ())}),
+              "readers": len(sources.get(aid, ()))}
+             for aid in known), key=lambda a: (-a["corps"], a["name"]))
         if blocked:
             ctx["note"] = ("No character with corporation contract access in: "
                            + ", ".join(names.get(int(b), b) for b in blocked)
                            + ". Its alliance contracts stay hidden until one of its "
                              "characters is re-added.")
-        if not sources:
+        if not known:
             if not ctx["note"]:
                 ctx["note"] = ("None of your corporations is in an alliance, or none has "
                                "a character with corporation contract access.")
             return _tr("contracts_alliance.html", request, ctx)
-        alliance_id = alliance if alliance in sources else ctx["alliances"][0]["id"]
+        alliance_id = alliance if alliance in known else ctx["alliances"][0]["id"]
         ctx["alliance_id"] = alliance_id
         ctx["alliance_name"] = names.get(alliance_id, str(alliance_id))
         ctx["status_info"] = contracts_helper.get_alliance_index_status(conn, alliance_id)
         if ctx["status_info"]:
             rows, total = contracts_helper.search_alliance_contracts(
-                conn, alliance_id, item=item, exact_item=bool(exact), ctype=ctype,
+                conn, alliance_id, item=item, exact_item=bool(exact), q=q, ctype=ctype,
                 status=status, min_price=_f(min_price), max_price=_f(max_price),
                 min_reward=_f(min_reward), max_collateral=_f(max_collateral),
                 max_volume=_f(max_volume), location=location, issuer=issuer, title=title,

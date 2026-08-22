@@ -295,6 +295,14 @@ def ensure_alliance_contract_tables(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def indexed_alliances(conn: sqlite3.Connection) -> list[int]:
+    """Alliances that have been indexed at least once - browsable without a token."""
+    ensure_alliance_contract_tables(conn)
+    return [r[0] for r in conn.execute(
+        "SELECT alliance_id FROM alliance_contract_meta WHERE alliance_id IS NOT NULL"
+    ).fetchall()]
+
+
 def get_alliance_index_status(conn: sqlite3.Connection, alliance_id: int) -> dict | None:
     ensure_alliance_contract_tables(conn)
     row = conn.execute(
@@ -480,7 +488,8 @@ _ALLIANCE_SORTS = {
 
 
 def search_alliance_contracts(conn: sqlite3.Connection, alliance_id: int, *,
-                              item: str = "", exact_item: bool = False, ctype: str = "",
+                              item: str = "", exact_item: bool = False, q: str = "",
+                              ctype: str = "",
                               status: str = "outstanding", min_price: float | None = None,
                               max_price: float | None = None, min_reward: float | None = None,
                               max_collateral: float | None = None,
@@ -504,6 +513,11 @@ def search_alliance_contracts(conn: sqlite3.Connection, alliance_id: int, *,
             where.append("t.name LIKE ?")
             params.append(f"%{item.strip()}%")
         where.append("i.is_included = 1")
+    if q.strip():
+        # The same "one box over the obvious columns" as the client-side bar.
+        where.append("(c.title LIKE ? OR c.issuer_name LIKE ? OR c.issuer_corp_name LIKE ?"
+                     " OR c.start_name LIKE ? OR c.end_name LIKE ?)")
+        params += [f"%{q.strip()}%"] * 5
     if ctype:
         where.append("c.type = ?")
         params.append(ctype)

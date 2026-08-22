@@ -109,7 +109,8 @@
             data-collateral="{{ c.collateral }}" data-volume="{{ c.volume }}"
             data-issuer="{{ c.issuer }}" data-location="{{ c.start }}"
             data-title="{{ c.title }}" data-party="{{ c.party_label }}"
-            data-expires="{{ c.date_expired }}" data-own="{{ '1' if c.is_own else '0' }}">
+            data-expires="{{ c.date_expired }}" data-issued="{{ c.date_issued }}"
+            data-own="{{ '1' if c.is_own else '0' }}">
           {% if all_chars or scope == 'corp' %}<td class="text-truncate" style="max-width:170px;font-size:.78rem"
               title="{{ c.party_label }}{% if c.is_alliance %} (offered to the whole alliance){% endif %}">
             {% if c.is_alliance %}<span class="badge bg-secondary me-1" style="font-size:.55rem">ALLIANCE</span>{% endif %}{{ c.party_label }}</td>{% endif %}

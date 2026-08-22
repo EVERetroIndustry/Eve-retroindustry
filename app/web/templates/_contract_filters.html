@@ -1,74 +1,160 @@
-{# Shared contract table behaviour: click-to-sort columns + a client-side filter
-   bar, so the three contract views (Personal, Corporation, Alliance) behave the
-   same and get as close to the in-game contract window as a web page can.
+{# One filter bar and one sorter for every contract view (Personal, Corporation,
+   Alliance), so the three tabs look and read the same.
 
-   The filters run in the browser over the rows already rendered - like the wallet
-   filters - because these tabs fetch from ESI on every page load and re-querying
-   ESI for a changed filter would be both slow and rude. Rows carry the values in
-   data-* attributes; the select options are built from what is actually on screen,
-   so the list never offers a type or status the data does not contain.
+   The same fields in the same places, but two ways of applying them, because the
+   data underneath is different:
+
+     mode="client"  Personal / Corporation. These tabs fetch from ESI on every page
+                    load, so filtering in the browser over the rendered rows (as the
+                    wallet filters do) keeps it instant and does not re-query ESI for
+                    a changed filter. Rows carry the values in data-* attributes.
+     mode="server"  Alliance. Its contracts are indexed in SQLite, so the filter is a
+                    GET form and runs as SQL over the WHOLE index - which is also the
+                    only way to search by an item inside the contract and to make the
+                    row cap mean anything.
+
+   "Item (contract contents)" and "Exact type name" appear only where contract
+   contents are indexed, i.e. the Alliance tab.
 
    The table needs id="contract-table" and its rows a data-search attribute.
    Sortable headers: data-sort="key:num" or "key:text", key = the row's data-KEY.
 #}
 
-{% macro contract_filter_bar(show_hide_own=True, show_volume=True) %}
-<div class="card mb-3" id="contract-filters">
+{% macro contract_filter_bar(mode="client", show_item=False, show_hide_own=True,
+                             action="", hidden={}, f={}) %}
+{% set srv = (mode == "server") %}
+<{{ 'form method="get" action="' ~ action ~ '"' if srv else 'div' }} class="card mb-3" id="contract-filters"
+   data-mode="{{ mode }}">
+  {% if srv %}{% for k, v in hidden.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}{% endif %}
   <div class="card-body py-2">
     <div class="row g-2 align-items-end">
+      {% if show_item %}
       <div class="col-md-3">
+        <label class="form-label small text-muted mb-1">Item (contract contents)</label>
+        <input type="text" id="cf-item" {% if srv %}name="item"{% endif %} value="{{ f.get('item', '') }}"
+               class="form-control form-control-sm" placeholder="e.g. Hulk, Tritanium…">
+      </div>
+      <div class="col-md-2">
+        <div class="form-check mt-4">
+          <input class="form-check-input" type="checkbox" id="cf-exact" value="1"
+                 {% if srv %}name="exact"{% endif %} {% if f.get('exact') %}checked{% endif %}>
+          <label class="form-check-label small text-muted" for="cf-exact">Exact type name</label>
+        </div>
+      </div>
+      {% endif %}
+      <div class="{{ 'col-md-3' if show_item else 'col-md-4' }}">
         <label class="form-label small text-muted mb-1">Search</label>
-        <input type="text" id="cf-q" class="form-control form-control-sm"
-               placeholder="title, issuer, location…" autocomplete="off">
+        <input type="text" id="cf-q" {% if srv %}name="q"{% endif %} value="{{ f.get('q', '') }}"
+               class="form-control form-control-sm" placeholder="title, issuer, location…"
+               autocomplete="off">
       </div>
       <div class="col-md-2">
         <label class="form-label small text-muted mb-1">Type</label>
-        <select id="cf-type" class="form-select form-select-sm"><option value="">All</option></select>
+        <select id="cf-type" {% if srv %}name="ctype"{% endif %} class="form-select form-select-sm">
+          <option value="">All</option>
+          {% if srv %}
+          {% for v, label in [('item_exchange', 'Item Exchange'), ('auction', 'Auction'),
+                              ('courier', 'Courier'), ('loan', 'Loan')] %}
+          <option value="{{ v }}" {% if f.get('ctype') == v %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+          {% endif %}
+        </select>
       </div>
       <div class="col-md-2">
         <label class="form-label small text-muted mb-1">Status</label>
-        <select id="cf-status" class="form-select form-select-sm"><option value="">All shown</option></select>
-      </div>
-      <div class="col-md-2">
-        <label class="form-label small text-muted mb-1">Min price</label>
-        <input type="text" id="cf-minp" class="form-control form-control-sm" placeholder="-">
-      </div>
-      <div class="col-md-2">
-        <label class="form-label small text-muted mb-1">Max price</label>
-        <input type="text" id="cf-maxp" class="form-control form-control-sm" placeholder="-">
-      </div>
-      <div class="col-md-1">
-        <label class="form-label small text-muted mb-1">Days left</label>
-        <input type="text" id="cf-days" class="form-control form-control-sm" placeholder="-">
+        <select id="cf-status" {% if srv %}name="status"{% endif %} class="form-select form-select-sm">
+          {% if srv %}
+          {% for v, label in [('outstanding', 'Outstanding'), ('in_progress', 'In Progress'),
+                              ('finished', 'Finished'), ('deleted', 'Deleted'), ('any', 'Any')] %}
+          <option value="{{ v }}" {% if f.get('status') == v %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+          {% else %}
+          <option value="">All shown</option>
+          {% endif %}
+        </select>
       </div>
 
       <div class="col-md-2">
+        <label class="form-label small text-muted mb-1">Min price</label>
+        <input type="text" id="cf-minp" {% if srv %}name="min_price"{% endif %}
+               value="{{ f.get('min_price', '') }}" class="form-control form-control-sm" placeholder="-">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small text-muted mb-1">Max price</label>
+        <input type="text" id="cf-maxp" {% if srv %}name="max_price"{% endif %}
+               value="{{ f.get('max_price', '') }}" class="form-control form-control-sm" placeholder="-">
+      </div>
+      <div class="col-md-2">
         <label class="form-label small text-muted mb-1">Min reward</label>
-        <input type="text" id="cf-minr" class="form-control form-control-sm" placeholder="-">
+        <input type="text" id="cf-minr" {% if srv %}name="min_reward"{% endif %}
+               value="{{ f.get('min_reward', '') }}" class="form-control form-control-sm" placeholder="-">
       </div>
       <div class="col-md-2">
         <label class="form-label small text-muted mb-1">Max collateral</label>
-        <input type="text" id="cf-maxc" class="form-control form-control-sm" placeholder="-">
+        <input type="text" id="cf-maxc" {% if srv %}name="max_collateral"{% endif %}
+               value="{{ f.get('max_collateral', '') }}" class="form-control form-control-sm" placeholder="-">
       </div>
-      {% if show_volume %}
       <div class="col-md-2">
         <label class="form-label small text-muted mb-1">Max volume m&sup3;</label>
-        <input type="text" id="cf-maxv" class="form-control form-control-sm" placeholder="-">
+        <input type="text" id="cf-maxv" {% if srv %}name="max_volume"{% endif %}
+               value="{{ f.get('max_volume', '') }}" class="form-control form-control-sm" placeholder="-">
       </div>
-      {% endif %}
-      <div class="col d-flex align-items-center gap-3">
+      <div class="col-md-2">
+        <label class="form-label small text-muted mb-1">Days left</label>
+        <input type="text" id="cf-days" {% if srv %}name="expires"{% endif %}
+               value="{{ f.get('expires', '') }}" class="form-control form-control-sm" placeholder="-">
+      </div>
+
+      <div class="col-md-3">
+        <label class="form-label small text-muted mb-1">Location</label>
+        <input type="text" id="cf-loc" {% if srv %}name="location"{% endif %}
+               value="{{ f.get('location', '') }}" class="form-control form-control-sm"
+               placeholder="station or system">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small text-muted mb-1">Issuer (pilot or corp)</label>
+        <input type="text" id="cf-issuer" {% if srv %}name="issuer"{% endif %}
+               value="{{ f.get('issuer', '') }}" class="form-control form-control-sm" placeholder="-">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small text-muted mb-1">Title contains</label>
+        <input type="text" id="cf-title" {% if srv %}name="title"{% endif %}
+               value="{{ f.get('title', '') }}" class="form-control form-control-sm" placeholder="-">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small text-muted mb-1">Sort by</label>
+        <select id="cf-sort" {% if srv %}name="sort"{% endif %} class="form-select form-select-sm">
+          {% for v, label in [('expires', 'Expires soonest'), ('issued', 'Newest first'),
+                              ('price', 'Price, lowest'), ('price_hi', 'Price, highest'),
+                              ('reward', 'Reward, highest')] %}
+          <option value="{{ v }}" {% if f.get('sort', 'expires') == v %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="col-12 d-flex align-items-center gap-3 pt-1">
         {% if show_hide_own %}
         <div class="form-check mb-0">
-          <input class="form-check-input" type="checkbox" id="cf-own">
-          <label class="form-check-label small text-muted" for="cf-own">Hide my own</label>
+          <input class="form-check-input" type="checkbox" id="cf-own" value="1"
+                 {% if srv %}name="hide_own"{% endif %} {% if f.get('hide_own') %}checked{% endif %}>
+          <label class="form-check-label small text-muted" for="cf-own">
+            Hide contracts issued by my own characters or corporations</label>
         </div>
         {% endif %}
         <span class="text-muted small" id="cf-count"></span>
-        <button type="button" class="btn btn-sm btn-outline-secondary ms-auto" id="cf-reset">Reset</button>
+        <div class="ms-auto d-flex gap-2">
+          {% if srv %}
+          <a href="{{ action }}?{% for k, v in hidden.items() %}{{ k }}={{ v }}&{% endfor %}"
+             class="btn btn-sm btn-outline-secondary">Reset</a>
+          <button class="btn btn-sm btn-eve"><i class="bi bi-search me-1"></i>Search</button>
+          {% else %}
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="cf-reset">Reset</button>
+          {% endif %}
+        </div>
       </div>
     </div>
   </div>
-</div>
+</{{ 'form' if srv else 'div' }}>
 {% endmacro %}
 
 
@@ -81,6 +167,19 @@
   const rows = Array.from(tbody.querySelectorAll('tr[data-search]'));
 
   // ── click-to-sort columns, like the in-game contract list ──────────────────
+  function sortBy(key, kind, asc) {
+    const sorted = rows.slice().sort((a, b) => {
+      if (kind === 'num') {
+        const va = parseFloat(a.dataset[key]) || 0, vb = parseFloat(b.dataset[key]) || 0;
+        return asc ? va - vb : vb - va;
+      }
+      const va = a.dataset[key] || '', vb = b.dataset[key] || '';
+      return asc ? va.localeCompare(vb, 'en') : vb.localeCompare(va, 'en');
+    });
+    // Re-append in order; hidden rows keep their display state.
+    sorted.forEach(r => tbody.appendChild(r));
+  }
+
   table.querySelectorAll('th[data-sort]').forEach(th => {
     th.style.cursor = 'pointer';
     th.addEventListener('click', () => {
@@ -94,21 +193,12 @@
       th.dataset.dir = asc ? 'asc' : 'desc';
       const ic = th.querySelector('.sort-icon');
       if (ic) ic.textContent = asc ? '▲' : '▼';
-      const sorted = rows.slice().sort((a, b) => {
-        if (kind === 'num') {
-          const va = parseFloat(a.dataset[key]) || 0, vb = parseFloat(b.dataset[key]) || 0;
-          return asc ? va - vb : vb - va;
-        }
-        const va = a.dataset[key] || '', vb = b.dataset[key] || '';
-        return asc ? va.localeCompare(vb, 'en') : vb.localeCompare(va, 'en');
-      });
-      // Re-append in order; hidden rows keep their display state.
-      sorted.forEach(r => tbody.appendChild(r));
+      sortBy(key, kind, asc);
     });
   });
 
   const bar = document.getElementById('contract-filters');
-  if (!bar) return;
+  if (!bar || bar.dataset.mode === 'server') return;   // server mode: the form does it
 
   // ── selects are built from the rendered rows ───────────────────────────────
   function fill(selectId, valueKey, labelKey) {
@@ -136,10 +226,22 @@
     const n = parseFloat(raw);
     return isNaN(n) ? null : n;
   };
+  const has = (d, key, needle) => (d[key] || '').toLowerCase().includes(needle);
+
+  // Same order as the server-side sort options, so both modes mean the same thing.
+  const SORTS = {
+    expires:  ['expires', 'text', true],
+    issued:   ['issued', 'text', false],
+    price:    ['price', 'num', true],
+    price_hi: ['price', 'num', false],
+    reward:   ['reward', 'num', false],
+  };
 
   function apply() {
     const q = txt('cf-q').toLowerCase();
     const type = txt('cf-type'), status = txt('cf-status');
+    const loc = txt('cf-loc').toLowerCase(), issuer = txt('cf-issuer').toLowerCase();
+    const title = txt('cf-title').toLowerCase();
     const minP = num('cf-minp'), maxP = num('cf-maxp'), minR = num('cf-minr');
     const maxC = num('cf-maxc'), maxV = num('cf-maxv'), days = num('cf-days');
     const hideOwn = el('cf-own')?.checked;
@@ -153,6 +255,9 @@
       if (q && !(d.search || '').includes(q)) ok = false;
       if (ok && type && d.type !== type) ok = false;
       if (ok && status && d.status !== status) ok = false;
+      if (ok && loc && !has(d, 'location', loc)) ok = false;
+      if (ok && issuer && !(has(d, 'issuer', issuer) || has(d, 'party', issuer))) ok = false;
+      if (ok && title && !has(d, 'title', title)) ok = false;
       if (ok && minP != null && (parseFloat(d.price) || 0) < minP) ok = false;
       if (ok && maxP != null && (parseFloat(d.price) || 0) > maxP) ok = false;
       if (ok && minR != null && (parseFloat(d.reward) || 0) < minR) ok = false;
@@ -173,13 +278,24 @@
   }
 
   bar.querySelectorAll('input, select').forEach(i => {
+    if (i.id === 'cf-sort') return;
     i.addEventListener(i.tagName === 'SELECT' || i.type === 'checkbox' ? 'change' : 'input', apply);
+  });
+  el('cf-sort')?.addEventListener('change', () => {
+    const s = SORTS[txt('cf-sort')] || SORTS.expires;
+    // The header arrows no longer describe the order the select just imposed.
+    table.querySelectorAll('th[data-sort]').forEach(o => {
+      delete o.dataset.dir;
+      const i = o.querySelector('.sort-icon');
+      if (i) i.textContent = '⇅';
+    });
+    sortBy(s[0], s[1], s[2]);
   });
   el('cf-reset')?.addEventListener('click', () => {
     bar.querySelectorAll('input').forEach(i => {
       if (i.type === 'checkbox') i.checked = false; else i.value = '';
     });
-    bar.querySelectorAll('select').forEach(s => { s.value = ''; });
+    bar.querySelectorAll('select').forEach(s => { s.value = s.id === 'cf-sort' ? 'expires' : ''; });
     apply();
   });
   apply();

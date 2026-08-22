@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_contract_filters.html" import contract_table_scripts %}
+{% from "_contract_filters.html" import contract_filter_bar, contract_table_scripts %}
 {% block title %}Alliance Contracts - EVE Retroindustry{% endblock %}
 {% block content %}
 
@@ -76,117 +76,12 @@
 </div>
 
 {% if status_info %}
-{# Filters, in the spirit of the in-game contract search #}
-<form method="get" action="/contracts/alliance" class="card mb-3">
-  <input type="hidden" name="alliance" value="{{ alliance_id }}">
-  <div class="card-body">
-    <div class="row g-2 align-items-end">
-      <div class="col-md-4">
-        <label class="form-label small text-muted mb-1">Item (contract contents)</label>
-        <input type="text" name="item" value="{{ f.item }}" class="form-control form-control-sm"
-               placeholder="e.g. Hulk, Tritanium, Nanite Repair Paste…">
-      </div>
-      <div class="col-md-2">
-        <div class="form-check mt-4">
-          <input class="form-check-input" type="checkbox" name="exact" value="1" id="exact"
-                 {% if f.exact %}checked{% endif %}>
-          <label class="form-check-label small text-muted" for="exact">Exact type name</label>
-        </div>
-      </div>
-      <div class="col-md-3">
-        <label class="form-label small text-muted mb-1">Contract type</label>
-        <select name="ctype" class="form-select form-select-sm">
-          <option value="" {% if not f.ctype %}selected{% endif %}>All</option>
-          <option value="item_exchange" {% if f.ctype=='item_exchange' %}selected{% endif %}>Item Exchange</option>
-          <option value="auction" {% if f.ctype=='auction' %}selected{% endif %}>Auction</option>
-          <option value="courier" {% if f.ctype=='courier' %}selected{% endif %}>Courier</option>
-          <option value="loan" {% if f.ctype=='loan' %}selected{% endif %}>Loan</option>
-        </select>
-      </div>
-      <div class="col-md-3">
-        <label class="form-label small text-muted mb-1">Status</label>
-        <select name="status" class="form-select form-select-sm">
-          <option value="outstanding" {% if f.status=='outstanding' %}selected{% endif %}>Outstanding</option>
-          <option value="in_progress" {% if f.status=='in_progress' %}selected{% endif %}>In Progress</option>
-          <option value="finished" {% if f.status=='finished' %}selected{% endif %}>Finished</option>
-          <option value="deleted" {% if f.status=='deleted' %}selected{% endif %}>Deleted</option>
-          <option value="any" {% if f.status=='any' %}selected{% endif %}>Any</option>
-        </select>
-      </div>
-
-      <div class="col-md-2">
-        <label class="form-label small text-muted mb-1">Min price</label>
-        <input type="text" name="min_price" value="{{ f.min_price }}" class="form-control form-control-sm" placeholder="-">
-      </div>
-      <div class="col-md-2">
-        <label class="form-label small text-muted mb-1">Max price</label>
-        <input type="text" name="max_price" value="{{ f.max_price }}" class="form-control form-control-sm" placeholder="-">
-      </div>
-      <div class="col-md-2">
-        <label class="form-label small text-muted mb-1">Min reward</label>
-        <input type="text" name="min_reward" value="{{ f.min_reward }}" class="form-control form-control-sm" placeholder="-">
-      </div>
-      <div class="col-md-2">
-        <label class="form-label small text-muted mb-1">Max collateral</label>
-        <input type="text" name="max_collateral" value="{{ f.max_collateral }}" class="form-control form-control-sm" placeholder="-">
-      </div>
-      <div class="col-md-2">
-        <label class="form-label small text-muted mb-1">Max volume m&sup3;</label>
-        <input type="text" name="max_volume" value="{{ f.max_volume }}" class="form-control form-control-sm" placeholder="-">
-      </div>
-      <div class="col-md-2">
-        <label class="form-label small text-muted mb-1">Expires within (days)</label>
-        <input type="text" name="expires" value="{{ f.expires }}" class="form-control form-control-sm" placeholder="-">
-      </div>
-
-      <div class="col-md-3">
-        <label class="form-label small text-muted mb-1">Location</label>
-        <input type="text" name="location" value="{{ f.location }}" class="form-control form-control-sm"
-               placeholder="station or system">
-      </div>
-      <div class="col-md-3">
-        <label class="form-label small text-muted mb-1">Issuer (pilot or corp)</label>
-        <input type="text" name="issuer" value="{{ f.issuer }}" class="form-control form-control-sm" placeholder="-">
-      </div>
-      <div class="col-md-3">
-        <label class="form-label small text-muted mb-1">Title contains</label>
-        <input type="text" name="title" value="{{ f.title }}" class="form-control form-control-sm" placeholder="-">
-      </div>
-      <div class="col-md-3">
-        <label class="form-label small text-muted mb-1">Sort by</label>
-        <select name="sort" class="form-select form-select-sm">
-          <option value="expires" {% if f.sort=='expires' %}selected{% endif %}>Expires soonest</option>
-          <option value="issued" {% if f.sort=='issued' %}selected{% endif %}>Newest first</option>
-          <option value="price" {% if f.sort=='price' %}selected{% endif %}>Price, lowest</option>
-          <option value="price_hi" {% if f.sort=='price_hi' %}selected{% endif %}>Price, highest</option>
-          <option value="reward" {% if f.sort=='reward' %}selected{% endif %}>Reward, highest</option>
-        </select>
-      </div>
-
-      <div class="col-12 d-flex align-items-center gap-3 pt-1">
-        <div class="form-check mb-0">
-          <input class="form-check-input" type="checkbox" name="hide_own" value="1" id="hide_own"
-                 {% if f.hide_own %}checked{% endif %}>
-          <label class="form-check-label small text-muted" for="hide_own">
-            Hide contracts issued by my own characters or corporations</label>
-        </div>
-        <div class="ms-auto d-flex gap-2">
-          <a href="/contracts/alliance?alliance={{ alliance_id }}" class="btn btn-sm btn-outline-secondary">Reset</a>
-          <button class="btn btn-sm btn-eve"><i class="bi bi-search me-1"></i>Search</button>
-        </div>
-      </div>
-    </div>
-  </div>
-</form>
-
-{% if f.item and status_info.with_items < status_info.contract_count %}
-<div class="alert alert-secondary py-2 small">
-  <i class="bi bi-info-circle me-1"></i>Searching by item only looks inside the
-  {{ "{:,}".format(status_info.with_items) }} contracts whose contents are indexed
-  ({{ "{:,}".format(status_info.contract_count) }} listed). Use Refresh to fetch more -
-  each run takes as many as the ESI rate limit allows, and it resumes where it stopped.
-</div>
-{% endif %}
+{# The same bar as the other tabs; here it submits, because these contracts are
+   indexed and the filter runs as SQL over the whole index (which is also what
+   makes searching by an item inside the contract possible at all). #}
+{{ contract_filter_bar(mode="server", show_item=True,
+                       action="/contracts/alliance",
+                       hidden={"alliance": alliance_id}, f=f) }}
 
 {% if results %}
 <div class="card">
@@ -209,7 +104,8 @@
       </tr></thead>
       <tbody>
         {% for c in results %}
-        <tr data-search="{{ (c.title ~ ' ' ~ c.issuer_name ~ ' ' ~ c.issuer_corp_name ~ ' ' ~ c.start_name) | lower }}"
+        <tr data-issued="{{ c.date_issued }}"
+            data-search="{{ (c.title ~ ' ' ~ c.issuer_name ~ ' ' ~ c.issuer_corp_name ~ ' ' ~ c.start_name) | lower }}"
             data-type="{{ c.type }}" data-typelabel="{{ c.type_label }}"
             data-status="{{ c.status }}" data-statuslabel="{{ c.status_label }}"
             data-price="{{ c.price }}" data-reward="{{ c.reward }}"

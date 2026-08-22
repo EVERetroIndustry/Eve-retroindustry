@@ -383,3 +383,44 @@ def test_a_corporation_without_a_capable_character_is_reported(client, app_modul
 def test_corporations_outside_an_alliance_are_not_offered(client, app_module, conn):
     html = _alliance_page(client, app_module, "/contracts/alliance", alliance_map={})
     assert "None of your corporations is in an alliance" in html
+
+
+def test_search_box_matches_title_issuer_corp_and_location(indexed):
+    """The Alliance tab has the same one-box search as the other tabs."""
+    assert _search(indexed, q="Hulk")[0] == [1]              # title
+    assert _search(indexed, q="Harald")[0] == [1, 3]         # issuer name
+    assert _search(indexed, q="TEMPLAR")[0] == [1, 3]        # issuer corporation
+    assert _search(indexed, q="C-N4OD")[0] == [1, 3]         # location
+    assert _search(indexed, q="nothing-like-this")[0] == []
+
+
+def test_an_indexed_alliance_stays_browsable_without_a_usable_token(conn, indexed):
+    """The rows are local; only Refresh needs ESI."""
+    assert ch.indexed_alliances(indexed) == [ALLIANCE]
+
+
+def test_alliance_page_uses_the_same_filter_bar_as_the_other_tabs(client, app_module, indexed):
+    html = _alliance_page(client, app_module, f"/contracts/alliance?alliance={ALLIANCE}")
+    for field in ('id="cf-item"', 'id="cf-exact"', 'id="cf-q"', 'id="cf-type"',
+                  'id="cf-status"', 'id="cf-minp"', 'id="cf-maxp"', 'id="cf-minr"',
+                  'id="cf-maxc"', 'id="cf-maxv"', 'id="cf-days"', 'id="cf-loc"',
+                  'id="cf-issuer"', 'id="cf-title"', 'id="cf-sort"', 'id="cf-own"'):
+        assert field in html, field
+    # Here the bar submits: the filter is SQL over the whole index.
+    assert 'data-mode="server"' in html
+    assert 'name="q"' in html and 'name="item"' in html
+
+
+def test_alliance_filters_survive_a_page_without_any_readable_corporation(
+        client, app_module, indexed):
+    """Tokens expire; the indexed rows must still be filterable."""
+    async def _no_alliances(conn, corp_ids):
+        return {}
+
+    real = app_module._corp_alliance_ids
+    app_module._corp_alliance_ids = _no_alliances
+    try:
+        html = client.get(f"/contracts/alliance?alliance={ALLIANCE}&q=Hulk").text
+    finally:
+        app_module._corp_alliance_ids = real
+    assert "Hulk fit" in html and "capital parts" not in html
