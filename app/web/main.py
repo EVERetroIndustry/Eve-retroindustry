@@ -2797,7 +2797,7 @@ def _plan_to_dict(plan, prices, type_name: str, conn: sqlite3.Connection | None 
         try:
             found = contracts_helper.contract_unit_prices(conn, [plan.product_type_id])
             if found:
-                sell_p = found[plan.product_type_id][0]
+                sell_p = found[plan.product_type_id][0]   # (price, source, contract)
                 sell_src = "contract"
         except Exception:
             pass

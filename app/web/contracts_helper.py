@@ -1178,7 +1178,8 @@ def search_alliance_contracts(conn: sqlite3.Connection, alliance_id: int, *,
 
 
 def contract_unit_prices(conn: sqlite3.Connection, type_ids,
-                         exclude_contract_id: int | None = None) -> dict[int, tuple[float, str]]:
+                         exclude_contract_id: int | None = None
+                         ) -> dict[int, tuple[float, str, int]]:
     """{type_id: (cheapest price per unit, "alliance"|"public")} from SINGLE-item
     contracts we have indexed.
 
@@ -1187,8 +1188,13 @@ def contract_unit_prices(conn: sqlite3.Connection, type_ids,
     contracts holding exactly one item type are used - in a bundle the price also
     covers everything else, so it says nothing about the unit.
 
-    `exclude_contract_id` keeps the appraisal honest: valuing a contract's contents
-    partly from that same contract would make it compare equal to itself.
+    Returns (price per unit, "alliance"|"public", contract it came from). The source
+    contract matters: an appraisal must be able to say "this price IS this contract",
+    which is the honest alternative to hiding the number (see appraise_items).
+
+    `exclude_contract_id` is available for callers that want a reference price from
+    somewhere else, but the appraisal deliberately does NOT use it - excluding self
+    made the same hull worth 42.5b in one row and 46.5b in another.
     """
     ids = sorted({int(t) for t in type_ids if t})
     if not ids:
@@ -1199,7 +1205,7 @@ def contract_unit_prices(conn: sqlite3.Connection, type_ids,
     out: dict[int, tuple[float, str]] = {}
     queries = (
         ("alliance", f"""
-            SELECT i.type_id, MIN(c.price * 1.0 / i.quantity)
+            SELECT i.type_id, c.price * 1.0 / i.quantity AS unit, c.contract_id
             FROM alliance_contracts c
             JOIN alliance_contract_items i ON i.contract_id = c.contract_id
             WHERE c.type = 'item_exchange' AND c.status = 'outstanding' AND c.price > 0
@@ -1207,7 +1213,7 @@ def contract_unit_prices(conn: sqlite3.Connection, type_ids,
               AND c.contract_id != ?
               AND (SELECT COUNT(*) FROM alliance_contract_items x
                     WHERE x.contract_id = c.contract_id AND x.is_included = 1) = 1
-            GROUP BY i.type_id"""),
+            ORDER BY unit"""),
         # Public contracts in systems a player alliance holds are left out on
         # purpose: in sov space the market is usually closed to outsiders, so a
         # price there says what one group charges its own, not what the thing is
@@ -1216,7 +1222,7 @@ def contract_unit_prices(conn: sqlite3.Connection, type_ids,
         # cannot verify (a player structure, 0.5 % of them) is treated the same as
         # sov: not usable as a reference.
         ("public", f"""
-            SELECT i.type_id, MIN(c.price * 1.0 / i.quantity)
+            SELECT i.type_id, c.price * 1.0 / i.quantity AS unit, c.contract_id
             FROM public_contracts c
             JOIN public_contract_items i ON i.contract_id = c.contract_id
             LEFT JOIN sov_map_cache s ON s.system_id = c.system_id
@@ -1226,16 +1232,16 @@ def contract_unit_prices(conn: sqlite3.Connection, type_ids,
               AND c.system_id IS NOT NULL AND s.alliance_id IS NULL
               AND (SELECT COUNT(*) FROM public_contract_items x
                     WHERE x.contract_id = c.contract_id AND x.is_included = 1) = 1
-            GROUP BY i.type_id"""),
+            ORDER BY unit"""),
     )
     for source, sql in queries:
         try:
             rows = conn.execute(sql, (*ids, exclude_contract_id or -1)).fetchall()
         except sqlite3.OperationalError:
             continue                      # that index has never been built
-        for tid, price in rows:
-            if price and (tid not in out or price < out[tid][0]):
-                out[int(tid)] = (float(price), source)
+        for tid, price, from_cid in rows:
+            if price and (tid not in out or price < out[int(tid)][0]):
+                out[int(tid)] = (float(price), source, int(from_cid))
     return out
 
 
@@ -1273,9 +1279,6 @@ def appraise_items(conn: sqlite3.Connection, items: list[dict],
          last is in the right universe.)
       4. Nothing: counted and named, never silently valued at zero.
 
-    The contract being appraised is excluded from step 2 - valuing its contents from
-    itself would make it compare exactly equal to its own price.
-
     Items the contract ASKS FOR (is_included = 0) are valued separately: accepting
     such a contract means handing those over, so they are a cost, not a gain.
     """
@@ -1284,14 +1287,15 @@ def appraise_items(conn: sqlite3.Connection, items: list[dict],
     ids = sorted({int(i["type_id"]) for i in items if i.get("type_id")})
     jita = get_cached_jita_prices(conn, ids) if ids else {}
     need_fallback = [t for t in ids if (jita.get(t) or (None, None))[0] is None]
-    from_contracts = contract_unit_prices(conn, need_fallback, contract_id) if need_fallback else {}
+    # No exclusion on purpose: one price per hull, everywhere.
+    from_contracts = contract_unit_prices(conn, need_fallback) if need_fallback else {}
     still = [t for t in need_fallback if t not in from_contracts]
     estimates = _adjusted_prices(conn, still) if still else {}
 
     out = {"value": 0.0, "asked": 0.0, "by_source": {"jita": 0.0, "contract": 0.0,
                                                      "estimate": 0.0},
            "counts": {"jita": 0, "contract": 0, "estimate": 0},
-           "buy": 0.0, "asked_buy": 0.0,
+           "buy": 0.0, "asked_buy": 0.0, "self_priced": 0,
            "unpriced": 0, "unpriced_names": []}
     for it in items:
         tid = int(it.get("type_id") or 0)
@@ -1302,8 +1306,13 @@ def appraise_items(conn: sqlite3.Connection, items: list[dict],
         if sell is not None:
             unit, source = sell, "jita"
         elif tid in from_contracts:
-            unit, source = from_contracts[tid]
+            unit, source, from_cid = from_contracts[tid]
             source = "contract"
+            if contract_id and from_cid == int(contract_id):
+                # This very contract is the cheapest offer of that item. Value it the
+                # same as anywhere else and let the caller say so, rather than
+                # comparing the contract against itself.
+                out["self_priced"] += 1
         elif tid in estimates:
             unit, source = estimates[tid], "estimate"
         it["unit"] = unit

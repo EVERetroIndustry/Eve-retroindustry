@@ -295,7 +295,13 @@ window.renderContractItems = function (box, data, price) {
     if (a.counts.estimate) mix.push(`${a.counts.estimate} estimated`);
     if (mix.length) parts.push(`<span class="text-muted">incl. ${mix.join(', ')}</span>`);
     const p = Number(price) || 0;
-    if (p > 0 && a.net) {
+    if (a.self_priced) {
+      // This contract IS the cheapest offer of what is in it, so the value and the
+      // asking price are the same number. Saying "+0 %" would pretend that means
+      // something; the useful statement is that nobody is asking less.
+      parts.push('<span class="text-muted">cheapest offer of these items, so there is '
+        + 'nothing to compare it against</span>');
+    } else if (p > 0 && a.net) {
       // Positive = the contract asks less than the same pile is worth.
       const diff = a.net - p;
       const pct = (diff / p) * 100;

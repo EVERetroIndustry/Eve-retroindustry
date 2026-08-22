@@ -814,18 +814,39 @@ def test_value_comes_from_jita_then_contracts_then_ccps_estimate(conn):
     assert a["unpriced"] == 1 and a["unpriced_names"] == ["Molok"]
 
 
-def test_a_contract_is_never_valued_from_itself(conn):
-    """Otherwise it would always compare exactly equal to its own price."""
+def test_the_same_hull_is_worth_the_same_in_every_contract(conn):
+    """The bug this replaces: excluding the contract being appraised made the
+    CHEAPEST Wyvern value itself at the second cheapest offer, so the same hull read
+    42.5b in one row and 46.5b in another."""
     TITAN = 671
-    _run_index(conn, [(CORP_A, "t1")],
-               {CORP_A: [_contract(500, price=80_000_000_000)]},
-               items={500: [{"type_id": TITAN, "quantity": 1}]})
-    items = [{"type_id": TITAN, "quantity": 1, "name": "Erebus", "included": True}]
-    # Appraising some other contract may use it...
-    assert ch.appraise_items(conn, list(items))["value"] == 80_000_000_000
-    # ...but appraising contract 500 itself may not.
-    a = ch.appraise_items(conn, items, contract_id=500)
-    assert a["value"] == 0 and a["unpriced"] == 1
+    _run_index(conn, [(CORP_A, "t1")], {CORP_A: [
+        _contract(500, price=42_500_000_000),          # the cheapest offer
+        _contract(501, price=46_500_000_000),          # a dearer one
+        _contract(502, price=44_000_000_000),          # a bundle holding one too
+    ]}, items={500: [{"type_id": TITAN, "quantity": 1}],
+               501: [{"type_id": TITAN, "quantity": 1}],
+               502: [{"type_id": TITAN, "quantity": 1}, {"type_id": 34, "quantity": 10}]})
+    item = lambda: [{"type_id": TITAN, "quantity": 1, "name": "Wyvern", "included": True}]
+    values = {cid: ch.appraise_items(conn, item(), contract_id=cid)["value"]
+              for cid in (500, 501, 502, None)}
+    assert set(values.values()) == {42_500_000_000}, values
+
+
+def test_the_cheapest_contract_says_so_instead_of_comparing_to_itself(conn):
+    """It is priced like everywhere else, and flagged so the UI does not print a
+    meaningless "+0 % vs its price"."""
+    TITAN = 671
+    _run_index(conn, [(CORP_A, "t1")], {CORP_A: [
+        _contract(500, price=42_500_000_000),
+        _contract(501, price=46_500_000_000),
+    ]}, items={500: [{"type_id": TITAN, "quantity": 1}],
+               501: [{"type_id": TITAN, "quantity": 1}]})
+    item = lambda: [{"type_id": TITAN, "quantity": 1, "name": "Wyvern", "included": True}]
+    cheapest = ch.appraise_items(conn, item(), contract_id=500)
+    dearer = ch.appraise_items(conn, item(), contract_id=501)
+    assert cheapest["self_priced"] == 1      # "this IS the price"
+    assert dearer["self_priced"] == 0        # comparable against the cheapest
+    assert cheapest["value"] == dearer["value"] == 42_500_000_000
 
 
 def test_items_the_contract_asks_for_are_a_cost_not_a_gain(conn):
@@ -901,8 +922,10 @@ def test_a_price_is_not_taken_from_a_system_a_player_alliance_holds(clean_public
     _pub(clean_public, 3, price=90_000_000_000, system=None, items=((TITAN, 1),))
     prices = ch.contract_unit_prices(clean_public, [TITAN])
     # The 90b one is cheapest but its location cannot be verified, and the 200b one
-    # is in sov space: the NPC-space price wins.
-    assert prices[TITAN] == (150_000_000_000.0, "public")
+    # is in sov space: the NPC-space price wins. (Third element = the contract the
+    # price came from, so an appraisal can tell when it IS that contract.)
+    assert prices[TITAN][:2] == (150_000_000_000.0, "public")
+    assert prices[TITAN][2] == 2
 
 
 def test_npc_null_and_unclaimed_space_are_perfectly_good_references(clean_public):
