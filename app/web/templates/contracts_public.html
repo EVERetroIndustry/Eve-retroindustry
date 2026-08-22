@@ -98,6 +98,7 @@
             {% if c.title %}<div class="text-truncate" title="{{ c.title }}">{{ c.title }}</div>{% endif %}
             {% if c.type != 'courier' %}
             <button class="btn btn-link p-0 text-decoration-none" style="font-size:.72rem"
+                    data-price="{{ c.price or 0 }}"
                     onclick="pubItems(this, {{ c.contract_id }})"><i class="bi bi-box me-1"></i>items</button>
             <div class="pub-items text-muted" style="font-size:.75rem"></div>
             {% endif %}
@@ -159,9 +160,7 @@ async function pubItems(btn, contractId) {
   try {
     const r = await fetch('/api/contracts/public/items?contract_id=' + contractId);
     const d = await r.json();
-    box.innerHTML = (d.items && d.items.length)
-      ? d.items.map(it => `<div class="${it.included ? '' : 'text-danger'}">${it.included ? '' : '↩ '}${it.quantity.toLocaleString()}× ${escHtml(it.name)}</div>`).join('')
-      : '<span class="text-muted">(no items)</span>';
+    renderContractItems(box, d, btn.dataset.price);
     btn.dataset.loaded = '1'; btn.innerHTML = '<i class="bi bi-box me-1"></i>items';
   } catch (e) { box.innerHTML = '<span class="text-danger">load failed</span>'; btn.innerHTML = orig; }
   btn.disabled = false;

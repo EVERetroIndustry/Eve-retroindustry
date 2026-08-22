@@ -398,3 +398,14 @@ def test_every_sde_table_in_the_bundle_is_refreshed_into_the_user_database(app_m
     shipped = {t for t in tables if t.startswith("sde_") or t == "rig_bonuses"}
     missing = shipped - set(app_module._SDE_TABLES_TO_REFRESH)
     assert not missing, f"not refreshed into the user DB: {sorted(missing)}"
+
+
+def test_contract_items_are_copyable_and_the_helper_exists(client):
+    """The renderer builds the copy button; the helper that does the copying lives
+    in base.html. If either moves, the icon silently does nothing."""
+    html = client.get("/contracts").text
+    assert "window.copyText" in html          # clipboard API + execCommand fallback
+    assert "copy-items" in html               # the button the renderer creates
+    assert "renderContractItems" in html      # one renderer for all contract views
+    # Tab separated name + quantity is what appraisal sites and multibuy expect.
+    assert "\\t${i.quantity" in html or "\\\\t${i.quantity" in html

@@ -774,3 +774,75 @@ def test_a_contract_that_no_longer_exists_is_not_asked_for_again(conn, monkeypat
     calls.clear()
     asyncio.run(_drive())
     assert calls == []
+
+
+# ── what a contract's contents are worth ──────────────────────────────────────
+
+def _price(conn, type_id, sell=None, buy=None, adjusted=None):
+    conn.execute("CREATE TABLE IF NOT EXISTS market_price_cache (type_id INTEGER PRIMARY KEY,"
+                 " sell_price REAL, buy_price REAL, volume REAL, cached_at REAL)")
+    conn.execute("CREATE TABLE IF NOT EXISTS adjusted_price_cache (type_id INTEGER PRIMARY KEY,"
+                 " adjusted REAL NOT NULL, cached_at INTEGER)")
+    if sell is not None or buy is not None:
+        conn.execute("INSERT OR REPLACE INTO market_price_cache (type_id, sell_price, buy_price,"
+                     " cached_at) VALUES (?,?,?,?)", (type_id, sell, buy, time.time()))
+    if adjusted is not None:
+        conn.execute("INSERT OR REPLACE INTO adjusted_price_cache (type_id, adjusted, cached_at)"
+                     " VALUES (?,?,?)", (type_id, adjusted, int(time.time())))
+    conn.commit()
+
+
+def test_value_comes_from_jita_then_contracts_then_ccps_estimate(conn):
+    """A titan has no Jita sell order - its price lives on a contract."""
+    TRIT, TITAN, ODD, NOTHING = 34, 671, 645, 12005
+    _price(conn, TRIT, sell=5.0, buy=4.0)
+    _price(conn, ODD, adjusted=137_000_000)          # index value only
+    _price(conn, NOTHING, adjusted=0)                # CCP has no number either
+    # A single-item contract elsewhere in the alliance sells the titan.
+    _run_index(conn, [(CORP_A, "t1")],
+               {CORP_A: [_contract(500, price=80_000_000_000)]},
+               items={500: [{"type_id": TITAN, "quantity": 1}]})
+
+    items = [{"type_id": TRIT, "quantity": 1000, "name": "Tritanium", "included": True},
+             {"type_id": TITAN, "quantity": 1, "name": "Erebus", "included": True},
+             {"type_id": ODD, "quantity": 1, "name": "Deadspace mod", "included": True},
+             {"type_id": NOTHING, "quantity": 1, "name": "Molok", "included": True}]
+    a = ch.appraise_items(conn, items)
+    assert [i["price_source"] for i in items] == ["jita", "contract", "estimate", None]
+    assert a["counts"] == {"jita": 1, "contract": 1, "estimate": 1}
+    assert a["value"] == 5_000 + 80_000_000_000 + 137_000_000
+    assert a["unpriced"] == 1 and a["unpriced_names"] == ["Molok"]
+
+
+def test_a_contract_is_never_valued_from_itself(conn):
+    """Otherwise it would always compare exactly equal to its own price."""
+    TITAN = 671
+    _run_index(conn, [(CORP_A, "t1")],
+               {CORP_A: [_contract(500, price=80_000_000_000)]},
+               items={500: [{"type_id": TITAN, "quantity": 1}]})
+    items = [{"type_id": TITAN, "quantity": 1, "name": "Erebus", "included": True}]
+    # Appraising some other contract may use it...
+    assert ch.appraise_items(conn, list(items))["value"] == 80_000_000_000
+    # ...but appraising contract 500 itself may not.
+    a = ch.appraise_items(conn, items, contract_id=500)
+    assert a["value"] == 0 and a["unpriced"] == 1
+
+
+def test_items_the_contract_asks_for_are_a_cost_not_a_gain(conn):
+    TRIT = 34
+    _price(conn, TRIT, sell=10.0)
+    items = [{"type_id": TRIT, "quantity": 100, "name": "Tritanium", "included": True},
+             {"type_id": TRIT, "quantity": 40, "name": "Tritanium", "included": False}]
+    a = ch.appraise_items(conn, items)
+    assert a["value"] == 1000 and a["asked"] == 400
+    assert a["net"] == 600
+
+
+def test_a_bundle_contract_never_sets_a_unit_price(conn):
+    """In a bundle the price covers everything, so it says nothing about the unit."""
+    TITAN, TRIT = 671, 34
+    _run_index(conn, [(CORP_A, "t1")],
+               {CORP_A: [_contract(501, price=80_000_000_000)]},
+               items={501: [{"type_id": TITAN, "quantity": 1},
+                            {"type_id": TRIT, "quantity": 1}]})
+    assert ch.contract_unit_prices(conn, [TITAN]) == {}

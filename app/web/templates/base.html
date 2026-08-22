@@ -215,6 +215,121 @@ window.escHtml = function (s) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 };
+
+// Copy text to the clipboard with a brief confirmation on the button that asked.
+// The Qt backend needs the execCommand fallback (see _patch_qt_clipboard in
+// launcher.py), so both paths stay.
+window.copyText = function (text, btn, okIcon) {
+  const flash = ok => {
+    if (!btn) return;
+    const orig = btn.dataset._orig || btn.innerHTML;
+    btn.dataset._orig = orig;
+    btn.innerHTML = `<i class="bi bi-${ok ? (okIcon || 'check2') : 'exclamation-triangle'}"></i>`;
+    setTimeout(() => { btn.innerHTML = orig; }, 1500);
+  };
+  const fallback = () => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta);
+    flash(ok);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => flash(true)).catch(fallback);
+  } else {
+    fallback();
+  }
+};
+
+// Compact ISK for inline notes: 1.24b / 980m / 12.5k.
+window.iskShort = function (v) {
+  const n = Number(v) || 0;
+  const a = Math.abs(n);
+  const s = n < 0 ? '-' : '';
+  if (a >= 1e9) return s + (a / 1e9).toFixed(2) + 'b';
+  if (a >= 1e6) return s + (a / 1e6).toFixed(a >= 1e8 ? 0 : 1) + 'm';
+  if (a >= 1e3) return s + (a / 1e3).toFixed(0) + 'k';
+  return s + a.toFixed(0);
+};
+
+// Contract contents + what they are worth, from the app's OWN price cache. Used by
+// all three contract views and the public browser, so an appraisal reads the same
+// everywhere. `price` (optional) is what the contract asks, which is the only way
+// to say whether it is a good deal.
+window.renderContractItems = function (box, data, price) {
+  const items = (data && data.items) || [];
+  if (!items.length) {
+    box.innerHTML = '<span class="text-muted">(no items)</span>';
+    return;
+  }
+  // Where each line's value came from. Jita sell needs no explanation; the other
+  // two do, because a titan has no Jita price and its number is a contract or an
+  // index value - which is a different kind of claim.
+  const TAG = {
+    contract: ' <span class="text-info" title="Cheapest single-item contract we have indexed - a titan is never on a Jita sell order">c</span>',
+    estimate: ' <span class="text-warning" title="CCP adjusted price - an index value, not an offer">est</span>',
+  };
+  const line = it => `<div class="${it.included === false ? 'text-danger' : ''}">`
+    + `${it.included === false ? '&#8617; ' : ''}${(it.quantity || 0).toLocaleString()}&times; `
+    + `${escHtml(it.name)}${it.is_bpc ? ' <span class="badge badge-bpc" style="font-size:.6rem">BPC</span>' : ''}`
+    + (it.value ? ` <span class="text-muted">&middot; ${iskShort(it.value)}</span>`
+                  + (TAG[it.price_source] || '')
+                : ' <span class="text-warning">&middot; no price</span>')
+    + '</div>';
+  let html = items.map(line).join('');
+  const a = data && data.appraisal;
+  if (a && (a.priced || a.unpriced)) {
+    // With something unpriced the total is a floor, not the value - say so in the
+    // number itself, because the comparison underneath is only as good as this.
+    const atLeast = a.unpriced ? '&ge; ' : '';
+    const parts = [`<span class="fw-semibold">Jita sell</span> <b>${atLeast}${iskShort(a.net)}</b>`];
+    // Say when the total is not purely a Jita number.
+    const mix = [];
+    if (a.counts.contract) mix.push(`${a.counts.contract} from contracts`);
+    if (a.counts.estimate) mix.push(`${a.counts.estimate} estimated`);
+    if (mix.length) parts.push(`<span class="text-muted">incl. ${mix.join(', ')}</span>`);
+    const p = Number(price) || 0;
+    if (p > 0 && a.net) {
+      // Positive = the contract asks less than the same pile is worth.
+      const diff = a.net - p;
+      const pct = (diff / p) * 100;
+      parts.push(`<span class="${diff >= 0 ? 'text-success' : 'text-danger'}">`
+        + `${diff >= 0 ? '+' : ''}${iskShort(diff)} (${pct >= 0 ? '+' : ''}${pct.toFixed(0)}%)`
+        + `</span> <span class="text-muted">vs its price</span>`);
+    }
+    if (a.unpriced) {
+      // Never let a total quietly omit items nobody has any price for.
+      parts.push(`<span class="text-warning" title="${escHtml((a.unpriced_names || []).join(', '))}">`
+        + `${a.unpriced} without any price</span>`);
+    }
+    // Name + quantity per line, which is what an appraisal site or the in-game
+    // multibuy window expects - so the pile can leave the app in one click.
+    parts.push('<button type="button" class="btn btn-link p-0 copy-items" '
+      + 'style="font-size:.75rem;line-height:1;vertical-align:baseline" '
+      + 'title="Copy the item list (name and quantity, tab separated)">'
+      + '<i class="bi bi-clipboard"></i></button>');
+    html += `<div class="mt-1 pt-1" style="border-top:1px solid var(--eve-border);font-size:.75rem">`
+          + parts.join(' <span class="text-muted">&middot;</span> ') + '</div>';
+  }
+  box.innerHTML = html;
+  const copyBtn = box.querySelector('.copy-items');
+  if (copyBtn) {
+    // Only what the contract HANDS OVER: pasting a list that mixes in the items it
+    // asks for would appraise the wrong pile.
+    const text = items.filter(i => i.included !== false)
+      .map(i => `${i.name}\t${i.quantity || 0}`).join('\n');
+    copyBtn.addEventListener('click', ev => {
+      ev.stopPropagation();
+      window.copyText(text, copyBtn, 'clipboard-check');
+    });
+  }
+};
 </script>
 </head>
 <body>

@@ -255,9 +255,12 @@ async function allyItems(btn, contractId) {
   try {
     const r = await fetch('/api/contracts/alliance/items?contract_id=' + contractId);
     const d = await r.json();
-    box.innerHTML = (d.items && d.items.length)
-      ? d.items.map(it => `<div class="${it.included ? '' : 'text-danger'}">${it.included ? '' : '↩ '}${(it.quantity || 0).toLocaleString()}× ${escHtml(it.name)}${it.is_bpc ? ' <span class="badge badge-bpc" style="font-size:.6rem">BPC</span>' : ''}</div>`).join('')
-      : '<span class="text-muted">(contents not indexed yet - use Refresh)</span>';
+    const row = btn.closest('tr');
+    if (!d.items || !d.items.length) {
+      box.innerHTML = '<span class="text-muted">(contents not indexed yet - use Refresh)</span>';
+    } else {
+      renderContractItems(box, d, row && row.dataset.price);
+    }
     btn.dataset.loaded = '1'; btn.innerHTML = '<i class="bi bi-box me-1"></i>items';
   } catch (e) { box.innerHTML = '<span class="text-danger">load failed</span>'; btn.innerHTML = orig; }
   btn.disabled = false;

@@ -733,6 +733,147 @@ def search_alliance_contracts(conn: sqlite3.Connection, alliance_id: int, *,
     return [dict(zip(cols, r)) for r in rows], total
 
 
+def contract_unit_prices(conn: sqlite3.Connection, type_ids,
+                         exclude_contract_id: int | None = None) -> dict[int, tuple[float, str]]:
+    """{type_id: (cheapest price per unit, "alliance"|"public")} from SINGLE-item
+    contracts we have indexed.
+
+    This is how capitals and other things the market cannot hold are actually
+    priced: a titan is never on a Jita sell order, it is on a contract. Only
+    contracts holding exactly one item type are used - in a bundle the price also
+    covers everything else, so it says nothing about the unit.
+
+    `exclude_contract_id` keeps the appraisal honest: valuing a contract's contents
+    partly from that same contract would make it compare equal to itself.
+    """
+    ids = sorted({int(t) for t in type_ids if t})
+    if not ids:
+        return {}
+    ensure_alliance_contract_tables(conn)
+    ensure_public_contract_tables(conn)
+    ph = ",".join("?" * len(ids))
+    out: dict[int, tuple[float, str]] = {}
+    queries = (
+        ("alliance", f"""
+            SELECT i.type_id, MIN(c.price * 1.0 / i.quantity)
+            FROM alliance_contracts c
+            JOIN alliance_contract_items i ON i.contract_id = c.contract_id
+            WHERE c.type = 'item_exchange' AND c.status = 'outstanding' AND c.price > 0
+              AND i.is_included = 1 AND i.quantity > 0 AND i.type_id IN ({ph})
+              AND c.contract_id != ?
+              AND (SELECT COUNT(*) FROM alliance_contract_items x
+                    WHERE x.contract_id = c.contract_id AND x.is_included = 1) = 1
+            GROUP BY i.type_id"""),
+        ("public", f"""
+            SELECT i.type_id, MIN(c.price * 1.0 / i.quantity)
+            FROM public_contracts c
+            JOIN public_contract_items i ON i.contract_id = c.contract_id
+            WHERE c.type = 'item_exchange' AND c.price > 0
+              AND i.is_included = 1 AND i.quantity > 0 AND i.type_id IN ({ph})
+              AND c.contract_id != ?
+              AND (SELECT COUNT(*) FROM public_contract_items x
+                    WHERE x.contract_id = c.contract_id AND x.is_included = 1) = 1
+            GROUP BY i.type_id"""),
+    )
+    for source, sql in queries:
+        try:
+            rows = conn.execute(sql, (*ids, exclude_contract_id or -1)).fetchall()
+        except sqlite3.OperationalError:
+            continue                      # that index has never been built
+        for tid, price in rows:
+            if price and (tid not in out or price < out[tid][0]):
+                out[int(tid)] = (float(price), source)
+    return out
+
+
+def _adjusted_prices(conn: sqlite3.Connection, type_ids) -> dict[int, float]:
+    """CCP's own adjusted price - the last resort for something with no market and
+    no contract. It is an index value, not an offer, so it is always labelled as an
+    estimate and a zero is treated as "no idea"."""
+    ids = sorted({int(t) for t in type_ids if t})
+    if not ids:
+        return {}
+    ph = ",".join("?" * len(ids))
+    try:
+        rows = conn.execute(
+            f"SELECT type_id, adjusted FROM adjusted_price_cache WHERE type_id IN ({ph})",
+            ids).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    return {int(t): float(v) for t, v in rows if v and v > 0}
+
+
+def appraise_items(conn: sqlite3.Connection, items: list[dict],
+                   contract_id: int | None = None) -> dict:
+    """Value a contract's contents from the app's own data, best source first.
+
+    This is the Janice question answered locally - no third-party key, no network -
+    and the point of the fallback chain is the things the market cannot hold:
+
+      1. **Jita sell** - a real instant-buy price.
+      2. **Contract price** - the cheapest single-item contract we have indexed
+         (alliance or public). A titan or a supercarrier is never on a Jita sell
+         order; it is on a contract, and that IS its price.
+      3. **CCP adjusted price** - an index value, not an offer. Labelled as an
+         estimate so nobody mistakes it for a quote. (Measured: a titan has no Jita
+         sell, a ~450M lowball buy order, and an adjusted price of ~73b - only the
+         last is in the right universe.)
+      4. Nothing: counted and named, never silently valued at zero.
+
+    The contract being appraised is excluded from step 2 - valuing its contents from
+    itself would make it compare exactly equal to its own price.
+
+    Items the contract ASKS FOR (is_included = 0) are valued separately: accepting
+    such a contract means handing those over, so they are a cost, not a gain.
+    """
+    from app.web.prices_helper import get_cached_jita_prices
+
+    ids = sorted({int(i["type_id"]) for i in items if i.get("type_id")})
+    jita = get_cached_jita_prices(conn, ids) if ids else {}
+    need_fallback = [t for t in ids if (jita.get(t) or (None, None))[0] is None]
+    from_contracts = contract_unit_prices(conn, need_fallback, contract_id) if need_fallback else {}
+    still = [t for t in need_fallback if t not in from_contracts]
+    estimates = _adjusted_prices(conn, still) if still else {}
+
+    out = {"value": 0.0, "asked": 0.0, "by_source": {"jita": 0.0, "contract": 0.0,
+                                                     "estimate": 0.0},
+           "counts": {"jita": 0, "contract": 0, "estimate": 0},
+           "buy": 0.0, "asked_buy": 0.0,
+           "unpriced": 0, "unpriced_names": []}
+    for it in items:
+        tid = int(it.get("type_id") or 0)
+        qty = it.get("quantity") or 0
+        sell, buy = jita.get(tid, (None, None))
+        it["buy"] = buy
+        unit, source = None, None
+        if sell is not None:
+            unit, source = sell, "jita"
+        elif tid in from_contracts:
+            unit, source = from_contracts[tid]
+            source = "contract"
+        elif tid in estimates:
+            unit, source = estimates[tid], "estimate"
+        it["unit"] = unit
+        it["price_source"] = source
+        it["value"] = unit * qty if unit is not None else None
+        included = it.get("included", True)
+        if buy:
+            out["buy" if included else "asked_buy"] += buy * qty
+        if unit is None:
+            out["unpriced"] += 1
+            if len(out["unpriced_names"]) < 5:
+                out["unpriced_names"].append(it.get("name") or f"#{tid}")
+            continue
+        out["counts"][source] += 1
+        out["by_source"][source] += unit * qty
+        out["value" if included else "asked"] += unit * qty
+    # What accepting the contract nets you in market terms, before its own price.
+    out["net"] = out["value"] - out["asked"]
+    out["net_buy"] = out["buy"] - out["asked_buy"]
+    out["priced"] = sum(out["counts"].values())
+    return out
+
+
 def best_alliance_contract_price(conn: sqlite3.Connection, alliance_ids,
                                  type_id: int) -> dict | None:
     """Cheapest price/unit of a product from OPEN alliance item-exchange contracts.

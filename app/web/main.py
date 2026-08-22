@@ -6171,7 +6171,10 @@ async def api_contract_items(request: Request, contract_id: int,
             "quantity": it.get("quantity", 0),
             "included": it.get("is_included", True),
         } for it in items]
-        return {"items": out}
+        # Worth of the pile, from our own price cache - the Janice question, answered
+        # locally and comparable to the contract price right next to it.
+        appraisal = contracts_helper.appraise_items(conn, out, contract_id)
+        return {"items": out, "appraisal": appraisal}
     finally:
         conn.close()
 
@@ -6589,7 +6592,9 @@ async def api_alliance_contract_items(request: Request, contract_id: int):
     """Items of an indexed alliance contract - straight from the cache, no ESI."""
     conn = get_conn()
     try:
-        return {"items": contracts_helper.get_alliance_contract_items(conn, contract_id)}
+        items = contracts_helper.get_alliance_contract_items(conn, contract_id)
+        return {"items": items,
+                "appraisal": contracts_helper.appraise_items(conn, items, contract_id)}
     finally:
         conn.close()
 
@@ -6611,7 +6616,9 @@ async def api_public_index(request: Request, region_id: int):
 async def api_public_contract_items(request: Request, contract_id: int):
     conn = get_conn()
     try:
-        return {"items": contracts_helper.get_contract_items(conn, contract_id)}
+        items = contracts_helper.get_contract_items(conn, contract_id)
+        return {"items": items,
+                "appraisal": contracts_helper.appraise_items(conn, items, contract_id)}
     finally:
         conn.close()
 

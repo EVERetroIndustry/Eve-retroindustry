@@ -125,14 +125,8 @@ async function loadItems(btn, contractId, charId, corpId) {
     const p = new URLSearchParams({contract_id: contractId, char_id: charId, corp_id: corpId});
     const r = await fetch('/api/contracts/items?' + p);
     const d = await r.json();
-    if (!d.items || !d.items.length) {
-      box.innerHTML = '<span class="text-muted">(no items)</span>';
-    } else {
-      box.innerHTML = d.items.map(it =>
-        `<div class="${it.included ? '' : 'text-danger'}">`
-        + `${it.included ? '' : '↩ '}${it.quantity.toLocaleString()}× ${escHtml(it.name)}</div>`
-      ).join('');
-    }
+    const row = btn.closest('tr');
+    renderContractItems(box, d, row && row.dataset.price);
     btn.dataset.loaded = '1';
     btn.innerHTML = '<i class="bi bi-box me-1"></i>items';
   } catch (e) {
