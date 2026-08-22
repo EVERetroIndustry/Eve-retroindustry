@@ -224,6 +224,14 @@ _SDE_TABLES_TO_REFRESH = (
     "sde_skill_time_bonus",
     "sde_planet_schematics",           # v0.8.106 (PI factory chains)
     "sde_planet_schematic_materials",  # v0.8.106
+    # Which SDE build the bundle was made from. Easy to forget when adding a table
+    # here: caught on a release-candidate run, where About said "build not
+    # recorded" although the bundled database knew it.
+    "sde_meta",
+    # Derived from the SDE (populate_rig_bonuses is a no-op once the table has rows),
+    # so a user database kept whatever the SDE looked like when it was first filled.
+    # The bundled copy is rebuilt from the current SDE, so refresh it too.
+    "rig_bonuses",
 )
 
 

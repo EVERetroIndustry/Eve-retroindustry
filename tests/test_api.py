@@ -378,3 +378,23 @@ def test_tightening_permissions_never_raises_on_a_missing_path(app_module, tmp_p
     monkeypatch.setattr(app_module, "DB_ABS", str(tmp_path / "nope" / "eve_cache.db"))
     monkeypatch.setattr(app_module, "_PERMS_TIGHTENED", [False])
     app_module._tighten_data_permissions()          # must be a no-op, not an error
+
+
+def test_every_sde_table_in_the_bundle_is_refreshed_into_the_user_database(app_module):
+    """Adding an SDE table without listing it here leaves it stale (or absent).
+
+    That is how About ended up saying "build not recorded" on a release candidate:
+    sde_meta existed in the bundled database and was never copied across.
+    """
+    import sqlite3
+    bundled = app_module._bundled_sde_path()
+    assert bundled, "the bundled SDE database must be findable"
+    conn = sqlite3.connect(f"file:{bundled}?mode=ro", uri=True)
+    try:
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    finally:
+        conn.close()
+    shipped = {t for t in tables if t.startswith("sde_") or t == "rig_bonuses"}
+    missing = shipped - set(app_module._SDE_TABLES_TO_REFRESH)
+    assert not missing, f"not refreshed into the user DB: {sorted(missing)}"
