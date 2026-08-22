@@ -11,55 +11,41 @@
 <div class="alert alert-danger"><i class="bi bi-exclamation-circle me-2"></i>{{ error }}</div>
 {% endif %}
 
-{# Region selection #}
+{# One index for all of New Eden, kept current in the background: listing every
+   region costs about half a second, so there is nothing for the user to pick. #}
+<div class="card mb-3">
+  <div class="card-body d-flex align-items-center justify-content-between flex-wrap gap-2">
+    <div>
+      {% if status.contracts %}
+      <span class="fw-semibold">{{ status.contracts | count_eu }} public contracts</span>
+      <span class="text-muted small ms-2">
+        {{ status.regions }} regions &middot; listed
+        <span id="idx-age" data-ts="{{ status.newest or 0 }}"></span>
+      </span>
+      {% else %}
+      <span class="text-muted small">reading the public contracts of every region…</span>
+      {% endif %}
+      <span class="small ms-2" id="fill-state"
+            data-contracts="{{ status.contracts }}" data-items="{{ status.with_items }}"></span>
+    </div>
+    <button class="btn btn-sm btn-outline-secondary" id="index-btn" onclick="refreshPublic()"
+            title="The index keeps itself current; this does it now">
+      <i class="bi bi-cloud-download me-1"></i>Refresh now
+    </button>
+  </div>
+</div>
+
+{% if status.contracts %}
 <form method="get" action="/contracts/public" class="card mb-3">
   <div class="card-body d-flex align-items-end gap-2 flex-wrap">
-    <div style="flex:1;min-width:220px">
-      <label class="form-label small text-muted mb-1">Region (name or ID)</label>
+    <div style="min-width:210px">
+      <label class="form-label small text-muted mb-1">Region</label>
       <input type="text" name="region" value="{{ region_name }}" class="form-control form-control-sm"
-             placeholder="e.g. The Forge, Domain, Delve…" list="region-hints" autocomplete="off">
+             placeholder="all of New Eden" list="region-hints" autocomplete="off">
       <datalist id="region-hints">
         {% for rid, rname in regions %}<option value="{{ rname }}">{% endfor %}
       </datalist>
     </div>
-    <button class="btn btn-sm btn-eve"><i class="bi bi-search me-1"></i>Select region</button>
-  </div>
-</form>
-
-{% if region_id %}
-<div class="card mb-3">
-  <div class="card-body d-flex align-items-center justify-content-between flex-wrap gap-2">
-    <div>
-      <span class="fw-semibold">{{ region_name }}</span>
-      {% if status %}
-      <span class="text-muted small ms-2">
-        {{ "{:,}".format(status.contract_count) }} contracts · indexed
-        <span id="idx-age" data-ts="{{ status.indexed_at }}"></span>
-      </span>
-      {% else %}
-      <span class="text-warning small ms-2">region not indexed yet</span>
-      {% endif %}
-    </div>
-    <button class="btn btn-sm {% if status %}btn-outline-secondary{% else %}btn-eve{% endif %}"
-            id="index-btn" onclick="indexRegion({{ region_id }})">
-      <i class="bi bi-cloud-download me-1"></i>{% if status %}Reindex{% else %}Index region{% endif %}
-    </button>
-  </div>
-  <div id="index-progress" class="d-none px-3 pb-3">
-    <div class="d-flex justify-content-between small text-muted mb-1">
-      <span id="idx-label">Downloading…</span><span id="idx-pct">0%</span>
-    </div>
-    <div class="progress" style="height:6px"><div id="idx-bar" class="progress-bar bg-warning" style="width:0%"></div></div>
-    <div class="text-muted mt-1" style="font-size:.72rem">A large region (The Forge ~34k contracts) can take 1-2 min.</div>
-  </div>
-</div>
-{% endif %}
-
-{% if status %}
-{# Search within the indexed region #}
-<form method="get" action="/contracts/public" class="card mb-3">
-  <input type="hidden" name="region" value="{{ region_name }}">
-  <div class="card-body d-flex align-items-end gap-2 flex-wrap">
     <div style="flex:2;min-width:200px">
       <label class="form-label small text-muted mb-1">Item (contract contents)</label>
       <input type="text" name="item" value="{{ item }}" class="form-control form-control-sm" placeholder="e.g. Raven, Tritanium…">
@@ -86,7 +72,7 @@
   <div class="table-responsive">
     <table class="table table-hover tbl-compact table-sm mb-0 align-middle">
       <thead><tr>
-        <th>Type</th><th>Contract</th><th>Location</th>
+        <th>Type</th><th>Contract</th><th>Location</th><th>Region</th>
         <th class="text-end">Price</th><th class="text-end">Reward</th>
         <th>Issuer</th><th class="text-end">Expires</th>
       </tr></thead>
@@ -106,6 +92,7 @@
           <td class="text-muted text-truncate" style="max-width:210px;font-size:.75rem">
             {% if c.courier %}{{ c.start_name }} <i class="bi bi-arrow-right"></i> {{ c.end_name }}{% else %}{{ c.start_name }}{% endif %}
           </td>
+          <td class="text-muted text-truncate" style="max-width:130px;font-size:.75rem">{{ c.region_name }}</td>
           <td class="text-end" style="white-space:nowrap">{% if c.price %}{{ c.price | isk }}{% else %}<span class="text-muted">-</span>{% endif %}</td>
           <td class="text-end" style="white-space:nowrap">{% if c.reward %}{{ c.reward | isk }}{% else %}<span class="text-muted">-</span>{% endif %}</td>
           <td class="text-muted text-truncate" style="max-width:130px;font-size:.78rem">{{ c.issuer_name }}</td>
@@ -135,21 +122,56 @@
   el.textContent = mins < 1 ? 'just now' : (mins < 60 ? mins + ' min' : Math.floor(mins/60) + ' h') + ' ago';
 })();
 
-function indexRegion(regionId) {
+// What the background indexer is doing. Same shape as the alliance tab, and the
+// state lives on the server, so it survives navigating away.
+(function(){
+  const el = document.getElementById('fill-state');
+  if (!el) return;
+  const had = {contracts: +el.dataset.contracts, items: +el.dataset.items};
+  let reloaded = false;
+  const spin = '<span class="spinner-border spinner-border-sm me-1" style="width:.7rem;height:.7rem"></span>';
+  async function poll() {
+    let d;
+    try { d = await (await fetch('/api/contracts/public/fill-status')).json(); }
+    catch (e) { return; }
+    if (d.phase === 'listing') {
+      el.className = 'small ms-2 text-muted';
+      el.innerHTML = spin + `listing regions ${d.done}/${d.total}`;
+    } else if (d.phase === 'contents') {
+      el.className = 'small ms-2 text-muted';
+      el.innerHTML = spin + `reading contents for item search - `
+        + `${(d.with_items || 0).toLocaleString()}/${(d.priced || 0).toLocaleString()} contracts`
+        + ' (biggest first)';
+    } else if (d.error) {
+      el.className = 'small ms-2 text-danger';
+      el.textContent = d.error;
+    } else if (d.remaining) {
+      el.className = 'small ms-2 text-muted';
+      el.innerHTML = `item search covers ${(d.with_items || 0).toLocaleString()} of `
+        + `${(d.priced || 0).toLocaleString()} contracts`;
+    } else {
+      el.className = 'small ms-2 text-muted';
+      el.innerHTML = 'item search covers every contract';
+    }
+    if (!reloaded && (d.contracts > had.contracts) && d.phase !== 'listing') {
+      reloaded = true;
+      setTimeout(() => location.reload(), 500);
+    }
+  }
+  poll();
+  setInterval(poll, 4000);
+})();
+
+async function refreshPublic() {
   const btn = document.getElementById('index-btn');
-  const prog = document.getElementById('index-progress');
   btn.disabled = true;
-  prog.classList.remove('d-none');
-  const es = new EventSource('/api/contracts/public/index?region_id=' + regionId);
-  es.onmessage = (e) => {
-    const d = JSON.parse(e.data);
-    document.getElementById('idx-bar').style.width = (d.pct || 0) + '%';
-    document.getElementById('idx-pct').textContent = (d.pct || 0) + '%';
-    if (d.phase === 'list') document.getElementById('idx-label').textContent = `Listing: ${d.done}/${d.total} pages`;
-    else if (d.phase === 'items') document.getElementById('idx-label').textContent = `Items: ${d.done}/${d.total} contracts`;
-    if (d.done) { es.close(); document.getElementById('idx-label').textContent = 'Done, loading…'; setTimeout(() => location.reload(), 800); }
-  };
-  es.onerror = () => { es.close(); document.getElementById('idx-label').textContent = 'Connection error'; btn.disabled = false; };
+  const orig = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+  try {
+    await fetch('/api/contracts/public/refresh', {method: 'POST'});
+  } catch (e) {}
+  btn.innerHTML = orig;
+  btn.disabled = false;
 }
 
 async function pubItems(btn, contractId) {

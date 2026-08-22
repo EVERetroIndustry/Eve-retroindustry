@@ -846,3 +846,118 @@ def test_a_bundle_contract_never_sets_a_unit_price(conn):
                items={501: [{"type_id": TITAN, "quantity": 1},
                             {"type_id": TRIT, "quantity": 1}]})
     assert ch.contract_unit_prices(conn, [TITAN]) == {}
+
+
+# ── public contracts across all of New Eden ───────────────────────────────────
+
+def _pub(conn, cid, region=10000002, price=1_000_000, volume=0.0, system=None,
+         type_="item_exchange", items=((34, 1),)):
+    ch.ensure_public_contract_tables(conn)
+    conn.execute(
+        "INSERT OR REPLACE INTO public_contracts (contract_id, region_id, type, price,"
+        " reward, collateral, buyout, volume, date_expired, title, start_location_id,"
+        " end_location_id, issuer_id, system_id) VALUES (?,?,?,?,0,0,0,?,?,?,?,0,1,?)",
+        (cid, region, type_, price, volume, "2026-09-19T00:00:00Z", f"c{cid}", 60000000 + cid,
+         system))
+    for tid, qty in items:
+        conn.execute("INSERT INTO public_contract_items (contract_id, type_id, quantity,"
+                     " is_included) VALUES (?,?,?,1)", (cid, tid, qty))
+    conn.commit()
+
+
+def _sov(conn, system_id, alliance_id=None, faction_id=None):
+    ch.ensure_public_contract_tables(conn)
+    conn.execute("INSERT OR REPLACE INTO sov_map_cache (system_id, alliance_id, faction_id,"
+                 " cached_at) VALUES (?,?,?,?)", (system_id, alliance_id, faction_id,
+                                                  time.time()))
+    conn.commit()
+
+
+@pytest.fixture
+def clean_public(app_module):
+    conn = app_module.get_conn()
+    ch.ensure_public_contract_tables(conn)
+    for t in ("public_contracts", "public_contract_items", "public_contract_meta",
+              "public_contract_items_absent", "sov_map_cache", "station_system_cache"):
+        conn.execute(f"DELETE FROM {t}")
+    conn.commit()
+    yield conn
+    for t in ("public_contracts", "public_contract_items", "public_contract_meta",
+              "public_contract_items_absent", "sov_map_cache", "station_system_cache"):
+        conn.execute(f"DELETE FROM {t}")
+    conn.commit()
+    conn.close()
+
+
+def test_a_price_is_not_taken_from_a_system_a_player_alliance_holds(clean_public):
+    """In sov space the market is usually shut to outsiders, so a price there says
+    what one group charges its own - measured: 150 of 531 single-item contracts sat
+    in sov systems or places we cannot even verify."""
+    TITAN = 671
+    _sov(clean_public, 30000142, faction_id=500006)      # Jita: NPC
+    _sov(clean_public, 30004600, alliance_id=1900696668)  # someone's staging
+    _pub(clean_public, 1, price=200_000_000_000, system=30004600, items=((TITAN, 1),))
+    _pub(clean_public, 2, price=150_000_000_000, system=30000142, items=((TITAN, 1),))
+    _pub(clean_public, 3, price=90_000_000_000, system=None, items=((TITAN, 1),))
+    prices = ch.contract_unit_prices(clean_public, [TITAN])
+    # The 90b one is cheapest but its location cannot be verified, and the 200b one
+    # is in sov space: the NPC-space price wins.
+    assert prices[TITAN] == (150_000_000_000.0, "public")
+
+
+def test_npc_null_and_unclaimed_space_are_perfectly_good_references(clean_public):
+    TITAN = 671
+    _sov(clean_public, 30000157, faction_id=500010)       # Venal: NPC null
+    _pub(clean_public, 1, price=120_000_000_000, system=30000157, items=((TITAN, 1),))
+    assert ch.contract_unit_prices(clean_public, [TITAN])[TITAN][0] == 120_000_000_000.0
+    # A system nobody holds at all (no sov row) is fine too.
+    _pub(clean_public, 2, price=110_000_000_000, system=30002000, items=((TITAN, 1),))
+    assert ch.contract_unit_prices(clean_public, [TITAN])[TITAN][0] == 110_000_000_000.0
+
+
+def test_public_search_spans_every_region_unless_one_is_named(clean_public):
+    """Listing all of known space costs 106 requests, so a region is a filter now."""
+    _pub(clean_public, 1, region=10000002)
+    _pub(clean_public, 2, region=10000043)
+    assert len(ch.search_public_contracts(clean_public)) == 2
+    only = ch.search_public_contracts(clean_public, 10000043)
+    assert [c["contract_id"] for c in only] == [2]
+    assert only[0]["region_id"] == 10000043
+
+
+def test_contents_are_fetched_biggest_volume_first(clean_public, monkeypatch):
+    """Capitals are the biggest contracts there are, so volume order is what makes
+    a capital's price available in seconds instead of after a full index."""
+    import asyncio
+    for cid, vol in ((1, 5.0), (2, 1_300_000.0), (3, 100.0), (4, 62_000_000.0)):
+        _pub(clean_public, cid, volume=vol, items=())
+    order = []
+
+    class _Resp:
+        status_code = 200
+        def json(self): return [{"type_id": 34, "quantity": 1}]
+
+    class _Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, **kw):
+            order.append(int(url.rstrip("/").rsplit("/", 1)[-1]))
+            return _Resp()
+
+    monkeypatch.setattr(ch, "esi_client", lambda **kw: _Client())
+    res = asyncio.run(ch.fill_public_items(clean_public, budget=2))
+    assert order == [4, 2]                      # 62M m3 then 1.3M m3
+    assert res["fetched"] == 2 and res["remaining"] == 2
+
+
+def test_relisting_a_region_keeps_the_contents_already_fetched(clean_public):
+    """Contents are immutable and expensive; a listing refresh must not throw them
+    away, only drop what fell out of the listing entirely."""
+    _pub(clean_public, 1, region=10000002, items=((34, 5),))
+    _pub(clean_public, 2, region=10000002, items=((35, 5),))
+    keep = [{"contract_id": 1, "type": "item_exchange", "price": 1.0, "volume": 0,
+             "start_location_id": 60000001, "date_expired": "", "title": ""}]
+    ch._store_public_listing(clean_public, 10000002, keep, {})
+    left = {r[0] for r in clean_public.execute(
+        "SELECT DISTINCT contract_id FROM public_contract_items").fetchall()}
+    assert left == {1}

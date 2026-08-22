@@ -6233,45 +6233,52 @@ async def _resolve_region_id(name_or_id: str) -> tuple[int | None, str]:
 @app.get("/contracts/public", response_class=HTMLResponse)
 async def public_contracts_page(request: Request, region: str = "", item: str = "",
                                 ctype: str = "", max_price: str = ""):
+    """Public contracts across all of New Eden.
+
+    The whole of known space is indexed in the background (106 requests, about half
+    a second), so the region is a FILTER now, not a gate you have to pass first.
+    """
     conn = get_conn()
+    ensure_public_filler()
     ctx: dict = {
-        "region_name": region, "region_id": None, "status": None, "results": [],
+        "region_name": region, "region_id": None, "results": [],
         "item": item, "ctype": ctype, "max_price": max_price, "error": None,
         "regions": await _get_all_regions(),
+        "status": contracts_helper.public_index_status(conn),
     }
     region_id, region_name = await _resolve_region_id(region)
     ctx["region_id"] = region_id
     ctx["region_name"] = region_name
     if region and region_id is None:
         ctx["error"] = f'Region "{region}" not found.'
-    if region_id:
-        ctx["status"] = contracts_helper.get_index_status(conn, region_id)
-        if ctx["status"]:
+    if ctx["status"]["contracts"]:
+        mp = None
+        try:
+            mp = float(max_price) if max_price.strip() else None
+        except ValueError:
             mp = None
+        results = contracts_helper.search_public_contracts(
+            conn, region_id, item=item, ctype=ctype, max_price=mp)
+        party_ids = {c["issuer_id"] for c in results if c["issuer_id"]}
+        loc_ids = {lid for c in results for lid in (c["start_location_id"], c["end_location_id"]) if lid}
+        party_names = await _resolve_party_names(party_ids) if party_ids else {}
+        loc_names: dict[int, str] = {}
+        if loc_ids:
+            any_tok = next((_get_valid_token_for(conn, cid) for cid, _ in list_characters(conn)
+                            if _get_valid_token_for(conn, cid)), None)
             try:
-                mp = float(max_price) if max_price.strip() else None
-            except ValueError:
-                mp = None
-            results = contracts_helper.search_public_contracts(
-                conn, region_id, item=item, ctype=ctype, max_price=mp)
-            party_ids = {c["issuer_id"] for c in results if c["issuer_id"]}
-            loc_ids = {lid for c in results for lid in (c["start_location_id"], c["end_location_id"]) if lid}
-            party_names = await _resolve_party_names(party_ids) if party_ids else {}
-            loc_names: dict[int, str] = {}
-            if loc_ids:
-                any_tok = next((_get_valid_token_for(conn, cid) for cid, _ in list_characters(conn)
-                                if _get_valid_token_for(conn, cid)), None)
-                try:
-                    loc_names = await resolve_station_names_bulk(list(loc_ids), token=any_tok, conn=conn)
-                except Exception:
-                    loc_names = load_location_names_from_db(conn)
-            for c in results:
-                c["type_label"] = contracts_api.type_label(c["type"])
-                c["issuer_name"] = party_names.get(c["issuer_id"], str(c["issuer_id"] or ""))
-                c["start_name"] = loc_names.get(c["start_location_id"], "")
-                c["end_name"] = loc_names.get(c["end_location_id"], "")
-                c["courier"] = c["type"] == "courier"
-            ctx["results"] = results
+                loc_names = await resolve_station_names_bulk(list(loc_ids), token=any_tok, conn=conn)
+            except Exception:
+                loc_names = load_location_names_from_db(conn)
+        region_names = {rid: name for rid, name in ctx["regions"]}
+        for c in results:
+            c["type_label"] = contracts_api.type_label(c["type"])
+            c["issuer_name"] = party_names.get(c["issuer_id"], str(c["issuer_id"] or ""))
+            c["start_name"] = loc_names.get(c["start_location_id"], "")
+            c["end_name"] = loc_names.get(c["end_location_id"], "")
+            c["region_name"] = region_names.get(c.get("region_id"), "")
+            c["courier"] = c["type"] == "courier"
+        ctx["results"] = results
     conn.close()
     return _tr("contracts_public.html", request, ctx)
 
@@ -6441,6 +6448,133 @@ def ensure_alliance_filler() -> None:
         _ALLIANCE_WORKER["task"] = asyncio.create_task(_alliance_fill_loop())
     except RuntimeError:
         pass                                        # no running loop (tests, CLI)
+
+
+# ── Public contracts: kept current for everyone, no region picking ────────────
+#
+# Listing all of known space is 106 requests and about half a second, so the app
+# just keeps it current instead of asking the user which region to index. Contents
+# are fetched biggest-volume-first, because the items that need a contract price at
+# all (capitals) are the biggest contracts there are.
+_PUBLIC_FILL: dict = {}
+_PUBLIC_WORKER: dict[str, object] = {}
+_PUBLIC_LIST_TTL = 60 * 60          # re-list everything at most once an hour
+_PUBLIC_ITEM_BUDGET = 1500          # contents per pass
+
+
+def _any_structure_token(conn: sqlite3.Connection) -> str | None:
+    """Any token that may read player structures - needed to learn which system a
+    Keepstar is in, which is where capitals are actually contracted."""
+    for cid, _n in list_characters(conn):
+        tok = _get_valid_token_for(conn, cid)
+        if tok and token_has_scope(tok, "esi-universe.read_structures.v1"):
+            return tok
+    return None
+
+
+def public_fill_state() -> dict:
+    return dict(_PUBLIC_FILL)
+
+
+def _set_public(**kw) -> None:
+    _PUBLIC_FILL.update(kw)
+    _PUBLIC_FILL["updated"] = _time.time()
+
+
+async def _public_fill_pass(conn: sqlite3.Connection) -> dict:
+    status = contracts_helper.public_index_status(conn)
+    age = _time.time() - (status.get("newest") or 0)
+    if not status["regions"] or age > _PUBLIC_LIST_TTL:
+        regions = [rid for rid, _n in await _get_all_regions()]
+        if regions:
+            _set_public(phase="listing", done=0, total=len(regions))
+
+            def _p(done, total, contracts):
+                _set_public(done=done, total=total, contracts=contracts)
+
+            res = await contracts_helper.refresh_public_listings(
+                conn, regions, progress=_p, token=_any_structure_token(conn))
+            _set_public(phase="listed", regions=res["regions"], contracts=res["contracts"])
+    status = contracts_helper.public_index_status(conn)
+    _set_public(indexed=status["contracts"], with_items=status["with_items"],
+                priced=status["priced"])
+    remaining = status["priced"] - status["with_items"]
+    if remaining <= 0:
+        _set_public(phase="idle", remaining=0)
+        return {"worked": False}
+    _set_public(phase="contents", remaining=remaining)
+
+    def _pi(done, total):
+        _set_public(done=done, total=total)
+
+    res = await contracts_helper.fill_public_items(conn, _PUBLIC_ITEM_BUDGET, progress=_pi)
+    _set_public(phase="idle" if not res["remaining"] else "contents",
+                remaining=res["remaining"], fetched=res["fetched"])
+    return {"worked": bool(res["fetched"])}
+
+
+async def _public_fill_loop() -> None:
+    while True:
+        delay = 10 * 60
+        conn = get_conn()
+        try:
+            res = await _public_fill_pass(conn)
+            if res["worked"]:
+                delay = 20          # more contents to fetch, keep going
+        except Exception as exc:
+            _set_public(phase="error", error=str(exc)[:200])
+        finally:
+            conn.close()
+        await asyncio.sleep(delay)
+
+
+def ensure_public_filler() -> None:
+    task = _PUBLIC_WORKER.get("task")
+    if task is not None and not task.done():        # type: ignore[union-attr]
+        return
+    try:
+        _PUBLIC_WORKER["task"] = asyncio.create_task(_public_fill_loop())
+    except RuntimeError:
+        pass
+
+
+@app.post("/api/contracts/public/refresh")
+async def api_public_refresh():
+    """Force a listing refresh + one contents pass now (the filler does this anyway)."""
+    conn = get_conn()
+    try:
+        _set_public(phase="listing")
+        regions = [rid for rid, _n in await _get_all_regions()]
+        res = await contracts_helper.refresh_public_listings(
+            conn, regions, token=_any_structure_token(conn))
+        items = await contracts_helper.fill_public_items(conn, _PUBLIC_ITEM_BUDGET)
+        status = contracts_helper.public_index_status(conn)
+        _set_public(phase="idle" if not items["remaining"] else "contents",
+                    remaining=items["remaining"])
+        return {"ok": True, "regions": res["regions"], "contracts": res["contracts"],
+                "items_fetched": items["fetched"], "remaining": items["remaining"],
+                "with_items": status["with_items"]}
+    finally:
+        conn.close()
+
+
+@app.get("/api/contracts/public/fill-status")
+async def api_public_fill_status():
+    """What the public index looks like and what the filler is doing."""
+    conn = get_conn()
+    try:
+        status = contracts_helper.public_index_status(conn)
+    finally:
+        conn.close()
+    st = public_fill_state()
+    return {
+        "phase": st.get("phase") or ("idle" if status["regions"] else "starting"),
+        "done": st.get("done") or 0, "total": st.get("total") or 0,
+        "regions": status["regions"], "contracts": status["contracts"],
+        "priced": status["priced"], "with_items": status["with_items"],
+        "remaining": max(0, status["priced"] - status["with_items"]),
+        "newest": status["newest"], "error": st.get("error"),
+    }
 
 
 @app.get("/api/contracts/alliance/fill-status")

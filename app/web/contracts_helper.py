@@ -48,8 +48,346 @@ def ensure_public_contract_tables(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_pci_contract ON public_contract_items(contract_id);
         CREATE INDEX IF NOT EXISTS idx_pci_type ON public_contract_items(type_id);
+        CREATE INDEX IF NOT EXISTS idx_pc_volume ON public_contracts(volume DESC);
+        -- Contracts whose contents ESI will not hand over (gone since the listing).
+        CREATE TABLE IF NOT EXISTS public_contract_items_absent (
+            contract_id INTEGER PRIMARY KEY,
+            at          REAL
+        );
+        -- station -> solar system. Static data, so cached forever. 99.5 % of public
+        -- contracts sit in NPC stations (measured: 97 distinct stations across all of
+        -- The Forge), which is what makes the sovereignty rule below cheap.
+        CREATE TABLE IF NOT EXISTS station_system_cache (
+            station_id INTEGER PRIMARY KEY,
+            system_id  INTEGER,
+            cached_at  REAL
+        );
+        -- /sovereignty/map: alliance_id set = held by a player alliance.
+        CREATE TABLE IF NOT EXISTS sov_map_cache (
+            system_id   INTEGER PRIMARY KEY,
+            alliance_id INTEGER,
+            faction_id  INTEGER,
+            cached_at   REAL
+        );
     """)
+    # system_id on the contract itself, so the sovereignty filter is one join.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(public_contracts)").fetchall()}
+    if "system_id" not in cols:
+        conn.execute("ALTER TABLE public_contracts ADD COLUMN system_id INTEGER")
     conn.commit()
+
+
+# ── Public contracts, all of known space ──────────────────────────────────────
+#
+# Measured 2026-08-22, and it reshapes the whole design:
+#   * listing every region costs 106 requests and about half a second (70 k-space
+#     regions, ~51 000 contracts). There is no global endpoint, but iterating the
+#     regions is so cheap that the user never needs to pick one.
+#   * CONTENTS are the expensive half: one call per contract. But they are only
+#     needed to answer "what is in there", and the things that need a contract price
+#     at all - capitals, supercapitals - are the biggest contracts in the game. In
+#     The Forge, 84 of 33 243 priced item-exchange contracts are >= 1 000 000 m3.
+#     So contents are fetched biggest-first, and the capital band is covered in
+#     seconds instead of the three minutes a full index takes.
+_PUBLIC_LIST_SEM = asyncio.Semaphore(20)
+_PUBLIC_ITEM_SEM = asyncio.Semaphore(30)      # unauthenticated: no ESI token bucket
+_SOV_TTL = 6 * 3600
+# /sovereignty/map only exists under an older compatibility date; ours (2026-07-17)
+# returns 404 for it. Asking for one endpoint with an explicit older date is exactly
+# what date-based versioning is for - but it has to be deliberate and visible.
+_SOV_COMPAT_DATE = "2020-01-01"
+
+
+async def refresh_sov_map(conn: sqlite3.Connection, force: bool = False) -> int:
+    """Cache which systems a player alliance holds sovereignty in.
+
+    One call, ~375 kB, 8490 systems, ESI caches it for an hour. `alliance_id` set
+    means a player alliance holds it; `faction_id` means NPC space (highsec, lowsec
+    and NPC null alike). That distinction is the whole point: a contract in someone's
+    sov staging is not an open market and would distort a capital's price, while NPC
+    null is a perfectly ordinary place to buy one.
+    """
+    ensure_public_contract_tables(conn)
+    if not force:
+        row = conn.execute("SELECT MAX(cached_at) FROM sov_map_cache").fetchone()
+        if row and row[0] and (time.time() - row[0]) < _SOV_TTL:
+            return 0
+    try:
+        async with esi_client(timeout=30) as client:
+            r = await client.get("https://esi.evetech.net/sovereignty/map",
+                                 headers={"X-Compatibility-Date": _SOV_COMPAT_DATE})
+        if r.status_code != 200:
+            return 0
+        data = r.json() or []
+    except Exception:
+        return 0
+    now = time.time()
+    conn.execute("DELETE FROM sov_map_cache")
+    conn.executemany(
+        "INSERT OR REPLACE INTO sov_map_cache (system_id, alliance_id, faction_id, cached_at)"
+        " VALUES (?,?,?,?)",
+        [(e.get("system_id"), e.get("alliance_id"), e.get("faction_id"), now)
+         for e in data if e.get("system_id")])
+    conn.commit()
+    return len(data)
+
+
+# A structure we cannot read is a structure we probably cannot dock at, so its
+# contracts are not a market we could trade in. Worth retrying occasionally though:
+# access changes.
+_STRUCT_RETRY_TTL = 7 * 24 * 3600
+
+
+async def resolve_station_systems(conn: sqlite3.Connection, station_ids,
+                                  token: str | None = None) -> dict[int, int]:
+    """location_id -> system_id, cached (station data is static).
+
+    NPC stations resolve for free and cover 99.5 % of public contracts (measured).
+    The remaining 0.5 % are player structures - and they matter out of proportion,
+    because capitals are traded in Keepstars: of the single-item contracts in one
+    real run, 34 of 41 sat in structures, including a 145b titan. Those need a token
+    with esi-universe.read_structures.v1, and about half answer 403 (no docking
+    access). A 403 is left unresolved on purpose: somewhere we cannot dock is not a
+    price we could act on.
+    """
+    ensure_public_contract_tables(conn)
+    ids = {int(s) for s in station_ids if s}
+    if not ids:
+        return {}
+    out: dict[int, int] = {}
+    miss: list[int] = []
+    for sid in ids:
+        row = conn.execute("SELECT system_id FROM station_system_cache WHERE station_id=?",
+                           (sid,)).fetchone()
+        if row and row[0]:
+            out[sid] = row[0]
+        else:
+            miss.append(sid)
+    # Structures whose last attempt failed are retried only occasionally.
+    if miss:
+        stale = []
+        for sid in list(miss):
+            if sid < 1_000_000_000_000:
+                continue
+            row = conn.execute("SELECT system_id, cached_at FROM station_system_cache"
+                               " WHERE station_id=?", (sid,)).fetchone()
+            if row and not row[0] and (time.time() - (row[1] or 0)) < _STRUCT_RETRY_TTL:
+                miss.remove(sid)          # known-inaccessible, not yet worth retrying
+            elif row and not row[0]:
+                stale.append(sid)
+
+        async def _one(client, sid):
+            try:
+                if sid >= 1_000_000_000_000:
+                    if not token:
+                        return sid, None
+                    r = await client.get(
+                        f"https://esi.evetech.net/latest/universe/structures/{sid}",
+                        headers={"Authorization": f"Bearer {token}"}, timeout=10)
+                    if r.status_code == 200:
+                        return sid, (r.json() or {}).get("solar_system_id")
+                    return sid, None
+                r = await client.get(
+                    f"https://esi.evetech.net/latest/universe/stations/{sid}", timeout=10)
+                if r.status_code == 200:
+                    return sid, (r.json() or {}).get("system_id")
+            except Exception:
+                pass
+            return sid, None
+        try:
+            async with esi_client(timeout=15) as client:
+                for sid, sysid in await asyncio.gather(*[_one(client, m) for m in miss]):
+                    conn.execute(
+                        "INSERT OR REPLACE INTO station_system_cache (station_id, system_id,"
+                        " cached_at) VALUES (?,?,?)", (sid, sysid, time.time()))
+                    if sysid:
+                        out[sid] = sysid
+            conn.commit()
+        except Exception:
+            pass
+    return out
+
+
+def _store_public_listing(conn: sqlite3.Connection, region_id: int, contracts: list[dict],
+                          systems: dict[int, int]) -> None:
+    """Replace one region's listing. Items are NOT touched: they are immutable and
+    keyed by contract_id, so what we already fetched stays valid."""
+    ensure_public_contract_tables(conn)
+    conn.execute("DELETE FROM public_contracts WHERE region_id=?", (region_id,))
+    conn.executemany(
+        "INSERT OR REPLACE INTO public_contracts (contract_id, region_id, type, price,"
+        " reward, collateral, buyout, volume, date_expired, title, start_location_id,"
+        " end_location_id, issuer_id, system_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [(c.get("contract_id"), region_id, c.get("type"), c.get("price") or 0,
+          c.get("reward") or 0, c.get("collateral") or 0, c.get("buyout") or 0,
+          c.get("volume") or 0, c.get("date_expired", ""), c.get("title") or "",
+          c.get("start_location_id"), c.get("end_location_id"), c.get("issuer_id"),
+          systems.get(int(c.get("start_location_id") or 0)))
+         for c in contracts if c.get("contract_id")])
+    conn.execute(
+        "INSERT OR REPLACE INTO public_contract_meta (region_id, indexed_at, contract_count)"
+        " VALUES (?,?,?)", (region_id, time.time(), len(contracts)))
+    # Items of contracts that are gone from every region's listing are dead weight.
+    conn.execute("DELETE FROM public_contract_items WHERE contract_id NOT IN"
+                 " (SELECT contract_id FROM public_contracts)")
+    conn.execute("DELETE FROM public_contract_items_absent WHERE contract_id NOT IN"
+                 " (SELECT contract_id FROM public_contracts)")
+    conn.commit()
+
+
+async def refresh_public_listings(conn: sqlite3.Connection, region_ids,
+                                  progress=None, token: str | None = None) -> dict:
+    """Re-list the given regions (all of known space by default) and store them.
+
+    Cheap enough to do wholesale: 106 requests for every region that has contracts.
+    """
+    ensure_public_contract_tables(conn)
+    await refresh_sov_map(conn)
+    regions = [int(r) for r in region_ids]
+    total = {"regions": 0, "contracts": 0}
+
+    async def _region(client, rid):
+        async with _PUBLIC_LIST_SEM:
+            try:
+                r = await client.get(
+                    f"https://esi.evetech.net/latest/contracts/public/{rid}/",
+                    params={"page": 1}, timeout=20)
+            except Exception:
+                return rid, None
+            if r.status_code != 200:
+                return rid, None
+            pages = int(r.headers.get("x-pages", 1))
+            out = list(r.json() or [])
+        rest = await asyncio.gather(*[
+            client.get(f"https://esi.evetech.net/latest/contracts/public/{rid}/",
+                       params={"page": p}, timeout=20) for p in range(2, pages + 1)
+        ], return_exceptions=True)
+        for rr in rest:
+            if not isinstance(rr, Exception) and rr.status_code == 200:
+                out.extend(rr.json() or [])
+        return rid, out
+
+    async with esi_client(timeout=25) as client:
+        results = await asyncio.gather(*[_region(client, r) for r in regions],
+                                       return_exceptions=True)
+    done = 0
+    for res in results:
+        done += 1
+        if isinstance(res, Exception):
+            continue
+        rid, contracts = res
+        if contracts is None:
+            continue
+        stations = {int(c.get("start_location_id") or 0) for c in contracts}
+        systems = await resolve_station_systems(conn, stations, token=token)
+        _store_public_listing(conn, rid, contracts, systems)
+        total["regions"] += 1
+        total["contracts"] += len(contracts)
+        if progress:
+            progress(done, len(regions), total["contracts"])
+    return total
+
+
+async def fill_public_items(conn: sqlite3.Connection, budget: int = 1500,
+                            progress=None) -> dict:
+    """Fetch contents for contracts we do not have yet, BIGGEST VOLUME FIRST.
+
+    That ordering is the whole trick: the items that need a contract price at all are
+    capitals, and capitals are the biggest contracts there are. The long tail (BPCs,
+    single modules - 98 % of the rows, mostly 0 m3) keeps filling afterwards.
+    """
+    ensure_public_contract_tables(conn)
+    todo = [r[0] for r in conn.execute(
+        "SELECT c.contract_id FROM public_contracts c"
+        " WHERE c.type IN ('item_exchange','auction') AND c.price > 0"
+        "   AND NOT EXISTS (SELECT 1 FROM public_contract_items i"
+        "                    WHERE i.contract_id = c.contract_id)"
+        "   AND NOT EXISTS (SELECT 1 FROM public_contract_items_absent a"
+        "                    WHERE a.contract_id = c.contract_id)"
+        " ORDER BY c.volume DESC LIMIT ?", (budget,)).fetchall()]
+    if not todo:
+        return {"fetched": 0, "gone": 0, "remaining": 0}
+    stored = [0]
+    gone: list[int] = []
+    batch: dict[int, list[dict]] = {}
+    lock = asyncio.Lock()
+
+    async def _one(client, cid):
+        async with _PUBLIC_ITEM_SEM:
+            try:
+                r = await client.get(
+                    f"https://esi.evetech.net/latest/contracts/public/items/{cid}/", timeout=15)
+            except Exception:
+                return
+        async with lock:
+            if r.status_code == 404:
+                gone.append(cid)
+                return
+            if r.status_code != 200:
+                return
+            try:
+                batch[cid] = r.json() or []
+            except Exception:
+                return
+            if len(batch) >= 200:
+                flush = dict(batch)
+                batch.clear()
+                _store_public_items(conn, flush)
+                stored[0] += len(flush)
+            if progress:
+                progress(stored[0] + len(batch), len(todo))
+
+    async with esi_client(timeout=20) as client:
+        await asyncio.gather(*[_one(client, c) for c in todo], return_exceptions=True)
+    if batch:
+        _store_public_items(conn, batch)
+        stored[0] += len(batch)
+    if gone:
+        now = time.time()
+        conn.executemany("INSERT OR REPLACE INTO public_contract_items_absent"
+                         " (contract_id, at) VALUES (?,?)", [(c, now) for c in gone])
+        conn.commit()
+    remaining = conn.execute(
+        "SELECT COUNT(*) FROM public_contracts c"
+        " WHERE c.type IN ('item_exchange','auction') AND c.price > 0"
+        "   AND NOT EXISTS (SELECT 1 FROM public_contract_items i"
+        "                    WHERE i.contract_id = c.contract_id)"
+        "   AND NOT EXISTS (SELECT 1 FROM public_contract_items_absent a"
+        "                    WHERE a.contract_id = c.contract_id)").fetchone()[0]
+    return {"fetched": stored[0], "gone": len(gone), "remaining": remaining}
+
+
+def _store_public_items(conn: sqlite3.Connection, items_by_cid: dict[int, list[dict]]) -> None:
+    rows = []
+    for cid, items in items_by_cid.items():
+        for it in items or []:
+            if it.get("type_id"):
+                rows.append((cid, it["type_id"], it.get("quantity") or 0,
+                             1 if it.get("is_included", True) else 0))
+    if not rows:
+        return
+    cids = list(items_by_cid)
+    ph = ",".join("?" * len(cids))
+    conn.execute(f"DELETE FROM public_contract_items WHERE contract_id IN ({ph})", cids)
+    conn.executemany(
+        "INSERT INTO public_contract_items (contract_id, type_id, quantity, is_included)"
+        " VALUES (?,?,?,?)", rows)
+    conn.commit()
+
+
+def public_index_status(conn: sqlite3.Connection) -> dict:
+    """One global picture instead of per-region bookkeeping."""
+    ensure_public_contract_tables(conn)
+    row = conn.execute(
+        "SELECT COUNT(*), MIN(indexed_at), MAX(indexed_at) FROM public_contract_meta").fetchone()
+    total = conn.execute("SELECT COUNT(*) FROM public_contracts").fetchone()[0]
+    priced = conn.execute(
+        "SELECT COUNT(*) FROM public_contracts WHERE type IN ('item_exchange','auction')"
+        " AND price > 0").fetchone()[0]
+    with_items = conn.execute(
+        "SELECT COUNT(DISTINCT contract_id) FROM public_contract_items").fetchone()[0]
+    return {"regions": row[0] or 0, "oldest": row[1], "newest": row[2],
+            "contracts": total, "priced": priced, "with_items": with_items}
 
 
 def get_index_status(conn: sqlite3.Connection, region_id: int) -> dict | None:
@@ -154,12 +492,17 @@ async def stream_public_index(conn: sqlite3.Connection, region_id: int):
     yield f"data: {_json.dumps({'done':True,'pct':100,'contract_count':len(contracts)})}\n\n"
 
 
-def search_public_contracts(conn: sqlite3.Connection, region_id: int, *,
+def search_public_contracts(conn: sqlite3.Connection, region_id: int | None = None, *,
                             item: str = "", ctype: str = "", max_price: float | None = None,
                             limit: int = 300) -> list[dict]:
+    """Search the indexed public contracts. `region_id=None` searches all of them -
+    the whole of known space is indexed, so a region is a filter, not a prerequisite."""
     ensure_public_contract_tables(conn)
-    where = ["c.region_id = ?"]
-    params: list = [region_id]
+    where: list[str] = []
+    params: list = []
+    if region_id:
+        where.append("c.region_id = ?")
+        params.append(region_id)
     joins = ""
     if item.strip():
         joins = (" JOIN public_contract_items i ON i.contract_id = c.contract_id"
@@ -172,13 +515,15 @@ def search_public_contracts(conn: sqlite3.Connection, region_id: int, *,
     if max_price is not None:
         where.append("c.price <= ?")
         params.append(max_price)
+    cond = " AND ".join(where) if where else "1=1"
     sql = (f"SELECT DISTINCT c.contract_id, c.type, c.price, c.reward, c.collateral, "
            f"c.volume, c.date_expired, c.title, c.start_location_id, c.end_location_id, "
-           f"c.issuer_id FROM public_contracts c{joins} WHERE {' AND '.join(where)} "
+           f"c.issuer_id, c.region_id FROM public_contracts c{joins} WHERE {cond} "
            f"ORDER BY c.price LIMIT ?")
     params.append(limit)
     cols = ["contract_id", "type", "price", "reward", "collateral", "volume",
-            "date_expired", "title", "start_location_id", "end_location_id", "issuer_id"]
+            "date_expired", "title", "start_location_id", "end_location_id", "issuer_id",
+            "region_id"]
     return [dict(zip(cols, row)) for row in conn.execute(sql, params).fetchall()]
 
 
@@ -764,13 +1109,22 @@ def contract_unit_prices(conn: sqlite3.Connection, type_ids,
               AND (SELECT COUNT(*) FROM alliance_contract_items x
                     WHERE x.contract_id = c.contract_id AND x.is_included = 1) = 1
             GROUP BY i.type_id"""),
+        # Public contracts in systems a player alliance holds are left out on
+        # purpose: in sov space the market is usually closed to outsiders, so a
+        # price there says what one group charges its own, not what the thing is
+        # worth. NPC null (faction-held) and unclaimed space are fine - a capital
+        # bought in Venal is bought on an open market. A contract whose system we
+        # cannot verify (a player structure, 0.5 % of them) is treated the same as
+        # sov: not usable as a reference.
         ("public", f"""
             SELECT i.type_id, MIN(c.price * 1.0 / i.quantity)
             FROM public_contracts c
             JOIN public_contract_items i ON i.contract_id = c.contract_id
+            LEFT JOIN sov_map_cache s ON s.system_id = c.system_id
             WHERE c.type = 'item_exchange' AND c.price > 0
               AND i.is_included = 1 AND i.quantity > 0 AND i.type_id IN ({ph})
               AND c.contract_id != ?
+              AND c.system_id IS NOT NULL AND s.alliance_id IS NULL
               AND (SELECT COUNT(*) FROM public_contract_items x
                     WHERE x.contract_id = c.contract_id AND x.is_included = 1) = 1
             GROUP BY i.type_id"""),
