@@ -6404,6 +6404,11 @@ async def api_alliance_fill_status(alliance_id: int):
     try:
         status = contracts_helper.get_alliance_index_status(conn, alliance_id) or {}
         missing = len(contracts_helper.contracts_missing_items(conn, alliance_id))
+        # Counted over the OPEN contracts, because that is the set contents are
+        # fetched for and the set an item search can look inside. "324 to go" on its
+        # own said nothing about what it was 324 of.
+        open_total, open_covered = contracts_helper.alliance_item_coverage(
+            conn, alliance_id)
     finally:
         conn.close()
     st = alliance_fill_state(alliance_id)
@@ -6412,6 +6417,7 @@ async def api_alliance_fill_status(alliance_id: int):
         "done": st.get("done") or 0, "total": st.get("total") or 0,
         "retry_in": st.get("retry_in") or 0,
         "missing": missing,
+        "open_total": open_total, "open_covered": open_covered,
         "contract_count": status.get("contract_count") or 0,
         "with_items": status.get("with_items") or 0,
         "outstanding": status.get("outstanding") or 0,

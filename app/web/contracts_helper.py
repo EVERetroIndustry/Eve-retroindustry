@@ -332,6 +332,22 @@ def get_alliance_index_status(conn: sqlite3.Connection, alliance_id: int) -> dic
             "outstanding": outstanding, "with_items": items_for}
 
 
+def alliance_item_coverage(conn: sqlite3.Connection, alliance_id: int) -> tuple[int, int]:
+    """(open contracts that can have contents, how many of them have them).
+
+    This is the pair worth showing: it is exactly how far an item search can see.
+    """
+    ensure_alliance_contract_tables(conn)
+    ph = ",".join("?" * len(_ITEM_STATUSES))
+    row = conn.execute(
+        f"SELECT COUNT(*), SUM(EXISTS(SELECT 1 FROM alliance_contract_items i"
+        f"                             WHERE i.contract_id = c.contract_id))"
+        f" FROM alliance_contracts c"
+        f" WHERE c.alliance_id=? AND c.type IN ('item_exchange','auction')"
+        f"   AND c.status IN ({ph})", (alliance_id, *_ITEM_STATUSES)).fetchone()
+    return int(row[0] or 0), int(row[1] or 0)
+
+
 def contracts_missing_items(conn: sqlite3.Connection, alliance_id: int) -> list[int]:
     """Indexed item_exchange/auction contracts whose items were never fetched.
     Contract contents never change, so a reindex only has to fetch these."""

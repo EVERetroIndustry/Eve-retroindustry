@@ -177,26 +177,33 @@
     try {
       d = await (await fetch('/api/contracts/alliance/fill-status?alliance_id=' + aid)).json();
     } catch (e) { return; }
+    // Every message says what the numbers are ABOUT: how far an item search can
+    // see, counted in open contracts. "324 to go" alone meant nothing.
+    const covered = (d.open_covered || 0).toLocaleString();
+    const openTotal = (d.open_total || 0).toLocaleString();
+    const searchScope = `item search covers ${covered} of ${openTotal} open contracts`;
     if (d.phase === 'listing') {
       el.className = 'small ms-2 text-muted';
-      el.innerHTML = spin + 'reading the contract list…';
+      el.innerHTML = spin + 'reading the alliance contract list…';
     } else if (d.phase === 'contents' && d.total) {
       el.className = 'small ms-2 text-muted';
-      el.innerHTML = spin + `contents ${d.done.toLocaleString()}/${d.total.toLocaleString()}`;
+      el.innerHTML = spin + `reading contents for item search: ${d.done.toLocaleString()}`
+        + `/${d.total.toLocaleString()} open contracts`;
     } else if (d.phase === 'waiting') {
-      // The one case worth a countdown: ESI's 15-minute window has to pass.
+      // The one case worth a countdown: ESI's 15-minute window has to pass. Nothing
+      // to do about it, and nothing for the user to click - it continues by itself.
       el.className = 'small ms-2 text-warning';
-      el.innerHTML = spin + `waiting for the ESI limit - ${d.missing.toLocaleString()} to go, `
-        + `retrying in ${mmss(d.retry_in)}`;
-    } else if (d.missing) {
-      el.className = 'small ms-2 text-muted';
-      el.innerHTML = `${d.missing.toLocaleString()} contracts still without contents`;
+      el.innerHTML = spin + `${searchScope} - the rest continues automatically when `
+        + `the ESI limit resets in ${mmss(d.retry_in)}`;
     } else if (d.error) {
       el.className = 'small ms-2 text-danger';
       el.textContent = d.error;
+    } else if (d.missing) {
+      el.className = 'small ms-2 text-muted';
+      el.innerHTML = spin + `${searchScope} - fetching the rest…`;
     } else {
       el.className = 'small ms-2 text-muted';
-      el.innerHTML = `contents complete (${(d.with_items || 0).toLocaleString()})`;
+      el.innerHTML = `item search covers all ${openTotal} open contracts`;
     }
     // The page was rendered before this data existed - show it.
     const grew = d.contract_count > had.contracts || d.with_items >= had.items + 50;
