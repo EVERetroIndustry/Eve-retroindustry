@@ -1,0 +1,84 @@
+{# The Contracts screen header, shared by /contracts and /contracts/alliance so the
+   chrome does not change when you switch tabs: same title, same Public browser
+   button, same character strip in the same place.
+
+   On Personal and Corporation a portrait selects whose contracts you see. Alliance
+   contracts are not per character - but a character still points at exactly one
+   alliance through its corporation, so there the strip selects THAT character's
+   alliance, and a character whose corporation is not in an alliance is shown but
+   inert, with the reason on hover. "All" means the same thing in both: let the app
+   decide (every character / the alliance with the most of my corporations in it).
+#}
+{# `explicit` = the alliance came from the URL, so "All" is not the active choice.
+   Passed in rather than read off `request`: an imported macro does not see the
+   template context, and relying on that is how this broke the first time. #}
+{% macro contracts_header(scope, all_characters, all_chars=False, contracts_char_id=None,
+                          char_alliance={}, alliance_id=0, explicit=False) %}
+{% set ally = (scope == 'alliance') %}
+<div class="row mb-3 align-items-center">
+  <div class="col d-flex align-items-center gap-3">
+    <h4 class="mb-0"><i class="bi bi-file-earmark-ruled me-2 text-primary"></i>Contracts</h4>
+    <a href="/contracts/public" class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-globe me-1"></i>Public browser</a>
+  </div>
+  {% if all_characters %}
+  <div class="col-auto d-flex align-items-center gap-2">
+    <span class="text-muted small">Character:</span>
+    <div class="btn-group btn-group-sm" role="group">
+      {% set all_active = all_chars if not ally else (alliance_id and not explicit) %}
+      <a href="{{ '/contracts/alliance' if ally else '/contracts?char=all&scope=' ~ scope }}"
+         class="btn d-inline-flex align-items-center gap-1
+                {% if all_active %}btn-eve{% else %}btn-outline-secondary{% endif %}">
+        <i class="bi bi-people"></i>All
+      </a>
+      {% for c in all_characters %}
+      {% if ally %}
+        {% set char_ally = char_alliance.get(c[0]) %}
+        {% if char_ally %}
+        <a href="/contracts/alliance?alliance={{ char_ally }}"
+           class="btn d-inline-flex align-items-center gap-2
+                  {% if char_ally == alliance_id and explicit %}btn-eve{% else %}btn-outline-secondary{% endif %}">
+          <img src="/portrait/characters/{{ c[0] }}?size=32" width="18" height="18" class="rounded-circle">
+          {{ c[1] }}
+        </a>
+        {% else %}
+        <span class="btn btn-outline-secondary disabled d-inline-flex align-items-center gap-2"
+              style="opacity:.45" title="{{ c[1] }}'s corporation is not in an alliance">
+          <img src="/portrait/characters/{{ c[0] }}?size=32" width="18" height="18" class="rounded-circle">
+          {{ c[1] }}
+        </span>
+        {% endif %}
+      {% else %}
+        {% set is_active = (not all_chars) and contracts_char_id == c[0] %}
+        <a href="/contracts?char={{ c[0] }}&scope={{ scope }}"
+           class="btn d-inline-flex align-items-center gap-2
+                  {% if is_active %}btn-eve{% else %}btn-outline-secondary{% endif %}">
+          <img src="/portrait/characters/{{ c[0] }}?size=32" width="18" height="18" class="rounded-circle">
+          {{ c[1] }}
+        </a>
+      {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endmacro %}
+
+
+{# The three tabs, identical on both pages. #}
+{% macro contracts_tabs(scope, char_param='') %}
+<ul class="nav nav-pills mb-3" style="gap:.5rem">
+  <li class="nav-item">
+    <a class="nav-link {% if scope == 'personal' %}active{% endif %}"
+       href="/contracts?char={{ char_param }}&scope=personal"><i class="bi bi-person me-1"></i>Personal</a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if scope == 'corp' %}active{% endif %}"
+       href="/contracts?char={{ char_param }}&scope=corp"><i class="bi bi-building me-1"></i>Corporation</a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if scope == 'alliance' %}active{% endif %}"
+       href="/contracts/alliance"><i class="bi bi-people me-1"></i>Alliance</a>
+  </li>
+</ul>
+{% endmacro %}

@@ -6282,6 +6282,7 @@ async def alliance_contracts_page(
     ctx: dict = {
         "alliances": [], "alliance_id": 0, "alliance_name": "", "status_info": None,
         "results": [], "total": 0, "error": None, "note": None, "limit": 500,
+        "char_alliance": {}, "alliance_explicit": bool(alliance),
         "f": {"item": item, "exact": bool(exact), "q": q, "ctype": ctype, "status": status,
               "min_price": min_price, "max_price": max_price, "min_reward": min_reward,
               "max_collateral": max_collateral, "max_volume": max_volume,
@@ -6296,6 +6297,14 @@ async def alliance_contracts_page(
         # An alliance that was indexed once stays browsable even when no token is
         # usable right now (expired session, offline): the rows are local. Only
         # Refresh needs a working token, and it says so itself.
+        # The character strip needs to know which alliance each character points at
+        # (character -> corporation -> alliance). Cached in the DB, so no extra ESI.
+        chars = list_characters(conn)
+        char_corp = {cid: (get_character_row(conn, cid) or {}).get("corporation_id")
+                     for cid, _n in chars}
+        corp_ally = await _corp_alliance_ids(conn, {c for c in char_corp.values() if c})
+        ctx["char_alliance"] = {cid: corp_ally.get(corp)
+                                for cid, corp in char_corp.items() if corp_ally.get(corp)}
         indexed = contracts_helper.indexed_alliances(conn)
         known = set(sources) | set(indexed)
         names = await _resolve_party_names(known | {int(b) for b in blocked})

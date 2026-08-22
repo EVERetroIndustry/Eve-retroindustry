@@ -1,55 +1,18 @@
 {% extends "base.html" %}
 {% from "_contract_filters.html" import contract_filter_bar, contract_table_scripts %}
+{% from "_contracts_header.html" import contracts_header, contracts_tabs %}
 {% block title %}Contracts - EVE Retroindustry{% endblock %}
 {% block content %}
 
-<div class="row mb-3 align-items-center">
-  <div class="col d-flex align-items-center gap-3">
-    <h4 class="mb-0"><i class="bi bi-file-earmark-ruled me-2 text-primary"></i>Contracts</h4>
-    <a href="/contracts/public" class="btn btn-sm btn-outline-secondary"><i class="bi bi-globe me-1"></i>Public browser</a>
-  </div>
-  {% if all_characters %}
-  <div class="col-auto d-flex align-items-center gap-2">
-    <span class="text-muted small">Character:</span>
-    <div class="btn-group btn-group-sm" role="group">
-      <a href="/contracts?char=all&scope={{ scope }}"
-         class="btn d-inline-flex align-items-center gap-1
-                {% if all_chars %}btn-eve{% else %}btn-outline-secondary{% endif %}">
-        <i class="bi bi-people"></i>All
-      </a>
-      {% for c in all_characters %}
-      {% set is_active = (not all_chars) and contracts_char_id == c[0] %}
-      <a href="/contracts?char={{ c[0] }}&scope={{ scope }}"
-         class="btn d-inline-flex align-items-center gap-2
-                {% if is_active %}btn-eve{% else %}btn-outline-secondary{% endif %}">
-        <img src="/portrait/characters/{{ c[0] }}?size=32"
-             width="18" height="18" class="rounded-circle">
-        {{ c[1] }}
-      </a>
-      {% endfor %}
-    </div>
-  </div>
-  {% endif %}
-</div>
+{{ contracts_header(scope if scope == "corp" else "personal", all_characters,
+                    all_chars=all_chars, contracts_char_id=contracts_char_id) }}
 
 {% if error %}
 <div class="alert alert-danger"><i class="bi bi-exclamation-circle me-2"></i>{{ error }}</div>
 {% endif %}
 
 {% set char_param = 'all' if all_chars else contracts_char_id %}
-<ul class="nav nav-pills mb-3" style="gap:.5rem">
-  <li class="nav-item">
-    <a class="nav-link {% if scope != 'corp' %}active{% endif %}"
-       href="/contracts?char={{ char_param }}&scope=personal"><i class="bi bi-person me-1"></i>Personal</a>
-  </li>
-  <li class="nav-item">
-    <a class="nav-link {% if scope == 'corp' %}active{% endif %}"
-       href="/contracts?char={{ char_param }}&scope=corp"><i class="bi bi-building me-1"></i>Corporation</a>
-  </li>
-  <li class="nav-item">
-    <a class="nav-link" href="/contracts/alliance"><i class="bi bi-people me-1"></i>Alliance</a>
-  </li>
-</ul>
+{{ contracts_tabs(scope if scope == "corp" else "personal", char_param) }}
 
 {% if scope == 'corp' and corp_error %}
 <div class="alert alert-warning"><i class="bi bi-shield-lock me-2"></i>{{ corp_error }}</div>
