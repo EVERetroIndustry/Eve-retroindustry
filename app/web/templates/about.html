@@ -44,6 +44,12 @@
         <div class="card p-3 h-100">
           <div class="text-muted small text-uppercase mb-1" style="letter-spacing:.06em">Version</div>
           <div class="fw-semibold">{{ version }}</div>
+          {# Which EVE static data this copy carries. Stamped into the bundled
+             database at build time, so it is answerable from the app itself. #}
+          <div class="text-muted" style="font-size:.72rem">
+            SDE {% if sde.build %}build {{ sde.build }}{% else %}build not recorded{% endif %}{% if sde.types %}
+            &middot; {{ sde.types | count_eu }} types{% endif %}
+          </div>
         </div>
       </div>
       <div class="col-sm-4">

@@ -74,7 +74,7 @@
     </tbody>
     <tfoot>
       <tr style="border-top:2px solid #30363d">
-        <td colspan="{{ 3 if show_badge else 2 }}" class="text-muted small">{{ items | length }} types</td>
+        <td colspan="{{ 3 if show_badge else 2 }}" class="text-muted small">{{ items | length | plural('type') }}</td>
         <td></td>
         <td class="text-end text-muted small">Total</td>
         <td class="text-end fw-bold text-isk">
@@ -176,7 +176,7 @@
       {% if station.total_value > 0 %}
       <span class="text-isk fw-semibold">{{ station.total_value | isk0 }} ISK</span>
       {% endif %}
-      <span class="badge bg-secondary">{{ station.total_items }} types</span>
+      <span class="badge bg-secondary">{{ station.total_items | plural('type') }}</span>
     </span>
   </div>
 
@@ -192,7 +192,7 @@
         </span>
         <span class="d-flex align-items-center gap-2">
           {% if station.hangar_value and station.hangar_value > 0 %}<span class="text-isk">{{ station.hangar_value | isk0 }} ISK</span>{% endif %}
-          <span class="badge bg-secondary">{{ station.hangar | length }} types</span>
+          <span class="badge bg-secondary">{{ station.hangar | length | plural('type') }}</span>
         </span>
       </div>
       <div class="collapse" id="hng-{{ sid }}">
@@ -223,7 +223,7 @@
         </span>
         <span class="d-flex align-items-center gap-2">
           {% if container.total_value and container.total_value > 0 %}<span class="text-isk">{{ container.total_value | isk0 }} ISK</span>{% endif %}
-          <span class="badge bg-secondary">{{ container.assets | length }} types</span>
+          <span class="badge bg-secondary">{{ container.assets | length | plural('type') }}</span>
         </span>
       </div>
       <div class="collapse" id="cont-{{ ckey }}">
@@ -260,7 +260,7 @@
       {% if station.total_value > 0 %}
       <span class="text-isk fw-semibold">{{ station.total_value | isk0 }} ISK</span>
       {% endif %}
-      <span class="badge bg-secondary">{{ station.total_items }} types</span>
+      <span class="badge bg-secondary">{{ station.total_items | plural('type') }}</span>
     </span>
   </div>
 
@@ -277,7 +277,7 @@
         <span class="d-flex align-items-center gap-2">
           {% if div.total_value and div.total_value > 0 %}<span class="text-isk">{{ div.total_value | isk0 }} ISK</span>{% endif %}
           {% set div_item_count = div.hangar | length + (div.containers | sum(attribute='assets', start=[]) | length) %}
-          <span class="badge bg-secondary">{{ div_item_count }} types</span>
+          <span class="badge bg-secondary">{{ div_item_count | plural('type') }}</span>
         </span>
       </div>
 
@@ -307,7 +307,7 @@
             </span>
             <span class="d-flex align-items-center gap-2">
               {% if container.total_value and container.total_value > 0 %}<span class="text-isk">{{ container.total_value | isk0 }} ISK</span>{% endif %}
-              <span class="badge bg-secondary">{{ container.assets | length }} types</span>
+              <span class="badge bg-secondary">{{ container.assets | length | plural('type') }}</span>
             </span>
           </div>
           <div class="collapse" id="ccont-{{ ck }}">

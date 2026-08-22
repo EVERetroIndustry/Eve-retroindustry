@@ -185,6 +185,24 @@
       pointer-events: none;
     }
     #app-progress.active { opacity: 1; }
+  /* "New version available" pill next to About. Gold on dark, like the ISK accent,
+     because it is good news rather than an error; the pulse stops after a few
+     cycles so a window left open does not blink forever. */
+  .nav-update-pill {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 1.05rem; height: 1.05rem; margin-left: .35rem;
+    color: #0d1117; background: var(--eve-gold);
+    border-radius: 50%; vertical-align: middle;
+    animation: navUpdatePulse 1.6s ease-in-out 3;
+  }
+  .nav-update-pill .bi { font-size: .8rem; line-height: 1; }
+  @keyframes navUpdatePulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(230, 184, 74, 0); }
+    50%      { box-shadow: 0 0 0 .22rem rgba(230, 184, 74, .35); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .nav-update-pill { animation: none; }
+  }
   </style>
 <script>
 // Escape before dropping a value into innerHTML. Names that players choose -
@@ -271,9 +289,15 @@ window.escHtml = function (s) {
         <li class="nav-item">
           <a class="nav-link {% if request.url.path == '/about' %}active{% endif %}"
              href="/about" style="font-size:.85rem;opacity:.7">About
-            <span id="nav-update-dot" class="d-none ms-1 badge rounded-pill"
-                  style="font-size:.6rem;vertical-align:middle;background:#e3b341;color:#0d1117"
-                  title="Update available">&#8226;</span>
+            {# A bare gold dot did not read as "there is a new version". A gold
+               download badge does, and it stays icon-only on purpose: the navbar
+               collapses to icons the moment it overflows, and a word here would
+               eat the slack that keeps the labels visible. Icon from the local
+               Bootstrap Icons set (no CDN). #}
+            <span id="nav-update-dot" class="d-none nav-update-pill"
+                  title="A new version is available - open About to update">
+              <i class="bi bi-arrow-down-circle-fill"></i>
+            </span>
           </a>
         </li>
 

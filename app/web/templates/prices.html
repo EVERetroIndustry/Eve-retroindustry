@@ -11,7 +11,7 @@
 {% if refreshed_count is not none %}
 <div class="alert alert-success">
   <i class="bi bi-check-circle me-2"></i>
-  Fetched <strong>{{ refreshed_count }}</strong> Jita prices out of {{ total_requested }} types.
+  Fetched <strong>{{ refreshed_count }}</strong> Jita prices out of {{ total_requested | plural('type') }}.
   Cache updated.
 </div>
 {% endif %}

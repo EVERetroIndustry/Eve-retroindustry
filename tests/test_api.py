@@ -321,3 +321,60 @@ def test_plan_contract_price_requires_login(client):
                    params={"location_id": 60003760, "type_id": 34})
     assert r.status_code == 200
     assert r.json().get("ok") is not True
+
+
+def test_about_reports_which_sde_the_bundle_carries(client, app_module):
+    """The build number used to live only in the private notes."""
+    info = app_module._sde_info()
+    assert info["types"] > 10_000          # the real bundled SDE
+    html = client.get("/about").text
+    if info["build"]:
+        assert f"build {info['build']}" in html
+    else:
+        assert "build not recorded" in html
+
+
+def test_sde_info_survives_a_database_without_the_meta_table(app_module):
+    conn = app_module.get_conn()
+    conn.execute("DROP TABLE IF EXISTS sde_meta")
+    conn.commit()
+    conn.close()
+    info = app_module._sde_info()
+    assert info["build"] == "" and info["types"] > 10_000
+
+
+def test_plural_filter_says_one_type_not_one_types(app_module):
+    f = app_module.templates.env.filters["plural"]
+    assert f(1, "type") == "1 type"
+    assert f(0, "type") == "0 types"
+    assert f(2, "type") == "2 types"
+    assert f(12_345, "type").endswith("types")     # keeps the grouped number
+    assert f(None, "type") == "None types"         # never raises on junk
+
+
+def test_the_database_and_data_dir_are_not_world_readable(app_module, tmp_path, monkeypatch):
+    """eve_cache.db holds the refresh tokens; .eve_config.json used to be 0600."""
+    import os
+    if os.name == "nt":
+        return                              # POSIX bits are meaningless on Windows
+    db = tmp_path / "eve_cache.db"
+    db.write_bytes(b"x")
+    (tmp_path / "eve_cache.db-wal").write_bytes(b"x")
+    os.chmod(tmp_path, 0o755)
+    os.chmod(db, 0o644)
+    os.chmod(tmp_path / "eve_cache.db-wal", 0o644)
+    monkeypatch.setattr(app_module, "_APP_DIR", str(tmp_path))
+    monkeypatch.setattr(app_module, "DB_ABS", str(db))
+    monkeypatch.setattr(app_module, "_PERMS_TIGHTENED", [False])
+    app_module._tighten_data_permissions()
+    assert oct(os.stat(tmp_path).st_mode)[-3:] == "700"
+    assert oct(os.stat(db).st_mode)[-3:] == "600"
+    assert oct(os.stat(tmp_path / "eve_cache.db-wal").st_mode)[-3:] == "600"
+
+
+def test_tightening_permissions_never_raises_on_a_missing_path(app_module, tmp_path,
+                                                               monkeypatch):
+    monkeypatch.setattr(app_module, "_APP_DIR", str(tmp_path / "nope"))
+    monkeypatch.setattr(app_module, "DB_ABS", str(tmp_path / "nope" / "eve_cache.db"))
+    monkeypatch.setattr(app_module, "_PERMS_TIGHTENED", [False])
+    app_module._tighten_data_permissions()          # must be a no-op, not an error

@@ -476,6 +476,18 @@ templates.env.filters["format_date"] = _format_date
 templates.env.filters["age_short"] = _age_short
 templates.env.filters["price_eu"] = _price_eu
 templates.env.filters["count_eu"] = _count_eu
+
+
+def _plural(n, word: str, suffix: str = "s") -> str:
+    """`5 | plural('type')` -> "5 types", `1 | plural('type')` -> "1 type"."""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return f"{n} {word}{suffix}"
+    return f"{_count_eu(n)} {word}{'' if abs(n) == 1 else suffix}"
+
+
+templates.env.filters["plural"] = _plural
 templates.env.filters["ts_ago"] = _ts_ago
 templates.env.filters["ts_to_str"] = _ts_to_str
 
@@ -602,6 +614,28 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _SCHEMA_ENSURED[0] = True
 
 
+# eve_cache.db holds the refresh tokens. When they lived in .eve_config.json that
+# file was chmod 0600; the protection did not move with them into SQLite. Tighten
+# both the file and the data directory once per process, best effort: on Windows
+# these bits are meaningless (and NTFS ACLs already keep %LOCALAPPDATA% per-user),
+# and a failure must never stop the app from starting.
+_PERMS_TIGHTENED = [False]
+
+
+def _tighten_data_permissions() -> None:
+    if _PERMS_TIGHTENED[0] or os.name == "nt":
+        _PERMS_TIGHTENED[0] = True
+        return
+    _PERMS_TIGHTENED[0] = True
+    for path, mode in ((_APP_DIR, 0o700), (DB_ABS, 0o600),
+                       (DB_ABS + "-wal", 0o600), (DB_ABS + "-shm", 0o600)):
+        try:
+            if os.path.exists(path):
+                os.chmod(path, mode)
+        except Exception:
+            pass
+
+
 def get_conn() -> sqlite3.Connection:
     # WAL + a long busy timeout so concurrent work never trips "database is
     # locked". In the default rollback-journal mode a writer blocks all readers,
@@ -618,8 +652,10 @@ def get_conn() -> sqlite3.Connection:
     except Exception:
         pass
     if not _SCHEMA_ENSURED[0]:
-        # First-ever connection in this process: bootstrap once.
+        # First-ever connection in this process: bootstrap once. The WAL files only
+        # exist after the first connection, which is why this runs here.
         ensure_schema(conn)
+        _tighten_data_permissions()
     return conn
 
 
@@ -5097,9 +5133,34 @@ async def api_station_volume(request: Request):
     return _fmt(result)
 
 
+def _sde_info() -> dict:
+    """Which SDE the bundled database was built from.
+
+    Stamped into sde_meta by scripts/build_sde_base.py. Older databases have no
+    such table, so everything here is optional - never let an About page fail
+    over a missing row.
+    """
+    out = {"build": "", "built_at": "", "types": 0}
+    conn = get_conn()
+    try:
+        rows = dict(conn.execute("SELECT key, value FROM sde_meta").fetchall())
+        out["build"] = rows.get("sde_build") or ""
+        out["built_at"] = (rows.get("built_at") or "")[:10]
+        out["types"] = int(rows.get("type_count") or 0)
+    except Exception:
+        pass
+    if not out["types"]:
+        try:
+            out["types"] = conn.execute("SELECT COUNT(*) FROM sde_types").fetchone()[0]
+        except Exception:
+            pass
+    conn.close()
+    return out
+
+
 @app.get("/about", response_class=HTMLResponse)
 async def about_page(request: Request):
-    return _tr("about.html", request, {"version": APP_VERSION})
+    return _tr("about.html", request, {"version": APP_VERSION, "sde": _sde_info()})
 
 
 # ── Wallet ───────────────────────────────────────────────────────────────────
@@ -5229,9 +5290,17 @@ def _corp_hangar_labels(custom: dict) -> dict[str, str]:
     return out
 
 
+# /universe/names tells us WHAT each id is ("alliance", "corporation", "character",
+# "station"...). Remembering it costs nothing and is what lets a contract row say
+# whether it is offered to the whole alliance. IDs never change category.
+_PARTY_CATEGORY: dict[int, str] = {}
+
+
 async def _resolve_party_names(ids: set[int]) -> dict[int, str]:
     """Resolve char/corp/alliance/station/type IDs to names via ESI
     /universe/names/. The endpoint can't handle player structures (>1e12) - we skip them.
+
+    Side effect: records each id's category in _PARTY_CATEGORY.
     """
     ids = {i for i in ids if i and i < 1_000_000_000_000}
     out: dict[int, str] = {}
@@ -5249,6 +5318,8 @@ async def _resolve_party_names(ids: set[int]) -> dict[int, str]:
                 if r.status_code == 200:
                     for item in r.json():
                         out[item["id"]] = item["name"]
+                        if item.get("category"):
+                            _PARTY_CATEGORY[item["id"]] = item["category"]
             except Exception:
                 pass
     return out
@@ -5826,6 +5897,9 @@ def _decorate_contracts(raw: list[dict], party_names: dict[int, str],
             # Kept raw so "hide my own" can match without another name lookup.
             "issuer_id":      iid or 0,
             "issuer_corp_id": c.get("issuer_corporation_id") or 0,
+            # Offered to the whole alliance: the corp endpoint returns those too, and
+            # without saying so a row looks like it belongs to one of my corps.
+            "is_alliance":    _PARTY_CATEGORY.get(aid or 0) == "alliance",
             "char_id":      c.get("_char_id") or 0,
             "corp_id":      c.get("_corp_id") or 0,
             # Who the contract is actually for. In the corporation view this is

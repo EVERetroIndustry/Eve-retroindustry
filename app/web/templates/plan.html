@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block title %}Production Plan - EVE Retroindustry{% endblock %}
+{% block title %}Manufacturing Plan - EVE Retroindustry{% endblock %}
 {% block content %}
 
 <div class="row mb-4 align-items-center">
   <div class="col">
-    <h4 class="mb-0"><i class="bi bi-hammer me-2 text-primary"></i>Production Plan</h4>
+    <h4 class="mb-0"><i class="bi bi-hammer me-2 text-primary"></i>Manufacturing Plan</h4>
   </div>
   {% if all_characters and all_characters | length > 1 %}
   <div class="col-auto d-flex align-items-center gap-2">
@@ -326,7 +326,7 @@
                            value="{{ opt.location_id }}" {% if opt.selected %}checked{% endif %}
                            onchange="updateStockStations()">
                     <span class="text-truncate" style="flex:1;min-width:0;font-size:.82rem">{{ opt.name }}</span>
-                    <span class="badge bg-secondary" style="font-size:.68rem">{{ opt.count }} types</span>
+                    <span class="badge bg-secondary" style="font-size:.68rem">{{ opt.count | plural('type') }}</span>
                   </label>
                 </div>
                 {% endfor %}
@@ -442,13 +442,13 @@ function switchPlanChar(charId) {
       {% if result.can_manufacture %}
       <span id="stock-badge"
             data-with-html='<i class="bi bi-check-circle me-1"></i>Ready to manufacture'
-            data-without-html='<i class="bi bi-x-circle me-1"></i>{{ result.materials | selectattr("required", ">", 0) | list | length }} types missing'
+            data-without-html='<i class="bi bi-x-circle me-1"></i>{{ result.materials | selectattr("required", ">", 0) | list | length | plural('type') }} missing'
             class="badge bg-success fs-6"><i class="bi bi-check-circle me-1"></i>Ready to manufacture</span>
       {% else %}
       <span id="stock-badge"
-            data-with-html='<i class="bi bi-x-circle me-1"></i>{{ result.total_missing_types }} types missing'
-            data-without-html='<i class="bi bi-x-circle me-1"></i>{{ result.materials | selectattr("required", ">", 0) | list | length }} types missing'
-            class="badge bg-danger fs-6"><i class="bi bi-x-circle me-1"></i>{{ result.total_missing_types }} types missing</span>
+            data-with-html='<i class="bi bi-x-circle me-1"></i>{{ result.total_missing_types | plural('type') }} missing'
+            data-without-html='<i class="bi bi-x-circle me-1"></i>{{ result.materials | selectattr("required", ">", 0) | list | length | plural('type') }} missing'
+            class="badge bg-danger fs-6"><i class="bi bi-x-circle me-1"></i>{{ result.total_missing_types | plural('type') }} missing</span>
       {% endif %}
       {% if result.opt_total_cost is not none %}
       <div class="mt-2 small">

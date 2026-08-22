@@ -110,8 +110,9 @@
             data-issuer="{{ c.issuer }}" data-location="{{ c.start }}"
             data-title="{{ c.title }}" data-party="{{ c.party_label }}"
             data-expires="{{ c.date_expired }}" data-own="{{ '1' if c.is_own else '0' }}">
-          {% if all_chars or scope == 'corp' %}<td class="text-truncate" style="max-width:150px;font-size:.78rem"
-              title="{{ c.party_label }}">{{ c.party_label }}</td>{% endif %}
+          {% if all_chars or scope == 'corp' %}<td class="text-truncate" style="max-width:170px;font-size:.78rem"
+              title="{{ c.party_label }}{% if c.is_alliance %} (offered to the whole alliance){% endif %}">
+            {% if c.is_alliance %}<span class="badge bg-secondary me-1" style="font-size:.55rem">ALLIANCE</span>{% endif %}{{ c.party_label }}</td>{% endif %}
           <td>
             <span class="badge {% if c.type_raw == 'courier' %}badge-courier{% elif c.type_raw == 'auction' %}badge-rxn{% elif c.type_raw == 'loan' %}badge-neutral{% else %}badge-mfg{% endif %}" style="font-size:.65rem">{{ c.type }}</span>
           </td>
