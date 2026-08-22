@@ -5823,6 +5823,9 @@ def _decorate_contracts(raw: list[dict], party_names: dict[int, str],
             "date_issued":  c.get("date_issued", ""),
             "date_expired": c.get("date_expired", ""),
             "for_corp":     c.get("for_corporation", False),
+            # Kept raw so "hide my own" can match without another name lookup.
+            "issuer_id":      iid or 0,
+            "issuer_corp_id": c.get("issuer_corporation_id") or 0,
             "char_id":      c.get("_char_id") or 0,
             "corp_id":      c.get("_corp_id") or 0,
             # Who the contract is actually for. In the corporation view this is
@@ -5856,13 +5859,43 @@ async def _finalize_contracts(conn, raw: list[dict], token: str | None) -> list[
     return _decorate_contracts(raw, party_names, loc_names)
 
 
+# ESI keeps 30 days of contract history (plus anything in progress), which for a
+# busy corporation or alliance is thousands of rows nobody came to look at. The
+# page renders the open ones by default and caps what it ships to the browser.
+_CONTRACT_STATUS_SETS = {
+    "open":     ("outstanding", "in_progress"),
+    "finished": ("finished", "finished_issuer", "finished_contractor"),
+}
+_CONTRACT_ROW_CAP = 1000
+
+
+def _apply_contract_view(rows: list[dict], status: str, own_ids: tuple[int, ...]
+                         ) -> tuple[list[dict], int, bool]:
+    """Filter by status bucket, mark our own contracts, cap the row count.
+
+    Returns (rows_to_render, total_matching, truncated).
+    """
+    keep = _CONTRACT_STATUS_SETS.get(status)
+    if keep:
+        rows = [r for r in rows if r.get("status_raw") in keep]
+    own = set(own_ids)
+    for r in rows:
+        r["is_own"] = bool(own & {r.get("issuer_id") or 0, r.get("issuer_corp_id") or 0})
+    total = len(rows)
+    return rows[:_CONTRACT_ROW_CAP], total, total > _CONTRACT_ROW_CAP
+
+
 @app.get("/contracts", response_class=HTMLResponse)
-async def contracts_page(request: Request, char: str = "", scope: str = "personal"):
+async def contracts_page(request: Request, char: str = "", scope: str = "personal",
+                         status: str = "open"):
     conn = get_conn()
     all_chars = (char == "all")
+    if status not in ("open", "finished", "any"):
+        status = "open"
     ctx: dict = {
         "scope": scope, "contracts_char_id": None, "all_chars": all_chars,
         "contracts": [], "error": None, "corp_error": None,
+        "status_filter": status, "total_contracts": 0, "truncated": False,
     }
 
     chars = list_characters(conn)
@@ -5918,7 +5951,9 @@ async def contracts_page(request: Request, char: str = "", scope: str = "persona
             raw = [c for c in raw if not (c.get("contract_id") in seen or seen.add(c.get("contract_id")))]
             any_tok = next((_get_valid_token_for(conn, c) for c, _ in chars
                             if _get_valid_token_for(conn, c)), None)
-            ctx["contracts"] = await _finalize_contracts(conn, raw, any_tok)
+            ctx["contracts"], ctx["total_contracts"], ctx["truncated"] = \
+                _apply_contract_view(await _finalize_contracts(conn, raw, any_tok),
+                                     status, _own_party_ids(conn))
             conn.close()
             return _tr("contracts.html", request, ctx)
 
@@ -5965,7 +6000,9 @@ async def contracts_page(request: Request, char: str = "", scope: str = "persona
                 raw = await contracts_api.fetch_character_contracts(client, plan_char_id, token)
                 for c in raw:
                     c["_char_id"] = plan_char_id
-        ctx["contracts"] = await _finalize_contracts(conn, raw, token)
+        ctx["contracts"], ctx["total_contracts"], ctx["truncated"] = \
+            _apply_contract_view(await _finalize_contracts(conn, raw, token),
+                                 status, _own_party_ids(conn))
     except Exception as exc:
         ctx["error"] = f"Error loading contracts: {exc}"
 

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_contract_filters.html" import contract_table_scripts %}
 {% block title %}Alliance Contracts - EVE Retroindustry{% endblock %}
 {% block content %}
 
@@ -8,7 +9,8 @@
     <i class="bi bi-globe me-1"></i>Public contracts</a>
 </div>
 
-<ul class="nav nav-tabs mb-3">
+{# Same pills as /contracts, so switching tabs does not switch visual style. #}
+<ul class="nav nav-pills mb-3" style="gap:.5rem">
   <li class="nav-item">
     <a class="nav-link" href="/contracts?scope=personal"><i class="bi bi-person me-1"></i>Personal</a>
   </li>
@@ -189,16 +191,31 @@
 {% if results %}
 <div class="card">
   <div class="table-responsive">
-    <table class="table table-hover tbl-compact table-sm mb-0 align-middle">
+    <table id="contract-table" class="table table-hover tbl-compact table-sm mb-0 align-middle">
+      {# Sorting the header re-orders the rows on screen; the "Sort by" select above
+         decides which rows are on screen in the first place (the query is capped). #}
+      {% set ic = '<span class="sort-icon text-muted ms-1" style="font-size:.7rem">&#8645;</span>' | safe %}
       <thead><tr>
-        <th>Type</th><th>Contract</th><th>Location</th>
-        <th class="text-end">Price</th><th class="text-end">Reward</th>
-        <th class="text-end">Collateral</th><th class="text-end">Volume</th>
-        <th>Issuer</th><th class="text-end">Expires</th><th>Status</th>
+        <th data-sort="typelabel:text">Type{{ ic }}</th>
+        <th data-sort="title:text">Contract{{ ic }}</th>
+        <th data-sort="location:text">Location{{ ic }}</th>
+        <th class="text-end" data-sort="price:num">Price{{ ic }}</th>
+        <th class="text-end" data-sort="reward:num">Reward{{ ic }}</th>
+        <th class="text-end" data-sort="collateral:num">Collateral{{ ic }}</th>
+        <th class="text-end" data-sort="volume:num">Volume{{ ic }}</th>
+        <th data-sort="issuer:text">Issuer{{ ic }}</th>
+        <th class="text-end" data-sort="expires:text">Expires{{ ic }}</th>
+        <th data-sort="statuslabel:text">Status{{ ic }}</th>
       </tr></thead>
       <tbody>
         {% for c in results %}
-        <tr>
+        <tr data-search="{{ (c.title ~ ' ' ~ c.issuer_name ~ ' ' ~ c.issuer_corp_name ~ ' ' ~ c.start_name) | lower }}"
+            data-type="{{ c.type }}" data-typelabel="{{ c.type_label }}"
+            data-status="{{ c.status }}" data-statuslabel="{{ c.status_label }}"
+            data-price="{{ c.price }}" data-reward="{{ c.reward }}"
+            data-collateral="{{ c.collateral }}" data-volume="{{ c.volume }}"
+            data-issuer="{{ c.issuer_name }}" data-location="{{ c.start_name }}"
+            data-title="{{ c.title }}" data-expires="{{ c.date_expired }}">
           <td><span class="badge {% if c.type == 'courier' %}badge-courier{% elif c.type == 'auction' %}badge-rxn{% elif c.type == 'loan' %}badge-neutral{% else %}badge-mfg{% endif %}" style="font-size:.65rem">{{ c.type_label }}</span></td>
           <td style="max-width:280px">
             {% if c.title %}<div class="text-truncate" title="{{ c.title }}">{{ c.title }}</div>{% endif %}
@@ -246,6 +263,7 @@
 {% endblock %}
 
 {% block scripts %}
+{{ contract_table_scripts() }}
 <script>
 (function(){
   const el = document.getElementById('idx-age');

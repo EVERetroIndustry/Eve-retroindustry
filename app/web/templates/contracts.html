@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_contract_filters.html" import contract_filter_bar, contract_table_scripts %}
 {% block title %}Contracts - EVE Retroindustry{% endblock %}
 {% block content %}
 
@@ -54,32 +55,61 @@
 <div class="alert alert-warning"><i class="bi bi-shield-lock me-2"></i>{{ corp_error }}</div>
 {% endif %}
 
+{# Which statuses the server even renders. "Open" keeps the page small: the corp
+   endpoint returns 30 days of history, and for a busy alliance that is thousands
+   of finished and deleted contracts nobody is looking for. #}
+<div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
+  <span class="text-muted small">Show:</span>
+  <div class="btn-group btn-group-sm" role="group">
+    {% for key, label in [('open', 'Open'), ('finished', 'Finished'), ('any', 'All')] %}
+    <a href="/contracts?char={{ char_param }}&scope={{ scope }}&status={{ key }}"
+       class="btn {% if status_filter == key %}btn-eve{% else %}btn-outline-secondary{% endif %}">{{ label }}</a>
+    {% endfor %}
+  </div>
+  {% if truncated %}
+  <span class="text-warning small"><i class="bi bi-info-circle me-1"></i>
+    Showing the newest {{ contracts | length | count_eu }} of {{ total_contracts | count_eu }};
+    narrow it with Show or the filters.</span>
+  {% endif %}
+</div>
+
 {% if not contracts %}
-<div class="card"><div class="text-muted text-center py-4">No contracts.</div></div>
+<div class="card"><div class="text-muted text-center py-4">
+  No contracts{% if status_filter != 'any' %} in this view - try <em>All</em>{% endif %}.
+</div></div>
 {% else %}
+{{ contract_filter_bar() }}
 <div class="card">
   <div class="table-responsive">
-    <table class="table table-hover tbl-compact table-sm mb-0 align-middle">
+    <table id="contract-table" class="table table-hover tbl-compact table-sm mb-0 align-middle">
       <thead>
         <tr>
           {# In the corporation view the interesting party is who the contract is
              assigned to - the corp endpoint also returns the whole alliance's
              contracts, issued by other member corps. #}
-          {% if all_chars or scope == 'corp' %}<th>{{ 'Assigned to' if scope == 'corp' else 'Character' }}</th>{% endif %}
-          <th>Type</th>
-          <th>Contract</th>
-          <th>Location</th>
-          <th class="text-end">Price</th>
-          <th class="text-end">Reward</th>
-          <th class="text-end">Collateral</th>
-          <th>Issuer</th>
-          <th class="text-end">Expires</th>
-          <th>Status</th>
+          {% set ic = '<span class="sort-icon text-muted ms-1" style="font-size:.7rem">&#8645;</span>' | safe %}
+          {% if all_chars or scope == 'corp' %}<th data-sort="party:text">{{ 'Assigned to' if scope == 'corp' else 'Character' }}{{ ic }}</th>{% endif %}
+          <th data-sort="typelabel:text">Type{{ ic }}</th>
+          <th data-sort="title:text">Contract{{ ic }}</th>
+          <th data-sort="location:text">Location{{ ic }}</th>
+          <th class="text-end" data-sort="price:num">Price{{ ic }}</th>
+          <th class="text-end" data-sort="reward:num">Reward{{ ic }}</th>
+          <th class="text-end" data-sort="collateral:num">Collateral{{ ic }}</th>
+          <th data-sort="issuer:text">Issuer{{ ic }}</th>
+          <th class="text-end" data-sort="expires:text">Expires{{ ic }}</th>
+          <th data-sort="statuslabel:text">Status{{ ic }}</th>
         </tr>
       </thead>
       <tbody>
         {% for c in contracts %}
-        <tr>
+        <tr data-search="{{ (c.title ~ ' ' ~ c.issuer ~ ' ' ~ c.start ~ ' ' ~ c.end ~ ' ' ~ c.party_label ~ ' ' ~ c.type) | lower }}"
+            data-type="{{ c.type_raw }}" data-typelabel="{{ c.type }}"
+            data-status="{{ c.status_raw }}" data-statuslabel="{{ c.status }}"
+            data-price="{{ c.price }}" data-reward="{{ c.reward }}"
+            data-collateral="{{ c.collateral }}" data-volume="{{ c.volume }}"
+            data-issuer="{{ c.issuer }}" data-location="{{ c.start }}"
+            data-title="{{ c.title }}" data-party="{{ c.party_label }}"
+            data-expires="{{ c.date_expired }}" data-own="{{ '1' if c.is_own else '0' }}">
           {% if all_chars or scope == 'corp' %}<td class="text-truncate" style="max-width:150px;font-size:.78rem"
               title="{{ c.party_label }}">{{ c.party_label }}</td>{% endif %}
           <td>
@@ -113,12 +143,12 @@
     </table>
   </div>
 </div>
-<div class="text-muted small mt-2">{{ contracts | length }} contract{{ 's' if contracts | length != 1 }}</div>
 {% endif %}
 
 {% endblock %}
 
 {% block scripts %}
+{{ contract_table_scripts() }}
 <script>
 async function loadItems(btn, contractId, charId, corpId) {
   const box = btn.parentElement.querySelector('.contract-items');

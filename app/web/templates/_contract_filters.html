@@ -1,0 +1,188 @@
+{# Shared contract table behaviour: click-to-sort columns + a client-side filter
+   bar, so the three contract views (Personal, Corporation, Alliance) behave the
+   same and get as close to the in-game contract window as a web page can.
+
+   The filters run in the browser over the rows already rendered - like the wallet
+   filters - because these tabs fetch from ESI on every page load and re-querying
+   ESI for a changed filter would be both slow and rude. Rows carry the values in
+   data-* attributes; the select options are built from what is actually on screen,
+   so the list never offers a type or status the data does not contain.
+
+   The table needs id="contract-table" and its rows a data-search attribute.
+   Sortable headers: data-sort="key:num" or "key:text", key = the row's data-KEY.
+#}
+
+{% macro contract_filter_bar(show_hide_own=True, show_volume=True) %}
+<div class="card mb-3" id="contract-filters">
+  <div class="card-body py-2">
+    <div class="row g-2 align-items-end">
+      <div class="col-md-3">
+        <label class="form-label small text-muted mb-1">Search</label>
+        <input type="text" id="cf-q" class="form-control form-control-sm"
+               placeholder="title, issuer, location…" autocomplete="off">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small text-muted mb-1">Type</label>
+        <select id="cf-type" class="form-select form-select-sm"><option value="">All</option></select>
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small text-muted mb-1">Status</label>
+        <select id="cf-status" class="form-select form-select-sm"><option value="">All shown</option></select>
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small text-muted mb-1">Min price</label>
+        <input type="text" id="cf-minp" class="form-control form-control-sm" placeholder="-">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small text-muted mb-1">Max price</label>
+        <input type="text" id="cf-maxp" class="form-control form-control-sm" placeholder="-">
+      </div>
+      <div class="col-md-1">
+        <label class="form-label small text-muted mb-1">Days left</label>
+        <input type="text" id="cf-days" class="form-control form-control-sm" placeholder="-">
+      </div>
+
+      <div class="col-md-2">
+        <label class="form-label small text-muted mb-1">Min reward</label>
+        <input type="text" id="cf-minr" class="form-control form-control-sm" placeholder="-">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small text-muted mb-1">Max collateral</label>
+        <input type="text" id="cf-maxc" class="form-control form-control-sm" placeholder="-">
+      </div>
+      {% if show_volume %}
+      <div class="col-md-2">
+        <label class="form-label small text-muted mb-1">Max volume m&sup3;</label>
+        <input type="text" id="cf-maxv" class="form-control form-control-sm" placeholder="-">
+      </div>
+      {% endif %}
+      <div class="col d-flex align-items-center gap-3">
+        {% if show_hide_own %}
+        <div class="form-check mb-0">
+          <input class="form-check-input" type="checkbox" id="cf-own">
+          <label class="form-check-label small text-muted" for="cf-own">Hide my own</label>
+        </div>
+        {% endif %}
+        <span class="text-muted small" id="cf-count"></span>
+        <button type="button" class="btn btn-sm btn-outline-secondary ms-auto" id="cf-reset">Reset</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endmacro %}
+
+
+{% macro contract_table_scripts() %}
+<script>
+(function(){
+  const table = document.getElementById('contract-table');
+  if (!table) return;
+  const tbody = table.querySelector('tbody');
+  const rows = Array.from(tbody.querySelectorAll('tr[data-search]'));
+
+  // ── click-to-sort columns, like the in-game contract list ──────────────────
+  table.querySelectorAll('th[data-sort]').forEach(th => {
+    th.style.cursor = 'pointer';
+    th.addEventListener('click', () => {
+      const [key, kind] = th.dataset.sort.split(':');
+      const asc = th.dataset.dir !== 'asc';
+      table.querySelectorAll('th[data-sort]').forEach(o => {
+        delete o.dataset.dir;
+        const i = o.querySelector('.sort-icon');
+        if (i) i.textContent = '⇅';
+      });
+      th.dataset.dir = asc ? 'asc' : 'desc';
+      const ic = th.querySelector('.sort-icon');
+      if (ic) ic.textContent = asc ? '▲' : '▼';
+      const sorted = rows.slice().sort((a, b) => {
+        if (kind === 'num') {
+          const va = parseFloat(a.dataset[key]) || 0, vb = parseFloat(b.dataset[key]) || 0;
+          return asc ? va - vb : vb - va;
+        }
+        const va = a.dataset[key] || '', vb = b.dataset[key] || '';
+        return asc ? va.localeCompare(vb, 'en') : vb.localeCompare(va, 'en');
+      });
+      // Re-append in order; hidden rows keep their display state.
+      sorted.forEach(r => tbody.appendChild(r));
+    });
+  });
+
+  const bar = document.getElementById('contract-filters');
+  if (!bar) return;
+
+  // ── selects are built from the rendered rows ───────────────────────────────
+  function fill(selectId, valueKey, labelKey) {
+    const sel = document.getElementById(selectId);
+    if (!sel) return;
+    const seen = new Map();
+    rows.forEach(r => {
+      const v = r.dataset[valueKey];
+      if (v && !seen.has(v)) seen.set(v, r.dataset[labelKey] || v);
+    });
+    [...seen.entries()].sort((a, b) => a[1].localeCompare(b[1], 'en')).forEach(([v, label]) => {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = label;
+      sel.appendChild(o);
+    });
+  }
+  fill('cf-type', 'type', 'typelabel');
+  fill('cf-status', 'status', 'statuslabel');
+
+  const el = id => document.getElementById(id);
+  const txt = id => (el(id)?.value || '').trim();
+  const num = id => {
+    const raw = txt(id).replace(/\s/g, '').replace(',', '.');
+    if (!raw) return null;
+    const n = parseFloat(raw);
+    return isNaN(n) ? null : n;
+  };
+
+  function apply() {
+    const q = txt('cf-q').toLowerCase();
+    const type = txt('cf-type'), status = txt('cf-status');
+    const minP = num('cf-minp'), maxP = num('cf-maxp'), minR = num('cf-minr');
+    const maxC = num('cf-maxc'), maxV = num('cf-maxv'), days = num('cf-days');
+    const hideOwn = el('cf-own')?.checked;
+    // date_expired is ISO, so a string compare is a date compare.
+    const cutoff = days != null
+      ? new Date(Date.now() + days * 86400000).toISOString().slice(0, 19) + 'Z' : null;
+    let shown = 0;
+    rows.forEach(r => {
+      const d = r.dataset;
+      let ok = true;
+      if (q && !(d.search || '').includes(q)) ok = false;
+      if (ok && type && d.type !== type) ok = false;
+      if (ok && status && d.status !== status) ok = false;
+      if (ok && minP != null && (parseFloat(d.price) || 0) < minP) ok = false;
+      if (ok && maxP != null && (parseFloat(d.price) || 0) > maxP) ok = false;
+      if (ok && minR != null && (parseFloat(d.reward) || 0) < minR) ok = false;
+      if (ok && maxC != null && (parseFloat(d.collateral) || 0) > maxC) ok = false;
+      if (ok && maxV != null && (parseFloat(d.volume) || 0) > maxV) ok = false;
+      if (ok && cutoff && (d.expires || '') > cutoff) ok = false;
+      if (ok && hideOwn && d.own === '1') ok = false;
+      r.style.display = ok ? '' : 'none';
+      if (ok) shown++;
+    });
+    const c = el('cf-count');
+    if (c) {
+      c.textContent = shown === rows.length
+        ? `${rows.length} contract${rows.length === 1 ? '' : 's'}`
+        : `${shown} of ${rows.length} shown`;
+      c.classList.toggle('text-warning', shown !== rows.length);
+    }
+  }
+
+  bar.querySelectorAll('input, select').forEach(i => {
+    i.addEventListener(i.tagName === 'SELECT' || i.type === 'checkbox' ? 'change' : 'input', apply);
+  });
+  el('cf-reset')?.addEventListener('click', () => {
+    bar.querySelectorAll('input').forEach(i => {
+      if (i.type === 'checkbox') i.checked = false; else i.value = '';
+    });
+    bar.querySelectorAll('select').forEach(s => { s.value = ''; });
+    apply();
+  });
+  apply();
+})();
+</script>
+{% endmacro %}

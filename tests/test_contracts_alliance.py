@@ -156,3 +156,97 @@ def test_single_character_without_the_scope_gets_the_real_reason(client, app_mod
         app_module.contracts_api.fetch_corp_contracts = real
     assert "added before the app asked for corporation contract access" in html
     assert "Accountant" not in html
+
+
+# ── status buckets, row cap, and the hooks the client-side filter needs ────────
+
+def _rows(status_raw, n=1, **kw):
+    out = []
+    for i in range(n):
+        r = {"contract_id": 1000 + i, "status_raw": status_raw, "type_raw": "item_exchange",
+             "type": "Item Exchange", "status": status_raw.title(), "title": f"t{i}",
+             "price": 1.0, "reward": 0.0, "collateral": 0.0, "volume": 0.0,
+             "issuer": "P", "start": "Jita", "end": "", "party_label": "",
+             "date_expired": "2026-09-19T10:00:00Z", "issuer_id": 1, "issuer_corp_id": 2}
+        r.update(kw)
+        out.append(r)
+    return out
+
+
+def test_open_is_the_default_and_means_outstanding_plus_in_progress(app_module):
+    rows = (_rows("outstanding", 2) + _rows("in_progress") + _rows("finished", 3)
+            + _rows("deleted", 4))
+    kept, total, trunc = app_module._apply_contract_view(rows, "open", ())
+    assert {r["status_raw"] for r in kept} == {"outstanding", "in_progress"}
+    assert total == 3 and not trunc
+
+
+def test_the_finished_bucket_covers_both_finished_flavours(app_module):
+    rows = (_rows("finished") + _rows("finished_issuer") + _rows("finished_contractor")
+            + _rows("outstanding") + _rows("failed"))
+    kept, total, _ = app_module._apply_contract_view(rows, "finished", ())
+    assert total == 3
+    assert {r["status_raw"] for r in kept} == {
+        "finished", "finished_issuer", "finished_contractor"}
+
+
+def test_any_keeps_every_status(app_module):
+    rows = _rows("outstanding") + _rows("deleted") + _rows("reversed")
+    kept, total, _ = app_module._apply_contract_view(rows, "any", ())
+    assert total == 3 and len(kept) == 3
+
+
+def test_the_row_cap_reports_that_it_truncated(app_module):
+    rows = _rows("outstanding", app_module._CONTRACT_ROW_CAP + 25)
+    kept, total, trunc = app_module._apply_contract_view(rows, "any", ())
+    assert len(kept) == app_module._CONTRACT_ROW_CAP
+    assert total == app_module._CONTRACT_ROW_CAP + 25 and trunc
+
+
+def test_my_own_contracts_are_marked_by_character_or_corporation(app_module):
+    rows = (_rows("outstanding", 1, issuer_id=900000001, issuer_corp_id=5)
+            + _rows("outstanding", 1, issuer_id=42, issuer_corp_id=98000001)
+            + _rows("outstanding", 1, issuer_id=42, issuer_corp_id=5))
+    kept, _, _ = app_module._apply_contract_view(rows, "any", (900000001, 98000001))
+    assert [r["is_own"] for r in kept] == [True, True, False]
+
+
+def test_rendered_rows_carry_what_the_client_filter_reads(client, app_module):
+    """The filter and the sorter run in the browser off these data-* attributes."""
+    api = app_module.contracts_api
+    real = (api.fetch_character_contracts, app_module._resolve_party_names)
+
+    async def _fetch(cl, cid, tok):
+        return [{"contract_id": 7001, "type": "courier", "status": "outstanding",
+                 "title": "Jita run", "price": 0, "reward": 25_000_000,
+                 "collateral": 900_000_000, "volume": 330_000,
+                 "issuer_id": 900000001, "issuer_corporation_id": 98000001,
+                 "date_issued": "2026-08-20T10:00:00Z",
+                 "date_expired": "2026-09-19T10:00:00Z",
+                 "start_location_id": 60003760, "end_location_id": 60003760}]
+
+    async def _names(ids):
+        return {i: "Someone" for i in ids}
+
+    api.fetch_character_contracts = _fetch
+    app_module._resolve_party_names = _names
+    try:
+        html = client.get("/contracts?char=900000001&scope=personal").text
+    finally:
+        (api.fetch_character_contracts, app_module._resolve_party_names) = real
+
+    for attr in ('data-search=', 'data-type="courier"', 'data-typelabel="Courier"',
+                 'data-status="outstanding"', 'data-price=', 'data-collateral=',
+                 'data-expires=', 'data-own="1"'):
+        assert attr in html, attr
+    # Numbers are compared as numbers: whether ESI hands us an int or a float only
+    # changes the rendered text, not what the filter parses out of it.
+    import re as _re
+    for key, want in (("reward", 25_000_000.0), ("volume", 330_000.0)):
+        m = _re.search(rf'data-{key}="([^"]*)"', html)
+        assert m and float(m.group(1)) == want, (key, m and m.group(1))
+    # The columns the in-game window lets you sort by.
+    for col in ("typelabel:text", "price:num", "reward:num", "collateral:num",
+                "expires:text", "statuslabel:text", "location:text"):
+        assert f'data-sort="{col}"' in html, col
+    assert 'id="contract-filters"' in html and 'id="contract-table"' in html
