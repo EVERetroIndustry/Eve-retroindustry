@@ -6152,8 +6152,8 @@ async def api_contract_items(request: Request, contract_id: int,
                         if tok:
                             break
                 if tok:
-                    items = await contracts_api.fetch_corp_contract_items(
-                        client, corp_id, contract_id, tok) or []
+                    items = (await contracts_api.fetch_corp_contract_items(
+                        client, corp_id, contract_id, tok)).items or []
             elif char_id:
                 tok = _get_valid_token_for(conn, char_id)
                 if tok:

@@ -14,6 +14,8 @@ ESI endpoints:
 """
 from __future__ import annotations
 import asyncio
+from typing import NamedTuple
+
 import httpx
 
 ESI_BASE = "https://esi.evetech.net/latest"
@@ -115,28 +117,69 @@ async def fetch_character_contract_items(client, char_id: int, contract_id: int,
     return []
 
 
-async def fetch_corp_contract_items(client, corp_id: int, contract_id: int,
-                                    token: str) -> list[dict] | None:
-    """Contents of one corporation contract.
+class ItemFetch(NamedTuple):
+    """Why a contract's contents did or did not arrive.
 
-    Returns the items, [] when the contract genuinely has none, or **None when the
-    request failed** (rate limit, 404 on an old contract, transport error). The
-    caller has to be able to tell those apart: treating a failure as "no contents"
-    let the alliance indexer burn its whole rate-limit budget and report success
-    while storing almost nothing.
+    Lumping these together is what made the alliance indexer misreport itself: a
+    contract that no longer exists, the game server saying "stop spamming" for the
+    next minute, and the ESI token bucket being empty need three different answers.
     """
+    items: list[dict] | None    # the contents, or None when they did not arrive
+    kind: str                   # ok | gone | throttled | limited | error
+    wait: float = 0.0           # seconds the server asked us to wait, if it did
+
+
+def _stop_spamming_wait(payload) -> float:
+    """`{"error": "ConStopSpamming, details: {\"remainingTime\": 64226997}"}`.
+
+    The number is microseconds (64226997 -> ~64 s). Measured against the live game
+    server, not read in a document, so treat it as a hint: clamp it to something
+    sane rather than trusting the unit blindly.
+    """
+    try:
+        raw = str((payload or {}).get("error", ""))
+        digits = "".join(ch for ch in raw.split("remainingTime")[-1] if ch.isdigit())
+        if digits:
+            return max(2.0, min(120.0, int(digits) / 1_000_000))
+    except Exception:
+        pass
+    return 15.0
+
+
+async def fetch_corp_contract_items(client, corp_id: int, contract_id: int,
+                                    token: str) -> ItemFetch:
+    """Contents of one corporation contract, with the reason when there are none."""
     try:
         r = await client.get(
             f"{ESI_BASE}/corporations/{corp_id}/contracts/{contract_id}/items/",
             headers=_auth(token), timeout=15)
     except Exception:
-        return None
+        return ItemFetch(None, "error")
     if r.status_code == 200:
         try:
-            return r.json()
+            return ItemFetch(r.json(), "ok")
         except Exception:
-            return None
-    return None
+            return ItemFetch(None, "error")
+    body = {}
+    try:
+        body = r.json() or {}
+    except Exception:
+        pass
+    if r.status_code == 404:
+        # Accepted, expired or deleted between the listing and now: never coming.
+        return ItemFetch(None, "gone")
+    if r.status_code == 520 and "ConStopSpamming" in str(body.get("error", "")):
+        # The GAME server's own throttle, unrelated to the ESI token bucket. It
+        # tells us how long to hold off, and it is seconds - not the 15 minutes an
+        # exhausted token bucket needs.
+        return ItemFetch(None, "throttled", _stop_spamming_wait(body))
+    if r.status_code in (420, 429):
+        try:
+            wait = float(r.headers.get("retry-after") or 0)
+        except ValueError:
+            wait = 0.0
+        return ItemFetch(None, "limited", max(0.0, min(900.0, wait)))
+    return ItemFetch(None, "error")
 
 
 # ── Public (regional) ─────────────────────────────────────────────────────────

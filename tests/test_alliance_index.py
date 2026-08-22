@@ -15,6 +15,7 @@ import time
 
 import pytest
 
+from app.character.contracts import ItemFetch as _IF
 from app.web import contracts_helper as ch
 
 ALLIANCE = 99000001
@@ -64,10 +65,8 @@ def _run_index(conn, sources, listings, items=None, item_calls=None, list_calls=
     async def _items(client, corp_id, contract_id, token):
         if item_calls is not None:
             item_calls.append((corp_id, contract_id, token))
-        # None means "the request failed"; [] means "no contents". The indexer has to
-        # tell them apart, so the stub keeps the distinction: a contract listed in
-        # `items` returns its list, anything else returns an empty list.
-        return list((items or {}).get(contract_id, []))
+        # The fetcher answers WHY, not just what: ok / gone / throttled / limited.
+        return _IF(list((items or {}).get(contract_id, [])), "ok")
 
     async def _parties(ids):
         return {i: f"party {i}" for i in ids}
@@ -440,7 +439,7 @@ def test_a_failed_item_fetch_is_not_recorded_as_an_empty_contract(conn, monkeypa
 
     async def _fail(client, corp_id, contract_id, token):
         calls.append(contract_id)
-        return None                      # ESI said no
+        return _IF(None, "limited")      # the ESI token bucket is empty
 
     async def _parties(ids):
         return {i: "x" for i in ids}
@@ -488,7 +487,7 @@ def test_the_listing_is_saved_before_the_slow_contents_phase(conn):
         # By the time contents are fetched, the rows must already be in the database.
         seen_listed_before_items.append(
             conn.execute("SELECT COUNT(*) FROM alliance_contracts").fetchone()[0])
-        return [{"type_id": 34, "quantity": 1}]
+        return _IF([{"type_id": 34, "quantity": 1}], "ok")
 
     async def _parties(ids):
         return {i: "x" for i in ids}
@@ -571,7 +570,8 @@ def test_the_filler_lists_then_fetches_and_reports_being_rate_limited(app_module
 
     async def _items(client, corp_id, contract_id, token):
         calls.append(contract_id)
-        return None if len(calls) > 2 else [{"type_id": 34, "quantity": 1}]
+        return (_IF(None, "limited") if len(calls) > 2
+                else _IF([{"type_id": 34, "quantity": 1}], "ok"))
 
     monkeypatch.setattr(ch, "_ITEM_FAIL_LIMIT", 1)
     monkeypatch.setattr(ch.contracts_api, "fetch_corp_contracts", _list)
@@ -694,3 +694,83 @@ def test_cheapest_source_picks_the_cheaper_of_public_and_alliance(client, app_mo
     finally:
         (app_module.get_region_for_location, app_module.contracts_helper.get_index_status,
          app_module.contracts_helper.best_contract_price) = real
+
+
+# ── telling the three refusals apart ──────────────────────────────────────────
+
+def test_the_game_servers_stop_spamming_is_slept_off_not_treated_as_a_dead_end(
+        conn, monkeypatch):
+    """520 ConStopSpamming is the GAME server saying "not so fast", for seconds.
+
+    It used to be counted with everything else, so 25 of them aborted the run and
+    the page announced a 15-minute ESI rate limit that was not happening.
+    """
+    import asyncio
+    # No sleep patching: the code floors the wait at one second and the three
+    # contracts wait concurrently, so the test costs about that.
+    listings = {CORP_A: [_contract(i) for i in range(1, 4)]}
+    attempts: list = []
+
+    async def _list(client, corp_id, token):
+        return list(listings[CORP_A]), None
+
+    async def _items(client, corp_id, contract_id, token):
+        attempts.append(contract_id)
+        # Throttled once per contract, then fine.
+        if attempts.count(contract_id) == 1:
+            return _IF(None, "throttled", 3.0)
+        return _IF([{"type_id": 34, "quantity": 1}], "ok")
+
+    monkeypatch.setattr(ch.contracts_api, "fetch_corp_contracts", _list)
+    monkeypatch.setattr(ch.contracts_api, "fetch_corp_contract_items", _items)
+
+    async def _names(ids):
+        return {i: "x" for i in ids}
+
+    async def _drive():
+        async for _ in ch.stream_alliance_index(conn, ALLIANCE, [(CORP_A, "t1")],
+                                                _names, _names):
+            pass
+    asyncio.run(_drive())
+    # Every contract was retried and stored; nothing was reported as rate limited.
+    assert conn.execute("SELECT COUNT(DISTINCT contract_id)"
+                        " FROM alliance_contract_items").fetchone()[0] == 3
+    assert len(attempts) == 6
+
+
+def test_a_contract_that_no_longer_exists_is_not_asked_for_again(conn, monkeypatch):
+    """404 means accepted, expired or deleted - retrying it forever is a treadmill."""
+    import asyncio
+    listings = {CORP_A: [_contract(1), _contract(2)]}
+    calls: list = []
+
+    async def _list(client, corp_id, token):
+        return list(listings[CORP_A]), None
+
+    async def _items(client, corp_id, contract_id, token):
+        calls.append(contract_id)
+        if contract_id == 1:
+            return _IF(None, "gone")
+        return _IF([{"type_id": 34, "quantity": 1}], "ok")
+
+    monkeypatch.setattr(ch.contracts_api, "fetch_corp_contracts", _list)
+    monkeypatch.setattr(ch.contracts_api, "fetch_corp_contract_items", _items)
+
+    async def _names(ids):
+        return {i: "x" for i in ids}
+
+    async def _drive():
+        async for _ in ch.stream_alliance_index(conn, ALLIANCE, [(CORP_A, "t1")],
+                                                _names, _names):
+            pass
+    asyncio.run(_drive())
+    assert sorted(calls) == [1, 2]
+    # Not pending any more...
+    assert ch.contracts_missing_items(conn, ALLIANCE) == []
+    # ...and it does not drag the "covers X of Y" denominator down forever.
+    total, covered = ch.alliance_item_coverage(conn, ALLIANCE)
+    assert (total, covered) == (1, 1)
+    # A second run does not ask about it again.
+    calls.clear()
+    asyncio.run(_drive())
+    assert calls == []
