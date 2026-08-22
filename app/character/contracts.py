@@ -116,16 +116,27 @@ async def fetch_character_contract_items(client, char_id: int, contract_id: int,
 
 
 async def fetch_corp_contract_items(client, corp_id: int, contract_id: int,
-                                    token: str) -> list[dict]:
+                                    token: str) -> list[dict] | None:
+    """Contents of one corporation contract.
+
+    Returns the items, [] when the contract genuinely has none, or **None when the
+    request failed** (rate limit, 404 on an old contract, transport error). The
+    caller has to be able to tell those apart: treating a failure as "no contents"
+    let the alliance indexer burn its whole rate-limit budget and report success
+    while storing almost nothing.
+    """
     try:
         r = await client.get(
             f"{ESI_BASE}/corporations/{corp_id}/contracts/{contract_id}/items/",
             headers=_auth(token), timeout=15)
-        if r.status_code == 200:
-            return r.json()
     except Exception:
-        pass
-    return []
+        return None
+    if r.status_code == 200:
+        try:
+            return r.json()
+        except Exception:
+            return None
+    return None
 
 
 # ── Public (regional) ─────────────────────────────────────────────────────────

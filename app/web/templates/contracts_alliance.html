@@ -5,7 +5,7 @@
 {% block content %}
 
 {{ contracts_header("alliance", all_characters, char_alliance=char_alliance,
-                    alliance_id=alliance_id, explicit=alliance_explicit) }}
+                    alliance_id=alliance_id, explicit=alliance_explicit, via=via) }}
 {{ contracts_tabs("alliance") }}
 
 {% if error %}
@@ -55,8 +55,9 @@
     </div>
     <div class="progress" style="height:6px"><div id="idx-bar" class="progress-bar bg-warning" style="width:0%"></div></div>
     <div class="text-muted mt-1" style="font-size:.72rem">
-      Contract contents never change, so only contracts the app has not seen before are
-      fetched - the first index is the slow one.
+      The list is saved first, then the contents one contract at a time - so you can
+      leave this page whenever you like and nothing fetched so far is lost. Contents
+      never change, so the next Refresh continues where this one stopped.
     </div>
   </div>
 </div>
@@ -167,13 +168,20 @@ function indexAlliance(allianceId) {
     document.getElementById('idx-pct').textContent = (d.pct || 0) + '%';
     const label = document.getElementById('idx-label');
     if (d.phase === 'list') label.textContent = `Listing: ${d.done}/${d.total} corporations`;
-    else if (d.phase === 'items') label.textContent = `Contents: ${d.done}/${d.total} contracts`;
     else if (d.phase === 'names') label.textContent = 'Resolving names…';
+    else if (d.phase === 'listed') label.textContent =
+      `${(d.contracts || 0).toLocaleString()} contracts saved - now fetching contents`;
+    else if (d.phase === 'items') label.textContent =
+      `Contents: ${d.done}/${d.total} contracts (already saved, safe to leave)`;
     if (d.done) {
       es.close();
-      label.textContent = d.error ? d.error : 'Done, loading…';
-      if (!d.error) setTimeout(() => location.reload(), 800);
-      else btn.disabled = false;
+      if (d.error) { label.textContent = d.error; btn.disabled = false; return; }
+      label.textContent = d.rate_limited
+        ? `ESI rate limit reached - ${(d.items_left || 0).toLocaleString()} contracts still `
+          + 'without contents. Everything fetched is saved; try Refresh again in ~15 min.'
+        : 'Done, loading…';
+      // Give the message a moment to be read before the page reloads.
+      setTimeout(() => location.reload(), d.rate_limited ? 6000 : 800);
     }
   };
   es.onerror = () => { es.close(); document.getElementById('idx-label').textContent = 'Connection error'; btn.disabled = false; };

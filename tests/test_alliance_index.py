@@ -64,6 +64,9 @@ def _run_index(conn, sources, listings, items=None, item_calls=None, list_calls=
     async def _items(client, corp_id, contract_id, token):
         if item_calls is not None:
             item_calls.append((corp_id, contract_id, token))
+        # None means "the request failed"; [] means "no contents". The indexer has to
+        # tell them apart, so the stub keeps the distinction: a contract listed in
+        # `items` returns its list, anything else returns an empty list.
         return list((items or {}).get(contract_id, []))
 
     async def _parties(ids):
@@ -424,3 +427,86 @@ def test_alliance_filters_survive_a_page_without_any_readable_corporation(
     finally:
         app_module._corp_alliance_ids = real
     assert "Hulk fit" in html and "capital parts" not in html
+
+
+def test_a_failed_item_fetch_is_not_recorded_as_an_empty_contract(conn, monkeypatch):
+    """Rate limit refusals used to look like "this contract has no contents"."""
+    monkeypatch.setattr(ch, "_ITEM_FAIL_LIMIT", 3)
+    listings = {CORP_A: [_contract(i) for i in range(1, 21)]}
+    calls: list = []
+
+    async def _list(client, corp_id, token):
+        return list(listings[CORP_A]), None
+
+    async def _fail(client, corp_id, contract_id, token):
+        calls.append(contract_id)
+        return None                      # ESI said no
+
+    async def _parties(ids):
+        return {i: "x" for i in ids}
+
+    async def _locations(ids):
+        return {i: "y" for i in ids}
+
+    import asyncio as _a
+    import json as _j
+    real = (ch.contracts_api.fetch_corp_contracts, ch.contracts_api.fetch_corp_contract_items)
+    ch.contracts_api.fetch_corp_contracts = _list
+    ch.contracts_api.fetch_corp_contract_items = _fail
+    try:
+        async def _drive():
+            last = {}
+            async for chunk in ch.stream_alliance_index(conn, ALLIANCE, [(CORP_A, "t1")],
+                                                        _parties, _locations):
+                last = _j.loads(chunk[len("data: "):])
+            return last
+        last = _a.run(_drive())
+    finally:
+        (ch.contracts_api.fetch_corp_contracts,
+         ch.contracts_api.fetch_corp_contract_items) = real
+
+    # It gave up instead of spending the whole budget on refusals...
+    assert last["rate_limited"] is True
+    assert len(calls) < 20
+    # ...nothing was stored as "no contents"...
+    assert conn.execute("SELECT COUNT(*) FROM alliance_contract_items").fetchone()[0] == 0
+    # ...and the contracts still count as needing contents next time.
+    assert last["items_left"] >= 20 - len(calls)
+    # The listing itself was saved before the contents phase, so the run is not a loss.
+    assert conn.execute("SELECT COUNT(*) FROM alliance_contracts").fetchone()[0] == 20
+
+
+def test_the_listing_is_saved_before_the_slow_contents_phase(conn):
+    """An interrupted run must leave the contracts behind, not nothing."""
+    import json as _j
+    seen_listed_before_items = []
+
+    async def _list(client, corp_id, token):
+        return [_contract(1), _contract(2)], None
+
+    async def _items(client, corp_id, contract_id, token):
+        # By the time contents are fetched, the rows must already be in the database.
+        seen_listed_before_items.append(
+            conn.execute("SELECT COUNT(*) FROM alliance_contracts").fetchone()[0])
+        return [{"type_id": 34, "quantity": 1}]
+
+    async def _parties(ids):
+        return {i: "x" for i in ids}
+
+    async def _locations(ids):
+        return {i: "y" for i in ids}
+
+    import asyncio as _a
+    real = (ch.contracts_api.fetch_corp_contracts, ch.contracts_api.fetch_corp_contract_items)
+    ch.contracts_api.fetch_corp_contracts = _list
+    ch.contracts_api.fetch_corp_contract_items = _items
+    try:
+        async def _drive():
+            async for _ in ch.stream_alliance_index(conn, ALLIANCE, [(CORP_A, "t1")],
+                                                    _parties, _locations):
+                pass
+        _a.run(_drive())
+    finally:
+        (ch.contracts_api.fetch_corp_contracts,
+         ch.contracts_api.fetch_corp_contract_items) = real
+    assert seen_listed_before_items and min(seen_listed_before_items) == 2

@@ -247,6 +247,12 @@ _ALLIANCE_ITEM_SEM = asyncio.Semaphore(20)
 # x-ratelimit-remaining counted down independently. Contents never change, so the
 # index resumes: each run spends this much per character and the next one continues.
 _ITEM_CALLS_PER_TOKEN = 250
+# Contents are written out in batches of this many contracts, so a run that is cut
+# short (page closed, app quit) keeps everything it had already fetched.
+_ITEM_FLUSH_EVERY = 100
+# Consecutive-ish failures that mean "the rate limit is saying no". Stop rather than
+# spend the rest of the run on requests that come back empty.
+_ITEM_FAIL_LIMIT = 25
 
 def ensure_alliance_contract_tables(conn: sqlite3.Connection) -> None:
     conn.executescript("""
@@ -418,7 +424,21 @@ async def stream_alliance_index(conn: sqlite3.Connection, alliance_id: int,
                 c["_corp_id"] = corp_id
                 found[cid] = c
     contracts = list(found.values())
-    yield f"data: {_json.dumps({'phase':'list','done':total_corps,'total':total_corps,'pct':25,'contracts':len(contracts)})}\n\n"
+    yield f"data: {_json.dumps({'phase':'list','done':total_corps,'total':total_corps,'pct':20,'contracts':len(contracts)})}\n\n"
+
+    # Resolve names and STORE THE LISTING NOW, before the slow part. Contents take
+    # one call per contract and can run for minutes; storing only at the end meant an
+    # interrupted run (closed page, given up on) left the database empty and the page
+    # still saying "not indexed yet", with every one of those ESI calls wasted.
+    yield f"data: {_json.dumps({'phase':'names','pct':22})}\n\n"
+    party_ids = {c[k] for c in contracts for k in ("issuer_id", "issuer_corporation_id")
+                 if c.get(k)}
+    loc_ids = {c[k] for c in contracts for k in ("start_location_id", "end_location_id")
+               if c.get(k)}
+    names = await resolve_parties(party_ids) if party_ids else {}
+    loc_names = await resolve_locations(loc_ids) if loc_ids else {}
+    _store_alliance(conn, alliance_id, contracts, names, loc_names)
+    yield f"data: {_json.dumps({'phase':'listed','pct':25,'contracts':len(contracts)})}\n\n"
 
     # Items: only for contracts that can have them, only the ones we are missing, and
     # only as many as the rate limit allows this run. Every alliance corporation can
@@ -436,17 +456,37 @@ async def stream_alliance_index(conn: sqlite3.Connection, alliance_id: int,
     left_over = len(missing) - len(need)
     total_items = len(need)
     done_items = [0]
+    stored = [0]
+    failed = [0]
+    give_up = asyncio.Event()
     items_by_cid: dict[int, list[dict]] = {}
     lock = asyncio.Lock()
 
     async def _one(client, c, corp_id, token):
+        if give_up.is_set():
+            return
         async with _ALLIANCE_ITEM_SEM:
             its = await contracts_api.fetch_corp_contract_items(
                 client, corp_id, c["contract_id"], token)
         async with lock:
+            if its is None:
+                # A failure, not an empty contract: almost always the ESI rate limit
+                # for this group (600 tokens / 15 min PER CHARACTER, 2 per call).
+                # Pushing on would spend the rest of the budget on 429s and report
+                # success having stored nothing, which is exactly what it used to do.
+                failed[0] += 1
+                if failed[0] >= _ITEM_FAIL_LIMIT:
+                    give_up.set()
+                return
             if its:
                 items_by_cid[c["contract_id"]] = its
             done_items[0] += 1
+            # Flush in batches so an interrupted run keeps what it already fetched.
+            if len(items_by_cid) >= _ITEM_FLUSH_EVERY:
+                batch = dict(items_by_cid)
+                items_by_cid.clear()
+                _store_alliance_items(conn, batch)
+                stored[0] += len(batch)
 
     async def _run_items():
         async with esi_client() as client:
@@ -461,21 +501,14 @@ async def stream_alliance_index(conn: sqlite3.Connection, alliance_id: int,
         task = asyncio.create_task(_run_items())
         while not task.done():
             pct = 25 + int(done_items[0] * 60 / total_items)
-            yield f"data: {_json.dumps({'phase':'items','done':done_items[0],'total':total_items,'pct':pct})}\n\n"
+            yield f"data: {_json.dumps({'phase':'items','done':done_items[0],'total':total_items,'pct':pct,'failed':failed[0]})}\n\n"
             await asyncio.sleep(0.4)
         await task
         _store_alliance_items(conn, items_by_cid)
+        stored[0] += len(items_by_cid)
 
-    # Names once, at index time - that is what lets the filters be plain SQL.
-    yield f"data: {_json.dumps({'phase':'names','pct':88})}\n\n"
-    party_ids = {c[k] for c in contracts for k in ("issuer_id", "issuer_corporation_id")
-                 if c.get(k)}
-    loc_ids = {c[k] for c in contracts for k in ("start_location_id", "end_location_id")
-               if c.get(k)}
-    names = await resolve_parties(party_ids) if party_ids else {}
-    loc_names = await resolve_locations(loc_ids) if loc_ids else {}
-    _store_alliance(conn, alliance_id, contracts, names, loc_names)
-    yield f"data: {_json.dumps({'done':True,'pct':100,'contract_count':len(contracts),'items_fetched':len(items_by_cid),'items_left':left_over})}\n\n"
+    remaining = left_over + max(0, total_items - done_items[0])
+    yield f"data: {_json.dumps({'done':True,'pct':100,'contract_count':len(contracts),'items_fetched':stored[0],'items_left':remaining,'rate_limited':give_up.is_set()})}\n\n"
 
 
 _ALLIANCE_SORTS = {

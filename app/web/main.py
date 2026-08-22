@@ -6108,7 +6108,8 @@ async def api_contract_items(request: Request, contract_id: int,
                         if tok:
                             break
                 if tok:
-                    items = await contracts_api.fetch_corp_contract_items(client, corp_id, contract_id, tok)
+                    items = await contracts_api.fetch_corp_contract_items(
+                        client, corp_id, contract_id, tok) or []
             elif char_id:
                 tok = _get_valid_token_for(conn, char_id)
                 if tok:
@@ -6281,7 +6282,8 @@ def _i(v: str) -> int | None:
 @app.get("/contracts/alliance", response_class=HTMLResponse)
 async def alliance_contracts_page(
         request: Request, alliance: int = 0, item: str = "", exact: str = "",
-        q: str = "", ctype: str = "", status: str = "outstanding", min_price: str = "",
+        via: int = 0, q: str = "", ctype: str = "", status: str = "outstanding",
+        min_price: str = "",
         max_price: str = "", min_reward: str = "", max_collateral: str = "",
         max_volume: str = "", location: str = "", issuer: str = "", title: str = "",
         expires: str = "", hide_own: str = "", sort: str = "expires"):
@@ -6290,7 +6292,7 @@ async def alliance_contracts_page(
     ctx: dict = {
         "alliances": [], "alliance_id": 0, "alliance_name": "", "status_info": None,
         "results": [], "total": 0, "error": None, "note": None, "limit": 500,
-        "char_alliance": {}, "alliance_explicit": bool(alliance),
+        "char_alliance": {}, "alliance_explicit": bool(alliance), "via": via,
         "f": {"item": item, "exact": bool(exact), "q": q, "ctype": ctype, "status": status,
               "min_price": min_price, "max_price": max_price, "min_reward": min_reward,
               "max_collateral": max_collateral, "max_volume": max_volume,
