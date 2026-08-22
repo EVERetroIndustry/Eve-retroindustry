@@ -23,9 +23,15 @@
 {% macro contract_filter_bar(mode="client", show_item=False, show_hide_own=True,
                              action="", hidden={}, f={}) %}
 {% set srv = (mode == "server") %}
-<{{ 'form method="get" action="' ~ action ~ '"' if srv else 'div' }} class="card mb-3" id="contract-filters"
-   data-mode="{{ mode }}">
-  {% if srv %}{% for k, v in hidden.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}{% endif %}
+{# Two plain tags rather than one built from a string: autoescaping turned the
+   quotes of a dynamically assembled tag into &#34;, so the browser read the action
+   as "/contracts/alliance" WITH the quotes and every Search hit a 404. #}
+{% if srv %}
+<form method="get" action="{{ action }}" class="card mb-3" id="contract-filters" data-mode="server">
+  {% for k, v in hidden.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
+{% else %}
+<div class="card mb-3" id="contract-filters" data-mode="client">
+{% endif %}
   <div class="card-body py-2">
     <div class="row g-2 align-items-end">
       {% if show_item %}
@@ -154,7 +160,7 @@
       </div>
     </div>
   </div>
-</{{ 'form' if srv else 'div' }}>
+{% if srv %}</form>{% else %}</div>{% endif %}
 {% endmacro %}
 
 

@@ -510,3 +510,31 @@ def test_the_listing_is_saved_before_the_slow_contents_phase(conn):
         (ch.contracts_api.fetch_corp_contracts,
          ch.contracts_api.fetch_corp_contract_items) = real
     assert seen_listed_before_items and min(seen_listed_before_items) == 2
+
+
+def test_the_server_side_filter_is_a_real_form_that_submits_somewhere_real(
+        client, app_module, indexed):
+    """A dynamically assembled tag got its quotes escaped, so Search hit a 404.
+
+    The rendered markup has to contain a form whose action is the page itself, with
+    honest quotes - not `action=&#34;/contracts/alliance&#34;`, which the browser
+    resolves to /%22/contracts/alliance%22.
+    """
+    import re
+    html = _alliance_page(client, app_module, f"/contracts/alliance?alliance={ALLIANCE}")
+    m = re.search(r'<form[^>]*id="contract-filters"[^>]*>', html)
+    assert m, "the filter bar must render as a form in server mode"
+    tag = m.group(0)
+    assert 'action="/contracts/alliance"' in tag, tag
+    assert 'method="get"' in tag, tag
+    assert "&#34;" not in tag and "&quot;" not in tag, tag
+    # And the hidden alliance id travels with it, or Search would lose the alliance.
+    assert f'name="alliance" value="{ALLIANCE}"' in html
+
+
+def test_searching_for_something_that_is_not_there_is_an_empty_result_not_an_error(
+        client, app_module, indexed):
+    html = _alliance_page(client, app_module,
+                          f"/contracts/alliance?alliance={ALLIANCE}&item=nycx")
+    assert "No contracts match this filter" in html
+    assert "Not Found" not in html and "Internal Server Error" not in html
