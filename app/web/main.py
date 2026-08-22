@@ -5362,6 +5362,36 @@ def _corp_hangar_labels(custom: dict) -> dict[str, str]:
 _PARTY_CATEGORY: dict[int, str] = {}
 
 
+def _ensure_party_name_cache(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS party_name_cache (
+        party_id  INTEGER PRIMARY KEY,
+        name      TEXT,
+        category  TEXT,
+        cached_at REAL)""")
+    conn.commit()
+
+
+def _remember_party_names(conn: sqlite3.Connection, names: dict, categories: dict) -> None:
+    """Persist resolved character/corp/alliance names.
+
+    Two reasons: the contract filters can then match on an issuer name in SQL
+    without fetching anything, and a page does not have to re-resolve names it has
+    already seen. Names change rarely and a stale one is harmless here.
+    """
+    if not names:
+        return
+    try:
+        _ensure_party_name_cache(conn)
+        now = _time.time()
+        conn.executemany(
+            "INSERT OR REPLACE INTO party_name_cache (party_id, name, category, cached_at)"
+            " VALUES (?,?,?,?)",
+            [(pid, nm, categories.get(pid), now) for pid, nm in names.items()])
+        conn.commit()
+    except Exception:
+        pass
+
+
 async def _resolve_party_names(ids: set[int]) -> dict[int, str]:
     """Resolve char/corp/alliance/station/type IDs to names via ESI
     /universe/names/. The endpoint can't handle player structures (>1e12) - we skip them.
@@ -5388,6 +5418,12 @@ async def _resolve_party_names(ids: set[int]) -> dict[int, str]:
                             _PARTY_CATEGORY[item["id"]] = item["category"]
             except Exception:
                 pass
+    if out:
+        conn = get_conn()
+        try:
+            _remember_party_names(conn, out, _PARTY_CATEGORY)
+        finally:
+            conn.close()
     return out
 
 
@@ -6245,9 +6281,14 @@ async def _resolve_region_id(name_or_id: str) -> tuple[int | None, str]:
 
 
 @app.get("/contracts/public", response_class=HTMLResponse)
-async def public_contracts_page(request: Request, region: str = "", item: str = "",
-                                ctype: str = "", max_price: str = ""):
-    """Public contracts across all of New Eden.
+async def public_contracts_page(
+        request: Request, region: str = "", item: str = "", exact: str = "",
+        q: str = "", ctype: str = "", min_price: str = "", max_price: str = "",
+        min_reward: str = "", max_collateral: str = "", max_volume: str = "",
+        location: str = "", issuer: str = "", title: str = "", expires: str = "",
+        sort: str = "price"):
+    """Public contracts across all of New Eden, with the same filters as the other
+    contract views.
 
     The whole of known space is indexed in the background (106 requests, about half
     a second), so the region is a FILTER now, not a gate you have to pass first.
@@ -6255,24 +6296,28 @@ async def public_contracts_page(request: Request, region: str = "", item: str = 
     conn = get_conn()
     ensure_public_filler()
     ctx: dict = {
-        "region_name": region, "region_id": None, "results": [],
-        "item": item, "ctype": ctype, "max_price": max_price, "error": None,
-        "regions": await _get_all_regions(),
+        "region_name": region, "region_id": None, "results": [], "total": 0,
+        "error": None, "regions": await _get_all_regions(), "limit": 300,
         "status": contracts_helper.public_index_status(conn),
+        "f": {"item": item, "exact": bool(exact), "q": q, "ctype": ctype,
+              "min_price": min_price, "max_price": max_price, "min_reward": min_reward,
+              "max_collateral": max_collateral, "max_volume": max_volume,
+              "location": location, "issuer": issuer, "title": title,
+              "expires": expires, "sort": sort},
     }
     region_id, region_name = await _resolve_region_id(region)
     ctx["region_id"] = region_id
     ctx["region_name"] = region_name
+    ctx["f"]["region"] = region_name
     if region and region_id is None:
         ctx["error"] = f'Region "{region}" not found.'
     if ctx["status"]["contracts"]:
-        mp = None
-        try:
-            mp = float(max_price) if max_price.strip() else None
-        except ValueError:
-            mp = None
-        results = contracts_helper.search_public_contracts(
-            conn, region_id, item=item, ctype=ctype, max_price=mp)
+        results, total = contracts_helper.search_public_contracts(
+            conn, region_id, item=item, exact_item=bool(exact), q=q, ctype=ctype,
+            min_price=_f(min_price), max_price=_f(max_price), min_reward=_f(min_reward),
+            max_collateral=_f(max_collateral), max_volume=_f(max_volume),
+            location=location, issuer=issuer, title=title, expires_days=_i(expires),
+            sort=sort, limit=ctx["limit"])
         party_ids = {c["issuer_id"] for c in results if c["issuer_id"]}
         loc_ids = {lid for c in results for lid in (c["start_location_id"], c["end_location_id"]) if lid}
         party_names = await _resolve_party_names(party_ids) if party_ids else {}
@@ -6292,7 +6337,7 @@ async def public_contracts_page(request: Request, region: str = "", item: str = 
             c["end_name"] = loc_names.get(c["end_location_id"], "")
             c["region_name"] = region_names.get(c.get("region_id"), "")
             c["courier"] = c["type"] == "courier"
-        ctx["results"] = results
+        ctx["results"], ctx["total"] = results, total
     conn.close()
     return _tr("contracts_public.html", request, ctx)
 
@@ -6473,7 +6518,7 @@ def ensure_alliance_filler() -> None:
 _PUBLIC_FILL: dict = {}
 _PUBLIC_WORKER: dict[str, object] = {}
 _PUBLIC_LIST_TTL = 60 * 60          # re-list everything at most once an hour
-_PUBLIC_ITEM_BUDGET = 1500          # contents per pass
+_PUBLIC_ITEM_BUDGET = 12000         # contents per pass (~110 s of fetching)
 
 
 def _any_structure_token(conn: sqlite3.Connection) -> str | None:
@@ -6534,7 +6579,7 @@ async def _public_fill_loop() -> None:
         try:
             res = await _public_fill_pass(conn)
             if res["worked"]:
-                delay = 20          # more contents to fetch, keep going
+                delay = 2           # more contents to fetch, keep going
         except Exception as exc:
             _set_public(phase="error", error=str(exc)[:200])
         finally:
@@ -6558,6 +6603,8 @@ async def api_public_refresh():
     conn = get_conn()
     try:
         _set_public(phase="listing")
+        # A manual refresh also retries contracts that previously refused.
+        contracts_helper.clear_public_absent(conn)
         regions = [rid for rid, _n in await _get_all_regions()]
         res = await contracts_helper.refresh_public_listings(
             conn, regions, token=_any_structure_token(conn))

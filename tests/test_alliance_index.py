@@ -919,9 +919,10 @@ def test_public_search_spans_every_region_unless_one_is_named(clean_public):
     """Listing all of known space costs 106 requests, so a region is a filter now."""
     _pub(clean_public, 1, region=10000002)
     _pub(clean_public, 2, region=10000043)
-    assert len(ch.search_public_contracts(clean_public)) == 2
-    only = ch.search_public_contracts(clean_public, 10000043)
-    assert [c["contract_id"] for c in only] == [2]
+    rows, total = ch.search_public_contracts(clean_public)
+    assert total == 2 and len(rows) == 2
+    only, only_total = ch.search_public_contracts(clean_public, 10000043)
+    assert [c["contract_id"] for c in only] == [2] and only_total == 1
     assert only[0]["region_id"] == 10000043
 
 
@@ -1001,3 +1002,60 @@ def test_the_profit_table_is_not_hidden_when_there_is_no_price(app_module):
     guard = _re.search(r"\{% if [^%]*%\}", tpl[i:i + 600]).group(0)
     assert "result.materials" in guard, guard
     assert "revenue" not in guard, guard
+
+
+def test_the_public_browser_has_the_same_filters_as_the_other_views(clean_public):
+    """Four contract views, one filter vocabulary."""
+    _sov(clean_public, 30000142, faction_id=500006)
+    clean_public.execute("CREATE TABLE IF NOT EXISTS location_name_cache (location_id"
+                         " INTEGER PRIMARY KEY, name TEXT NOT NULL, solar_system_id INTEGER)")
+    clean_public.execute("CREATE TABLE IF NOT EXISTS party_name_cache (party_id INTEGER"
+                         " PRIMARY KEY, name TEXT, category TEXT, cached_at REAL)")
+    _pub(clean_public, 1, price=5_000_000, volume=100.0, items=((34, 10),))
+    _pub(clean_public, 2, price=2_000_000_000, volume=50_000.0, items=((22544, 1),))
+    _pub(clean_public, 3, type_="courier", price=0, volume=330_000.0, items=())
+    clean_public.execute("INSERT OR REPLACE INTO public_contracts (contract_id, region_id,"
+                         " type, price, reward, collateral, buyout, volume, date_expired,"
+                         " title, start_location_id, end_location_id, issuer_id, system_id)"
+                         " VALUES (4,10000002,'item_exchange',9,0,0,0,0,'2026-08-23T00:00:00Z',"
+                         "'Hulk fit cheap',60000004,0,777,30000142)")
+    clean_public.execute("INSERT OR REPLACE INTO location_name_cache (location_id, name)"
+                         " VALUES (60000004,"
+                         " 'Jita IV - Moon 4 - Caldari Navy Assembly Plant')")
+    clean_public.execute("INSERT OR REPLACE INTO party_name_cache (party_id, name,"
+                         " category, cached_at) VALUES (777, 'Diana Liang', 'character', 0)")
+    clean_public.commit()
+
+    def ids(**kw):
+        rows, total = ch.search_public_contracts(clean_public, **kw)
+        return sorted(c["contract_id"] for c in rows), total
+
+    assert ids(ctype="courier") == ([3], 1)
+    assert ids(min_price=1_000_000_000) == ([2], 1)
+    # A courier has no price at all (it has a reward), so price 0 passes a max-price
+    # filter - the same as in the other views.
+    assert ids(max_price=10_000_000) == ([1, 3, 4], 3)
+    assert ids(max_volume=200) == ([1, 4], 2)
+    assert ids(item="Hulk") == ([2], 1)                    # by contents
+    assert ids(title="Hulk") == ([4], 1)                   # by title
+    assert ids(location="Caldari Navy") == ([4], 1)        # by cached location name
+    assert ids(issuer="Diana") == ([4], 1)                 # by cached issuer name
+    assert ids(q="diana") == ([4], 1)                      # one box over all of it
+    assert ids(expires_days=2)[0] == [4]
+    # Sorting is part of the same vocabulary.
+    rows, _ = ch.search_public_contracts(clean_public, sort="price_hi")
+    assert rows[0]["contract_id"] == 2
+    # And the total is the whole match, not the page.
+    rows, total = ch.search_public_contracts(clean_public, limit=1)
+    assert len(rows) == 1 and total == 4
+
+
+def test_a_refused_contents_request_is_recorded_and_can_be_retried(clean_public):
+    """403/404 must not leave an infinite tail, and a manual refresh forgets them."""
+    ch._mark_public_absent(clean_public, [11, 12])
+    todo = [r[0] for r in clean_public.execute(
+        "SELECT contract_id FROM public_contract_items_absent").fetchall()]
+    assert todo == [11, 12]
+    assert ch.clear_public_absent(clean_public) == 2
+    assert clean_public.execute(
+        "SELECT COUNT(*) FROM public_contract_items_absent").fetchone()[0] == 0

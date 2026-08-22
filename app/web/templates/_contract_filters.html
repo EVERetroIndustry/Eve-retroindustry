@@ -21,7 +21,8 @@
 #}
 
 {% macro contract_filter_bar(mode="client", show_item=False, show_hide_own=True,
-                             action="", hidden={}, f={}) %}
+                             show_status=True, action="", hidden={}, f={},
+                             extra_region=None) %}
 {% set srv = (mode == "server") %}
 {# Two plain tags rather than one built from a string: autoescaping turned the
    quotes of a dynamically assembled tag into &#34;, so the browser read the action
@@ -34,6 +35,19 @@
 {% endif %}
   <div class="card-body py-2">
     <div class="row g-2 align-items-end">
+      {% if extra_region is not none %}
+      {# Only the public browser has a region worth filtering by: everything else is
+         already scoped to a character, a corporation or an alliance. #}
+      <div class="col-md-2">
+        <label class="form-label small text-muted mb-1">Region</label>
+        <input type="text" id="cf-region" {% if srv %}name="region"{% endif %}
+               value="{{ f.get('region', '') }}" class="form-control form-control-sm"
+               placeholder="all of New Eden" list="region-hints" autocomplete="off">
+        <datalist id="region-hints">
+          {% for rid, rname in extra_region %}<option value="{{ rname }}">{% endfor %}
+        </datalist>
+      </div>
+      {% endif %}
       {% if show_item %}
       <div class="col-md-3">
         <label class="form-label small text-muted mb-1">Item (contract contents)</label>
@@ -66,6 +80,9 @@
           {% endif %}
         </select>
       </div>
+      {# The public listing has no status: everything ESI publishes there is
+         outstanding by definition, so offering the field would be a dead control. #}
+      {% if show_status %}
       <div class="col-md-2">
         <label class="form-label small text-muted mb-1">Status</label>
         <select id="cf-status" {% if srv %}name="status"{% endif %} class="form-select form-select-sm">
@@ -79,6 +96,7 @@
           {% endif %}
         </select>
       </div>
+      {% endif %}
 
       <div class="col-md-2">
         <label class="form-label small text-muted mb-1">Min price</label>

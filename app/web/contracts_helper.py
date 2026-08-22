@@ -288,7 +288,14 @@ async def refresh_public_listings(conn: sqlite3.Connection, region_ids,
     return total
 
 
-async def fill_public_items(conn: sqlite3.Connection, budget: int = 1500,
+# Measured against the live endpoint: concurrency 30 gives ~450 req/s and MORE
+# concurrency is slower (60 -> 228, 120 -> 136 req/s), the same saturation shape as
+# the market history endpoint. So the pace comes from processing a lot per pass, not
+# from more sockets: 48 000 contents is ~110 s of actual fetching.
+_PUBLIC_ITEM_CHUNK = 1500
+
+
+async def fill_public_items(conn: sqlite3.Connection, budget: int = 12000,
                             progress=None) -> dict:
     """Fetch contents for contracts we do not have yet, BIGGEST VOLUME FIRST.
 
@@ -308,6 +315,7 @@ async def fill_public_items(conn: sqlite3.Connection, budget: int = 1500,
     if not todo:
         return {"fetched": 0, "gone": 0, "remaining": 0}
     stored = [0]
+    done = [0]
     gone: list[int] = []
     batch: dict[int, list[dict]] = {}
     lock = asyncio.Lock()
@@ -320,7 +328,13 @@ async def fill_public_items(conn: sqlite3.Connection, budget: int = 1500,
             except Exception:
                 return
         async with lock:
-            if r.status_code == 404:
+            done[0] += 1
+            if progress and done[0] % 50 == 0:
+                progress(done[0], len(todo))
+            # 404 = the contract is gone. 403 happens occasionally on this public
+            # endpoint too; both are recorded so the tail cannot become infinite,
+            # and "Refresh now" clears the record if it was a hiccup.
+            if r.status_code in (403, 404):
                 gone.append(cid)
                 return
             if r.status_code != 200:
@@ -329,24 +343,31 @@ async def fill_public_items(conn: sqlite3.Connection, budget: int = 1500,
                 batch[cid] = r.json() or []
             except Exception:
                 return
-            if len(batch) >= 200:
+            if len(batch) >= 300:
                 flush = dict(batch)
                 batch.clear()
                 _store_public_items(conn, flush)
                 stored[0] += len(flush)
-            if progress:
-                progress(stored[0] + len(batch), len(todo))
 
     async with esi_client(timeout=20) as client:
-        await asyncio.gather(*[_one(client, c) for c in todo], return_exceptions=True)
+        # Chunked so the flushes land steadily and the page's progress moves, while
+        # one call still gets through thousands of contracts.
+        for i in range(0, len(todo), _PUBLIC_ITEM_CHUNK):
+            chunk = todo[i:i + _PUBLIC_ITEM_CHUNK]
+            await asyncio.gather(*[_one(client, c) for c in chunk], return_exceptions=True)
+            if batch:
+                flush = dict(batch)
+                batch.clear()
+                _store_public_items(conn, flush)
+                stored[0] += len(flush)
+            if gone:
+                _mark_public_absent(conn, gone)
+                gone.clear()
     if batch:
         _store_public_items(conn, batch)
         stored[0] += len(batch)
     if gone:
-        now = time.time()
-        conn.executemany("INSERT OR REPLACE INTO public_contract_items_absent"
-                         " (contract_id, at) VALUES (?,?)", [(c, now) for c in gone])
-        conn.commit()
+        _mark_public_absent(conn, gone)
     remaining = conn.execute(
         "SELECT COUNT(*) FROM public_contracts c"
         " WHERE c.type IN ('item_exchange','auction') AND c.price > 0"
@@ -355,6 +376,26 @@ async def fill_public_items(conn: sqlite3.Connection, budget: int = 1500,
         "   AND NOT EXISTS (SELECT 1 FROM public_contract_items_absent a"
         "                    WHERE a.contract_id = c.contract_id)").fetchone()[0]
     return {"fetched": stored[0], "gone": len(gone), "remaining": remaining}
+
+
+def _mark_public_absent(conn: sqlite3.Connection, contract_ids) -> None:
+    ids = list(contract_ids or [])
+    if not ids:
+        return
+    now = time.time()
+    conn.executemany("INSERT OR REPLACE INTO public_contract_items_absent"
+                     " (contract_id, at) VALUES (?,?)", [(c, now) for c in ids])
+    conn.commit()
+
+
+def clear_public_absent(conn: sqlite3.Connection) -> int:
+    """Forget which contracts refused their contents, so a manual refresh retries
+    them. A 403 on this endpoint is sometimes just a hiccup."""
+    ensure_public_contract_tables(conn)
+    n = conn.execute("SELECT COUNT(*) FROM public_contract_items_absent").fetchone()[0]
+    conn.execute("DELETE FROM public_contract_items_absent")
+    conn.commit()
+    return n
 
 
 def _store_public_items(conn: sqlite3.Connection, items_by_cid: dict[int, list[dict]]) -> None:
@@ -493,38 +534,96 @@ async def stream_public_index(conn: sqlite3.Connection, region_id: int):
 
 
 def search_public_contracts(conn: sqlite3.Connection, region_id: int | None = None, *,
-                            item: str = "", ctype: str = "", max_price: float | None = None,
-                            limit: int = 300) -> list[dict]:
-    """Search the indexed public contracts. `region_id=None` searches all of them -
-    the whole of known space is indexed, so a region is a filter, not a prerequisite."""
+                            item: str = "", exact_item: bool = False, q: str = "",
+                            ctype: str = "", min_price: float | None = None,
+                            max_price: float | None = None,
+                            min_reward: float | None = None,
+                            max_collateral: float | None = None,
+                            max_volume: float | None = None, location: str = "",
+                            issuer: str = "", title: str = "",
+                            expires_days: int | None = None, sort: str = "price",
+                            limit: int = 300) -> tuple[list[dict], int]:
+    """Search the indexed public contracts - the same filters the other contract
+    views have, so the four of them read the same way.
+
+    `region_id=None` searches all of known space (it is all indexed, so a region is
+    a filter now). Location and issuer are matched against the names we have cached
+    locally; nothing is fetched to answer a filter.
+
+    Returns (rows, total_matches).
+    """
     ensure_public_contract_tables(conn)
     where: list[str] = []
     params: list = []
+    joins = ""
     if region_id:
         where.append("c.region_id = ?")
         params.append(region_id)
-    joins = ""
     if item.strip():
-        joins = (" JOIN public_contract_items i ON i.contract_id = c.contract_id"
-                 " JOIN sde_types t ON t.type_id = i.type_id")
-        where.append("t.name LIKE ?")
-        params.append(f"%{item.strip()}%")
+        joins += (" JOIN public_contract_items i ON i.contract_id = c.contract_id"
+                  " JOIN sde_types t ON t.type_id = i.type_id")
+        if exact_item:
+            where.append("LOWER(t.name) = ?")
+            params.append(item.strip().lower())
+        else:
+            where.append("t.name LIKE ?")
+            params.append(f"%{item.strip()}%")
+        where.append("i.is_included = 1")
+    if location.strip() or q.strip():
+        joins += (" LEFT JOIN location_name_cache ls ON ls.location_id = c.start_location_id"
+                  " LEFT JOIN location_name_cache le ON le.location_id = c.end_location_id")
+    if issuer.strip() or q.strip():
+        joins += " LEFT JOIN party_name_cache pn ON pn.party_id = c.issuer_id"
+    if q.strip():
+        where.append("(c.title LIKE ? OR ls.name LIKE ? OR le.name LIKE ? OR pn.name LIKE ?)")
+        params += [f"%{q.strip()}%"] * 4
     if ctype:
         where.append("c.type = ?")
         params.append(ctype)
+    if min_price is not None:
+        where.append("c.price >= ?")
+        params.append(min_price)
     if max_price is not None:
         where.append("c.price <= ?")
         params.append(max_price)
+    if min_reward is not None:
+        where.append("c.reward >= ?")
+        params.append(min_reward)
+    if max_collateral is not None:
+        where.append("c.collateral <= ?")
+        params.append(max_collateral)
+    if max_volume is not None:
+        where.append("c.volume <= ?")
+        params.append(max_volume)
+    if location.strip():
+        where.append("(ls.name LIKE ? OR le.name LIKE ?)")
+        params += [f"%{location.strip()}%"] * 2
+    if issuer.strip():
+        where.append("pn.name LIKE ?")
+        params.append(f"%{issuer.strip()}%")
+    if title.strip():
+        where.append("c.title LIKE ?")
+        params.append(f"%{title.strip()}%")
+    if expires_days is not None:
+        cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                               time.gmtime(time.time() + expires_days * 86400))
+        where.append("c.date_expired <= ?")
+        params.append(cutoff)
     cond = " AND ".join(where) if where else "1=1"
-    sql = (f"SELECT DISTINCT c.contract_id, c.type, c.price, c.reward, c.collateral, "
-           f"c.volume, c.date_expired, c.title, c.start_location_id, c.end_location_id, "
-           f"c.issuer_id, c.region_id FROM public_contracts c{joins} WHERE {cond} "
-           f"ORDER BY c.price LIMIT ?")
-    params.append(limit)
+    order = {"price": "c.price ASC", "price_hi": "c.price DESC",
+             "expires": "c.date_expired ASC", "reward": "c.reward DESC",
+             "issued": "c.date_expired DESC"}.get(sort, "c.price ASC")
+    total = conn.execute(
+        f"SELECT COUNT(DISTINCT c.contract_id) FROM public_contracts c{joins} WHERE {cond}",
+        params).fetchone()[0]
     cols = ["contract_id", "type", "price", "reward", "collateral", "volume",
             "date_expired", "title", "start_location_id", "end_location_id", "issuer_id",
             "region_id"]
-    return [dict(zip(cols, row)) for row in conn.execute(sql, params).fetchall()]
+    sel = ", ".join(f"c.{c}" for c in cols)
+    rows = conn.execute(
+        f"SELECT DISTINCT {sel} FROM public_contracts c{joins} WHERE {cond}"
+        f" ORDER BY {order} LIMIT ?", params + [limit]).fetchall()
+    return [dict(zip(cols, r)) for r in rows], total
 
 
 def best_contract_price(conn: sqlite3.Connection, region_id: int, type_id: int) -> dict | None:
