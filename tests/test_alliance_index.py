@@ -961,3 +961,43 @@ def test_relisting_a_region_keeps_the_contents_already_fetched(clean_public):
     left = {r[0] for r in clean_public.execute(
         "SELECT DISTINCT contract_id FROM public_contract_items").fetchall()}
     assert left == {1}
+
+
+# ── the Plan page for hulls the market does not carry ─────────────────────────
+
+def test_a_hull_with_no_market_price_gets_one_from_contracts(app_module, conn):
+    """A Wyvern is never on a market order, so the plan had no revenue at all - and
+    the whole profit section disappeared with it."""
+    from types import SimpleNamespace
+    row = conn.execute("SELECT type_id FROM sde_types WHERE name='Wyvern'").fetchone()
+    assert row, "the bundled SDE must know the hull"
+    tid = row[0]
+    _run_index(conn, [(CORP_A, "t1")],
+               {CORP_A: [_contract(700, price=42_500_000_000)]},
+               items={700: [{"type_id": tid, "quantity": 1}]})
+
+    plan = SimpleNamespace(blueprint=None, materials=[], product_type_id=tid,
+                           quantity=10, mode="full", location_id=60003760,
+                           can_manufacture=True, total_missing_types=0,
+                           opt_total_cost=0.0, opt_naive_cost=0.0)
+    # The market knows no price for it: `prices` is deliberately empty.
+    out = app_module._plan_to_dict(plan, {}, "Wyvern", conn=conn)
+    assert out["sell_price"] == 42_500_000_000
+    assert out["sell_price_source"] == "contract"
+    assert out["revenue"] == 425_000_000_000
+
+    # A product the market does price keeps saying where the number came from.
+    out2 = app_module._plan_to_dict(plan, {tid: (5.0, 4.0)}, "Wyvern", conn=conn)
+    assert out2["sell_price"] == 5.0 and out2["sell_price_source"] == "jita"
+
+
+def test_the_profit_table_is_not_hidden_when_there_is_no_price(app_module):
+    """It is computed in the browser and exists precisely so a price can be fetched
+    into it, so gating it on already having one is backwards."""
+    import pathlib as _pl
+    import re as _re
+    tpl = _pl.Path("app/web/templates/plan.html").read_text()
+    i = tpl.index("Profit by sell price source")
+    guard = _re.search(r"\{% if [^%]*%\}", tpl[i:i + 600]).group(0)
+    assert "result.materials" in guard, guard
+    assert "revenue" not in guard, guard

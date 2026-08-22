@@ -632,8 +632,11 @@ function switchPlanChar(charId) {
     </div>
   </div>
 
-  {# Profit by sell price source (client-side recompute after fetch) #}
-  {% if result.revenue is not none %}
+  {# Profit by sell price source (client-side recompute after fetch).
+     Shown even when there is no market price for the product: that is exactly when
+     you need to fetch a station or contract price, and the rows are filled in by
+     those buttons. Hiding the table left a Wyvern with nowhere to put the number. #}
+  {% if result.materials %}
   <div style="border-top:1px solid #21262d;padding:.55rem .75rem">
     <div class="text-uppercase fw-semibold mb-2" style="color:#8b949e;font-size:.68rem;letter-spacing:.07em">
       <i class="bi bi-graph-up-arrow me-1"></i>Profit by sell price
@@ -650,7 +653,12 @@ function switchPlanChar(charId) {
         </tr></thead>
         <tbody id="profit-compare">
           <tr data-src="jita">
-            <td class="text-muted">Jita sell</td>
+            <td class="text-muted">
+              {% if result.sell_price_source == 'contract' %}Contract
+                <span class="badge bg-secondary" style="font-size:.55rem"
+                      title="The market does not carry this hull, so the price is the cheapest single-item contract the app has indexed">from contract</span>
+              {% else %}Jita sell{% endif %}
+            </td>
             <td class="text-end price">{% if result.sell_price %}{{ result.sell_price | isk }}{% else %}-{% endif %}</td>
             <td class="text-end pm">-</td><td class="text-end pmu">-</td>
             <td class="text-end ps">-</td><td class="text-end psu">-</td>

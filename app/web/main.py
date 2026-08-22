@@ -2788,6 +2788,19 @@ def _plan_to_dict(plan, prices, type_name: str, conn: sqlite3.Connection | None 
     # Revenue always uses the product's sell price (what you receive when
     # selling) - the input_basis toggle governs only what you PAY for inputs.
     sell_p, _ = prices.get(plan.product_type_id, (None, None))
+    sell_src = "jita" if sell_p else None
+    if sell_p is None and conn is not None:
+        # A supercarrier or a titan is never on a market order, so the market has no
+        # price for it and the whole profit section used to vanish. What such a hull
+        # actually sells for is a contract, and the app indexes those - so use the
+        # cheapest single-item one, and say where the number came from.
+        try:
+            found = contracts_helper.contract_unit_prices(conn, [plan.product_type_id])
+            if found:
+                sell_p = found[plan.product_type_id][0]
+                sell_src = "contract"
+        except Exception:
+            pass
     revenue = sell_p * plan.quantity if sell_p else None
     profit = (revenue - total_buy) if (revenue and total_buy) else None
 
@@ -2805,6 +2818,7 @@ def _plan_to_dict(plan, prices, type_name: str, conn: sqlite3.Connection | None 
         "opt_naive_cost": plan.opt_naive_cost,
         "total_buy": total_buy,
         "sell_price": sell_p,
+        "sell_price_source": sell_src,
         "revenue": revenue,
         "profit": profit,
     }
