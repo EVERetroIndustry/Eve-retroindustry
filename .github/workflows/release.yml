@@ -245,7 +245,9 @@ jobs:
           TAG="${{ github.ref_name }}"
           VN="${TAG#v}"
           IFS='.' read -r MA MI PA <<< "$VN"
-          VC=$(( ${MA:-0}*10000 + ${MI:-0}*100 + ${PA:-0} ))
+          # 10# forces base 10: bash reads a leading zero as octal, so the
+          # two-digit patch we release with ("0.11.08") would abort the build.
+          VC=$(( 10#${MA:-0}*10000 + 10#${MI:-0}*100 + 10#${PA:-0} ))
           echo "name=$VN" >> "$GITHUB_OUTPUT"
           echo "code=$VC" >> "$GITHUB_OUTPUT"
           echo "Android version $VN ($VC)"
