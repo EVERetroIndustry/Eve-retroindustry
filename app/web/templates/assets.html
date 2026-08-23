@@ -18,15 +18,29 @@
     <thead>
       <tr>
         <th style="width:36px"></th>
-        <th class="sort-col" data-col="0" style="cursor:pointer" title="Sort by name">
+        <th class="sort-col" data-key="name" data-type="text" style="cursor:pointer"
+            title="Sort by name">
           Item <span class="sort-icon text-muted ms-1">⇅</span>
         </th>
         {% if show_badge %}<th style="width:28px"></th>{% endif %}
-        <th class="text-end sort-col" data-col="1" style="cursor:pointer" title="Sort by quantity">
+        <th class="sort-col" data-key="group" data-type="text" style="cursor:pointer"
+            title="The item's group in EVE - Frigate, Mineral, Blueprint. Sort to keep
+                   one kind of thing together, which sorting by name cannot do.">
+          Type <span class="sort-icon text-muted ms-1">⇅</span>
+        </th>
+        <th class="text-end sort-col" data-key="qty" data-type="num" style="cursor:pointer"
+            title="Sort by quantity">
           Quantity <span class="sort-icon text-muted ms-1">⇅</span>
         </th>
+        <th class="text-end sort-col" data-key="volume" data-type="num" style="cursor:pointer"
+            title="Space this row takes: assembled items count their full volume,
+                   packaged ones the packaged volume (a Raven is 470 000 m3 assembled
+                   and 50 000 packaged).">
+          Volume (m&sup3;) <span class="sort-icon text-muted ms-1">⇅</span>
+        </th>
         <th class="text-end">Price/unit (ISK)</th>
-        <th class="text-end sort-col" data-col="3" style="cursor:pointer" title="Sort by value">
+        <th class="text-end sort-col" data-key="value" data-type="num" style="cursor:pointer"
+            title="Sort by value">
           Value (ISK) <span class="sort-icon text-muted ms-1">⇅</span>
         </th>
       </tr>
@@ -35,7 +49,7 @@
       {% for item in items %}
       {% if show_slot and item.slot and item.slot != (items[loop.index0 - 1].slot if not loop.first else None) %}
       <tr class="slot-section" data-slot="{{ item.slot_order or 0 }}">
-        <td colspan="{{ 6 if show_badge else 5 }}" class="fw-semibold"
+        <td colspan="{{ 8 if show_badge else 7 }}" class="fw-semibold"
             style="background:rgba(123,184,236,.10);color:#9fcbf2;font-size:.74rem;
                    letter-spacing:.04em;height:1.6rem">{{ item.slot }}</td>
       </tr>
@@ -43,6 +57,8 @@
       <tr data-name="{{ item.name | lower }}"
           data-qty="{{ item.quantity }}"
           data-slot="{{ item.slot_order or 0 }}"
+          data-group="{{ (item.group or '') | lower }}"
+          data-volume="{{ item.volume or 0 }}"
           data-value="{{ item.total_value or 0 }}">
         <td>
           <img src="/icon/{{ item.type_id }}?size=32&amp;v=render"
@@ -62,7 +78,14 @@
           {% endif %}
         </td>
         {% endif %}
+        <td class="text-muted" style="font-size:.78rem">
+          {% if item.group %}{{ item.group }}{% else %}<span class="opacity-50">-</span>{% endif %}
+        </td>
         <td class="text-end fw-semibold">{{ item.quantity | int | format_number }}</td>
+        <td class="text-end text-muted" style="white-space:nowrap;font-size:.78rem"
+            {% if item.unit_volume %}title="{{ item.unit_volume | m3 }} m&sup3; each"{% endif %}>
+          {% if item.volume %}{{ item.volume | m3 }}{% else %}<span class="opacity-50">-</span>{% endif %}
+        </td>
         <td class="text-end text-muted">
           {% if item.unit_price %}{{ item.unit_price | isk0 }}{% else %}<span class="text-muted opacity-50">-</span>{% endif %}
         </td>
@@ -74,8 +97,12 @@
     </tbody>
     <tfoot>
       <tr style="border-top:2px solid #30363d">
-        <td colspan="{{ 3 if show_badge else 2 }}" class="text-muted small">{{ items | length | plural('type') }}</td>
+        <td colspan="{{ 4 if show_badge else 3 }}" class="text-muted small">{{ items | length | plural('type') }}</td>
         <td></td>
+        <td class="text-end text-muted small" style="white-space:nowrap">
+          {% set tbl_vol = items | selectattr('volume') | map(attribute='volume') | sum %}
+          {% if tbl_vol > 0 %}{{ tbl_vol | m3 }} m&sup3;{% endif %}
+        </td>
         <td class="text-end text-muted small">Total</td>
         <td class="text-end fw-bold text-isk">
           {% set tbl_total = items | selectattr('total_value') | map(attribute='total_value') | sum %}
@@ -360,7 +387,11 @@ document.querySelectorAll('.sort-col').forEach(th => {
   th.addEventListener('click', () => {
     const table = th.closest('table');
     const tbody = table.querySelector('tbody');
-    const col   = th.dataset.col;
+    // Which data-* attribute this column sorts by, and how to compare it. Column
+    // indexes used to be hardcoded here, which is why adding a column in the
+    // middle would silently have sorted by the wrong one.
+    const key   = th.dataset.key;
+    const kind  = th.dataset.type || 'text';
     const icon  = th.querySelector('.sort-icon');
     const asc   = icon.dataset.dir !== 'asc';
 
@@ -376,14 +407,13 @@ document.querySelectorAll('.sort-col').forEach(th => {
     tbody.querySelectorAll('tr.slot-section').forEach(b => { b.style.display = 'none'; });
     const rows = Array.from(tbody.querySelectorAll('tr[data-name]'));
     rows.sort((a, b) => {
-      if (col === '0') {
-        const va = a.dataset.name, vb = b.dataset.name;
-        return asc ? va.localeCompare(vb, 'cs') : vb.localeCompare(va, 'cs');
-      } else {
-        const va = parseFloat(col === '1' ? a.dataset.qty : a.dataset.value) || 0;
-        const vb = parseFloat(col === '1' ? b.dataset.qty : b.dataset.value) || 0;
+      if (kind === 'num') {
+        const va = parseFloat(a.dataset[key]) || 0;
+        const vb = parseFloat(b.dataset[key]) || 0;
         return asc ? va - vb : vb - va;
       }
+      const va = a.dataset[key] || '', vb = b.dataset[key] || '';
+      return asc ? va.localeCompare(vb, 'cs') : vb.localeCompare(va, 'cs');
     });
     rows.forEach(r => tbody.appendChild(r));
   });

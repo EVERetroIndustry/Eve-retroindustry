@@ -382,12 +382,15 @@ def test_fitted_and_spare_copies_of_one_module_stay_apart(app_module, client, mo
         for r in rows:
             flat = " ".join(re.sub(r"<[^>]+>", " ", r).split())
             if "Tracking Computer II" in flat:
-                seen.append(flat)
+                seen.append(r)
         assert len(seen) == 2, seen
         # The two fitted ones collapse into a single row, the spare in cargo keeps
         # its own - that split is the whole point of grouping by slot, and merged
         # they used to read "x3", which says nothing about the fit.
-        qtys = sorted(int(s.split("Tracking Computer II ")[1].split()[0]) for s in seen)
+        # Read the quantity off data-qty rather than the position of a number in the
+        # row text: the row grew a Type column between the name and the quantity,
+        # and the group of a Tracking Computer II is called "Tracking Computer".
+        qtys = sorted(int(re.search(r'data-qty="(\d+)"', r).group(1)) for r in seen)
         assert qtys == [1, 2], seen
         # Sections replace the old Slot column, in fitting-window wording. This
         # fixture fits two mid slots and leaves a spare in cargo, so those are the
@@ -570,4 +573,84 @@ def test_all_characters_view_shows_every_pilots_ship_name(app_module, client, mo
             if orig:
                 conn.execute("INSERT INTO char_assets_cache (character_id, data_json, cached_at)"
                              " VALUES (?,?,?)", (cid, orig[0], orig[1]))
+        conn.commit(); conn.close()
+
+
+# ── Type (group) and Volume columns ───────────────────────────────────────────
+
+def test_the_type_column_shows_the_item_group_and_sorts_by_it(client, app_module):
+    """Sorting a hangar by name only groups items that share a prefix; the group is
+    what answers "show me the ships"."""
+    html = _text(client, "/assets?view=900000001")
+    assert 'data-key="group" data-type="text"' in html
+    # Tritanium and friends are in the Mineral group - straight from the SDE.
+    assert 'data-group="mineral"' in html
+    # The old sorter mapped hardcoded column indexes, so inserting a column in the
+    # middle would have sorted by the wrong one.
+    assert "th.dataset.col" not in html and "col === '1'" not in html
+
+
+def test_volume_uses_the_packaged_number_for_a_packaged_stack(app_module):
+    """A Raven is 470 000 m3 assembled and 50 000 packaged. is_singleton decides."""
+    from types import SimpleNamespace
+    conn = app_module.get_conn()
+    try:
+        raven = conn.execute("SELECT type_id FROM sde_types WHERE name='Raven'").fetchone()[0]
+        facts = app_module._type_facts(conn, [raven])
+    finally:
+        conn.close()
+    assert facts[raven]["group"] == "Battleship"
+    packed = SimpleNamespace(type_id=raven, quantity=2, is_singleton=False)
+    assembled = SimpleNamespace(type_id=raven, quantity=1, is_singleton=True)
+    assert app_module._entry_volume(packed, facts) == (100_000.0, 50_000.0)
+    assert app_module._entry_volume(assembled, facts) == (470_000.0, 470_000.0)
+
+
+def test_an_unknown_type_claims_no_volume(app_module):
+    from types import SimpleNamespace
+    assert app_module._entry_volume(
+        SimpleNamespace(type_id=99999999, quantity=5, is_singleton=False), {}) == (None, None)
+
+
+def test_a_row_carries_its_volume_and_the_table_totals_it(client, app_module):
+    html = _text(client, "/assets?view=900000001")
+    import re as _re
+    vols = [float(v) for v in _re.findall(r'data-volume="([\d.]+)"', html)]
+    assert vols and all(v > 0 for v in vols)
+    # 10 000 units of a 0.01 m3 mineral is 100 m3 - the fixture stocks five of them.
+    assert 100.0 in vols
+    assert "m&sup3;" in html or "m³" in html
+
+
+def test_volume_is_summed_per_entry_not_per_merged_row(app_module, client, monkeypatch):
+    """A packaged hull and an assembled one of the same type land in one row; they
+    do not take the same space, so the row's volume is the sum of both entries."""
+    import json as j, time as t
+    CHAR = 900000002
+    conn = app_module.get_conn()
+    raven = conn.execute("SELECT type_id FROM sde_types WHERE name='Raven'").fetchone()[0]
+    row = conn.execute("SELECT data_json, cached_at FROM char_assets_cache"
+                       " WHERE character_id=?", (CHAR,)).fetchone()
+    original = (row[0], row[1]) if row else None
+    assets = [
+        {"item_id": 810001, "type_id": raven, "quantity": 1, "location_id": 60003760,
+         "location_flag": "Hangar", "is_singleton": False},          # packaged: 50 000
+        {"item_id": 810002, "type_id": raven, "quantity": 1, "location_id": 60003760,
+         "location_flag": "Hangar", "is_singleton": True},            # assembled: 470 000
+    ]
+    conn.execute("DELETE FROM char_assets_cache WHERE character_id=?", (CHAR,))
+    conn.execute("INSERT INTO char_assets_cache (character_id, data_json, cached_at)"
+                 " VALUES (?,?,?)", (CHAR, j.dumps(assets), t.time()))
+    conn.commit(); conn.close()
+    try:
+        html = _text(client, f"/assets?view={CHAR}")
+        import re as _re
+        got = [float(v) for v in _re.findall(r'data-volume="([\d.]+)"', html)]
+        assert 520_000.0 in got, got
+    finally:
+        conn = app_module.get_conn()
+        conn.execute("DELETE FROM char_assets_cache WHERE character_id=?", (CHAR,))
+        if original:
+            conn.execute("INSERT INTO char_assets_cache (character_id, data_json,"
+                         " cached_at) VALUES (?,?,?)", (CHAR, original[0], original[1]))
         conn.commit(); conn.close()

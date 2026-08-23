@@ -102,8 +102,13 @@ def main() -> None:
     if not build:
         print("  (pass --build NNNNNNN to record it; inferred from data/*.zip otherwise)")
 
-    conn_dst.execute("VACUUM")
+    # VACUUM cannot run inside a transaction, and the DROP/INSERT statements above
+    # opened one (Python 3.12+ no longer commits implicitly before it). Without the
+    # commit the whole step raised "cannot VACUUM from within a transaction" and
+    # left a 28 MB file with an unstamped sde_meta - which is how a stale bundle
+    # would have shipped.
     conn_dst.commit()
+    conn_dst.execute("VACUUM")
     conn_dst.close()
     conn_src.close()
 

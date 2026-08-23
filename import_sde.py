@@ -84,12 +84,18 @@ def import_planet_schematics(conn: sqlite3.Connection):
 
 def init_db(conn: sqlite3.Connection):
     conn.executescript("""
+        -- volume / packaged_volume: how much space one unit takes, in m3. The two
+        -- differ for anything repackable - a Raven is 470 000 assembled and 50 000
+        -- packaged - and the SDE gives both, so nothing has to be guessed from the
+        -- item's group the way third-party tools do it.
         CREATE TABLE IF NOT EXISTS sde_types (
             type_id         INTEGER PRIMARY KEY,
             name            TEXT NOT NULL,
             group_id        INTEGER,
             published       INTEGER DEFAULT 1,
-            market_group_id INTEGER
+            market_group_id INTEGER,
+            volume          REAL,
+            packaged_volume REAL
         );
 
         CREATE TABLE IF NOT EXISTS sde_blueprint_materials (
@@ -149,6 +155,13 @@ def init_db(conn: sqlite3.Connection):
         CREATE INDEX IF NOT EXISTS idx_bp_materials ON sde_blueprint_materials(blueprint_type_id, activity);
         CREATE INDEX IF NOT EXISTS idx_bp_skills ON sde_blueprint_skills(blueprint_type_id, activity);
     """)
+    # Re-running the import against a database from an older version: CREATE TABLE
+    # IF NOT EXISTS leaves the old schema alone, so a column added later has to be
+    # added here or the INSERT below fails with "no such column".
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(sde_types)").fetchall()}
+    for col in ("volume", "packaged_volume"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE sde_types ADD COLUMN {col} REAL")
     conn.commit()
 
 
@@ -170,17 +183,23 @@ def import_types(conn: sqlite3.Connection) -> dict:
         name = name_field.get("en", "") if isinstance(name_field, dict) else str(name_field)
         if not name:
             continue
+        vol = info.get("volume")
+        packaged = info.get("packagedVolume")
         rows.append((
             int(type_id),
             name,
             info.get("groupID"),
             1 if info.get("published", True) else 0,
             info.get("marketGroupID"),
+            float(vol) if isinstance(vol, (int, float)) else None,
+            # Only stored when it actually differs; for everything that cannot be
+            # repackaged the two are the same number and one column is enough.
+            float(packaged) if isinstance(packaged, (int, float)) else None,
         ))
 
     conn.executemany(
-        "INSERT OR REPLACE INTO sde_types (type_id, name, group_id, published, market_group_id)"
-        " VALUES (?,?,?,?,?)",
+        "INSERT OR REPLACE INTO sde_types (type_id, name, group_id, published,"
+        " market_group_id, volume, packaged_volume) VALUES (?,?,?,?,?,?,?)",
         rows
     )
     conn.commit()

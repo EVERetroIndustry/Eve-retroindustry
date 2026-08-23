@@ -298,11 +298,24 @@ def _refresh_sde_from_bundle(conn: sqlite3.Connection) -> int:
             for t in _SDE_TABLES_TO_REFRESH
         )
 
-        if bundled_count <= user_count and bundled_groups <= user_groups and not missing:
-            return user_count  # user is up to date on types, groups, and tables
+        # ...and when the bundled table has a COLUMN the user's copy lacks. Adding
+        # `volume` to sde_types changes neither the type count nor the group count,
+        # so without this an existing eve_cache.db would keep the old schema for
+        # good and every query naming the new column would fail.
+        def _cols(c, table) -> set[str]:
+            return {r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()}
+
+        new_columns = any(
+            t in bundle_tables and t in user_tables and (_cols(bsrc, t) - _cols(conn, t))
+            for t in _SDE_TABLES_TO_REFRESH
+        )
+
+        if (bundled_count <= user_count and bundled_groups <= user_groups
+                and not missing and not new_columns):
+            return user_count  # up to date on types, groups, tables and columns
 
         print(f"[sde] refreshing SDE tables: user={user_count}, bundled={bundled_count}, "
-              f"missing_table={missing}", flush=True)
+              f"missing_table={missing}, new_columns={new_columns}", flush=True)
         payload = []
         for table in _SDE_TABLES_TO_REFRESH:
             ddl = bsrc.execute(
@@ -452,6 +465,17 @@ def _price_eu(v) -> str:
     return s.replace(",", " ")
 
 
+def _m3(v) -> str:
+    """Volume in m3. Tiny items are 0.01 m3 each, a titan is 155 000 000 - so
+    decimals only where they carry information."""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return "-"
+    s = f"{v:,.2f}" if abs(v) < 10 else f"{v:,.0f}"
+    return s.replace(",", " ")
+
+
 def _count_eu(v) -> str:
     """Integer count (volume / available): no decimals, space thousands."""
     try:
@@ -484,6 +508,7 @@ templates.env.filters["format_date"] = _format_date
 templates.env.filters["age_short"] = _age_short
 templates.env.filters["price_eu"] = _price_eu
 templates.env.filters["count_eu"] = _count_eu
+templates.env.filters["m3"] = _m3
 
 
 def _plural(n, word: str, suffix: str = "s") -> str:
@@ -2828,6 +2853,59 @@ def _plan_to_dict(plan, prices, type_name: str, conn: sqlite3.Connection | None 
 # Assets
 # ---------------------------------------------------------------------------
 
+def _type_facts(conn: sqlite3.Connection, type_ids) -> dict[int, dict]:
+    """{type_id: {"group": str, "volume": float|None, "packaged": float|None}}.
+
+    `group` is what EVE calls the item's group - Frigate, Mineral, Blueprint - and
+    it is the useful thing to sort a hangar by: sorting by name only groups items
+    that happen to share a prefix, while the group answers "show me the ships".
+    The volumes come from the SDE, which carries the assembled AND the packaged
+    number, so neither has to be inferred from the group the way tools without the
+    SDE have to do it.
+    """
+    ids = sorted({int(t) for t in type_ids if t})
+    out: dict[int, dict] = {}
+    if not ids:
+        return out
+    for i in range(0, len(ids), 900):          # stay well under SQLite's var limit
+        chunk = ids[i:i + 900]
+        ph = ",".join("?" * len(chunk))
+        try:
+            rows = conn.execute(
+                f"SELECT t.type_id, COALESCE(g.name, ''), t.volume, t.packaged_volume"
+                f" FROM sde_types t LEFT JOIN sde_groups g ON g.group_id = t.group_id"
+                f" WHERE t.type_id IN ({ph})", chunk).fetchall()
+        except sqlite3.OperationalError:
+            # A database from before the volume columns existed. The startup
+            # refresh adds them from the bundle; until then the group still works
+            # and the volume column simply says nothing.
+            rows = [(r[0], r[1], None, None) for r in conn.execute(
+                f"SELECT t.type_id, COALESCE(g.name, '') FROM sde_types t"
+                f" LEFT JOIN sde_groups g ON g.group_id = t.group_id"
+                f" WHERE t.type_id IN ({ph})", chunk).fetchall()]
+        for tid, group, vol, packaged in rows:
+            out[int(tid)] = {"group": group or "", "volume": vol, "packaged": packaged}
+    return out
+
+
+def _entry_volume(asset, facts: dict[int, dict]) -> tuple[float | None, float | None]:
+    """(volume of this asset entry, volume of one unit) in m3.
+
+    An assembled item takes its full volume, a packaged stack the packaged one, and
+    for anything repackable those are wildly different numbers - a Raven is 470 000
+    m3 assembled and 50 000 packaged, an Avatar 155 million against 10 million. ESI
+    marks the difference with is_singleton, so the choice is read off the data
+    rather than guessed from the item's group.
+    """
+    f = facts.get(int(asset.type_id or 0))
+    if not f:
+        return None, None
+    unit = f["volume"] if asset.is_singleton else (f["packaged"] or f["volume"])
+    if not unit:
+        return None, None
+    return unit * (asset.quantity or 0), unit
+
+
 @app.get("/assets", response_class=HTMLResponse)
 async def assets_page(request: Request, search: str = "", view: str = ""):
     conn = get_conn()
@@ -2897,8 +2975,10 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
             for _, corp_list in corp_data.values():
                 all_type_ids_for_names |= {a.type_id for a in corp_list}
             names = await resolve_names_bulk(conn, list(all_type_ids_for_names), client)
+            type_facts = _type_facts(conn, all_type_ids_for_names)
     else:
         names = {}
+        type_facts = {}
 
     if selected_chars:
         char_name_by_id = {cid: name for cid, name in all_chars}
@@ -2972,13 +3052,22 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                 # separate AND a BPO never merges with a BPC of the same type
                 # (which would otherwise price the copy at the original's value).
                 key = (a.type_id, owner_id, is_copy, slot)
+                # Volume is summed per ENTRY, not recomputed from the merged row:
+                # a packaged hull and an assembled one of the same type land in the
+                # same row, and they do not take the same space.
+                vol, unit_vol = _entry_volume(a, type_facts)
                 if key in bucket:
                     bucket[key]["quantity"] += a.quantity
+                    if vol is not None:
+                        bucket[key]["volume"] = (bucket[key]["volume"] or 0) + vol
                 else:
                     bucket[key] = {
                         "type_id": a.type_id,
                         "name": item_name,
                         "quantity": a.quantity,
+                        "group": type_facts.get(a.type_id, {}).get("group", ""),
+                        "volume": vol,
+                        "unit_volume": unit_vol,
                         "is_blueprint_copy": is_copy,
                         "bp_kind": _bp_kind(a, is_copy),
                         "character_id": owner_id,
@@ -3083,13 +3172,19 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                 is_copy = a.is_blueprint_copy or (a.item_id in bpc_item_ids)
                 slot, slot_order = _slot_info(a.location_flag) if cid is not None else ("", 0)
                 ckey = (a.type_id, is_copy, slot)
+                vol, unit_vol = _entry_volume(a, type_facts)
                 if ckey in bucket:
                     bucket[ckey]["quantity"] += a.quantity
+                    if vol is not None:
+                        bucket[ckey]["volume"] = (bucket[ckey]["volume"] or 0) + vol
                 else:
                     bucket[ckey] = {
                         "type_id": a.type_id,
                         "name": item_name,
                         "quantity": a.quantity,
+                        "group": type_facts.get(a.type_id, {}).get("group", ""),
+                        "volume": vol,
+                        "unit_volume": unit_vol,
                         "is_blueprint_copy": is_copy,
                         # Corp blueprints aren't fetched, so we can only trust the
                         # (unreliable) copy flag here - badge BPC only, never guess BPO.
@@ -3182,7 +3277,7 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
         # then filter - a ship's own label has to exist before it can be matched.
         container_labels = {cid: info[0] for cid, info in container_info.items()}
         for sd in station_data.values():
-            _fold_ship_hulls(sd, container_type_map, container_owner_map)
+            _fold_ship_hulls(sd, container_type_map, container_owner_map, type_facts)
             _prune_by_search(sd, container_labels, search)
 
         for sid, sd in station_data.items():
@@ -3252,7 +3347,7 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
             for sid_data in corp_sd.values():
                 for dv in sid_data.values():
                     # No owner_map: corp rows carry no character.
-                    _fold_ship_hulls(dv, corp_container_type_map)
+                    _fold_ship_hulls(dv, corp_container_type_map, None, type_facts)
                     _prune_by_search(dv, corp_container_labels, search)
 
             def _build_corp_container(cid, items, sid):
@@ -3580,6 +3675,7 @@ def _fold_ship_hulls(
     node: dict,
     type_map: dict[int, int],
     owner_map: dict[int, tuple[int, str]] | None = None,
+    facts: dict[int, dict] | None = None,
 ) -> None:
     """Move a ship's hull row out of the hangar and into its own container row.
 
@@ -3590,7 +3686,10 @@ def _fold_ship_hulls(
     once as a container).
 
     `owner_map` is passed for personal assets, where rows carry a character; corp
-    buckets have no owner, so pass None.
+    buckets have no owner, so pass None. `facts` carries the group and volumes, so
+    the synthesized hull row is a row like any other - without it 228 ships on a
+    real account had an empty Type and no volume, which is worse than useless:
+    they were the biggest things in the hangar.
     """
     hangar = node["hangar"]
     for cid, items in node["containers"].items():
@@ -3611,11 +3710,20 @@ def _fold_ship_hulls(
         unit_p = entry.get("unit_price")
         if entry["quantity"] > 0 and unit_p is not None:
             entry["total_value"] = unit_p * entry["quantity"]
+        # A ship with contents is assembled, so the hull takes the assembled volume
+        # (a Raven: 470 000 m3, not the 50 000 it would be packaged) - and that much
+        # leaves the hangar row it was folded out of.
+        assembled = ((facts or {}).get(ship_type) or {}).get("volume")
+        if assembled:
+            entry["volume"] = max(0.0, (entry.get("volume") or 0) - assembled)
         hull = {
             "type_id": ship_type,
             "name": entry["name"],
             "quantity": 1,
             "is_blueprint_copy": False,
+            "group": entry.get("group", ""),
+            "volume": assembled,
+            "unit_volume": assembled,
             "unit_price": unit_p,
             "total_value": unit_p,   # hull = 1 unit
             # Sorts above every slot, so the ship table reads hull → fit → cargo.
