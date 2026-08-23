@@ -104,6 +104,7 @@ from app.character.skills import (
     get_cached_skills,
     get_mfg_skill_ids,
 )
+from app import update_apply as _update_apply
 from app.web.projects_helper import (
     ensure_project_tables,
     list_projects,
@@ -7909,57 +7910,23 @@ async def api_version_download(url: str):
             roots = {Path(m).parts[0] for m in members if Path(m).parts}
             inner_dir = staging / roots.pop() if len(roots) == 1 else staging
 
-            # Write helper script
-            if _sys.platform == "win32":
-                script_path = app_dir / "update.bat"
-                # Robust in-place update:
-                #  * give the app a moment to exit, then force-kill any leftover
-                #    QtWebEngineProcess / main exe that still hold locks on the
-                #    bundled DLLs (otherwise the copy silently skips them and the
-                #    result is a broken install);
-                #  * robocopy retries locked files (/R:15 /W:1). /E copies the
-                #    tree WITHOUT purging, so user data (eve_cache.db,
-                #    .eve_config.json, webview_data) is preserved - it is not in
-                #    the source and never gets deleted;
-                #  * launch the new exe BEFORE the script deletes itself - a .bat
-                #    that dels itself first never reaches the next line.
-                script_path.write_text(
-                    '@echo off\r\n'
-                    'timeout /t 2 /nobreak >nul\r\n'
-                    'taskkill /F /IM QtWebEngineProcess.exe >nul 2>&1\r\n'
-                    'taskkill /F /IM EVE_Retroindustry.exe >nul 2>&1\r\n'
-                    'timeout /t 1 /nobreak >nul\r\n'
-                    f'robocopy "{inner_dir}" "{app_dir}" /E /R:15 /W:1 /NFL /NDL /NJH /NJS /NC /NP >nul\r\n'
-                    # If this copy was installed by the Inno Setup installer, keep
-                    # the Apps & features entry honest - a self-update would
-                    # otherwise leave it showing the version we just replaced. The
-                    # `reg query` guard matters: without it, `reg add` would create
-                    # the key and give portable (ZIP) users a bogus uninstall entry.
-                    + (f'reg query "{_UNINSTALL_KEY}" >nul 2>&1 && '
-                       f'reg add "{_UNINSTALL_KEY}" /v DisplayVersion /t REG_SZ '
-                       f'/d {new_version} /f >nul 2>&1\r\n' if new_version else '')
-                    +
-                    f'rmdir /S /Q "{staging}" >nul 2>&1\r\n'
-                    f'start "" "{app_dir}\\EVE_Retroindustry.exe"\r\n'
-                    'del "%~f0"\r\n',
-                    encoding="utf-8",
-                )
-            else:
-                script_path = app_dir / "update.sh"
-                script_path.write_text(
-                    f'#!/bin/bash\n'
-                    f'sleep 3\n'
-                    f'cp -r "{inner_dir}/." "{app_dir}/"\n'
-                    f'rm -rf "{staging}"\n'
-                    f'chmod +x "{app_dir}/EVE_Retroindustry"\n'
-                    f'"{app_dir}/EVE_Retroindustry" &\n'
-                    f'rm -- "$0"\n',
-                    encoding="utf-8",
-                )
-                import stat
-                script_path.chmod(script_path.stat().st_mode | stat.S_IEXEC)
+            # No helper script is written. The staged copy applies the update
+            # itself (app/update_apply.py): the old path dropped an update.bat and
+            # ran it through cmd.exe - killing processes by name, replacing the
+            # program folder, writing the uninstall key with reg.exe, relaunching
+            # and deleting itself. That sequence is what a dropper looks like, and
+            # an unsigned build has no reputation to argue with; a tester's AVG
+            # objected mid-update. Nothing here needs a shell.
+            # The version travels with the staged copy in a plain text file, so
+            # applying it later (a separate request) does not have to re-derive it.
+            if new_version:
+                (staging / ".update-version").write_text(new_version, encoding="utf-8")
+            staged_exe = inner_dir / _update_apply.EXE_NAME
+            if not staged_exe.exists():
+                yield f"data: {json.dumps({'error': f'{_update_apply.EXE_NAME} not found in the archive'})}\n\n"
+                return
 
-            yield f"data: {json.dumps({'done': True, 'script': script_path.name})}\n\n"
+            yield f"data: {json.dumps({'done': True, 'staged': str(staged_exe)})}\n\n"
 
         except Exception as exc:
             if tmp_zip.exists():
@@ -7973,24 +7940,51 @@ async def api_version_download(url: str):
     )
 
 
+def _staged_version(staging: Path) -> str | None:
+    """Version recorded when the update was downloaded, if any."""
+    try:
+        v = (staging / ".update-version").read_text(encoding="utf-8").strip()
+        return v or None
+    except OSError:
+        return None
+
+
 @app.post("/api/version/apply")
 async def api_version_apply():
-    """Launch helper update script then exit the process."""
+    """Hand the update over to the copy we just downloaded, then exit.
+
+    The staged binary waits for THIS process to end and then replaces the install
+    (app/update_apply.py). No script is written, no shell is spawned, nothing is
+    killed and nothing deletes itself - see that module for what this replaced and
+    why. The version is passed along so an installed copy can keep its entry in
+    Apps & features honest.
+    """
     import subprocess
     app_dir = _install_dir()
+    staging = app_dir / _update_apply.STAGING_DIR
+    if not staging.is_dir():
+        return {"error": "nothing downloaded yet - run the download first"}
+    inner = [p for p in staging.iterdir() if p.is_dir()]
+    src = inner[0] if len(inner) == 1 and not (staging / _update_apply.EXE_NAME).exists() \
+        else staging
+    staged_exe = src / _update_apply.EXE_NAME
+    if not staged_exe.exists():
+        return {"error": f"{_update_apply.EXE_NAME} not found in the downloaded copy"}
+
+    argv = [str(staged_exe), "--apply-update", "--src", str(src), "--dst", str(app_dir),
+            "--wait-pid", str(os.getpid())]
+    version = _staged_version(staging)
+    if version:
+        argv += ["--version", version]
+    kwargs: dict = {"close_fds": True, "cwd": str(src)}
     if _sys.platform == "win32":
-        script = app_dir / "update.bat"
+        kwargs["creationflags"] = (subprocess.DETACHED_PROCESS
+                                   | subprocess.CREATE_NEW_PROCESS_GROUP)
     else:
-        script = app_dir / "update.sh"
-    if not script.exists():
-        return {"error": f"{script.name} not found - run download first"}
-    if _sys.platform == "win32":
-        subprocess.Popen(
-            ["cmd", "/c", str(script)],
-            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-            close_fds=True,
-        )
-    else:
-        subprocess.Popen(["/bin/bash", str(script)], start_new_session=True, close_fds=True)
+        kwargs["start_new_session"] = True
+    try:
+        subprocess.Popen(argv, **kwargs)
+    except OSError as exc:
+        return {"error": f"could not start the updater: {exc}"}
     asyncio.get_event_loop().call_later(0.5, lambda: os._exit(0))
     return {"ok": True}
