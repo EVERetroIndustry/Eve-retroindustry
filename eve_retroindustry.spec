@@ -14,6 +14,7 @@
 # Distribute the entire dist/EVE_Retroindustry/ folder as a ZIP.
 # eve_cache.db is created next to the .exe on first run.
 
+import os
 import sys
 from PyInstaller.utils.hooks import collect_all
 
@@ -163,9 +164,20 @@ a = Analysis(
 import re
 
 _qt_lib_keep = re.compile(
-    r"(lib)?Qt6(Core|DBus|Gui|Network|OpenGL|Widgets|PrintSupport|"
+    r"(lib)?Qt6(Core|DBus|Gui|Network|OpenGL|OpenGLWidgets|Widgets|PrintSupport|"
     r"WebEngineCore|WebEngineWidgets|WebChannel|Positioning|"
-    r"QuickWidgets|Quick|Qml|QmlMeta|QmlModels|QmlWorkerScript)\."
+    r"QuickWidgets|Quick|Qml|QmlMeta|QmlModels|QmlWorkerScript|"
+    # The Linux window-system backends. These are NOT optional: libqxcb.so
+    # needs XcbQpa and libqwayland.so needs WaylandClient, and without them
+    # the loader falls back to the HOST's copies. That "worked" only while the
+    # host happened to run the same Qt build - the moment the bundled Qt moved
+    # from 6.11.1 to 6.11.2 the app died with "no Qt platform plugin could be
+    # initialized" (undefined symbol ... QtPrivate_6_11_1). Shipping them is
+    # ~2 MB and makes the bundle independent of the host, which is the whole
+    # point of a bundle. WlShellIntegration is the wl-shell fallback plugin's
+    # library, Svg backs the SVG image/icon plugins, EglFSDeviceIntegration
+    # backs the eglfs platform plugin.
+    r"XcbQpa|WaylandClient|WlShellIntegration|Svg|EglFSDeviceIntegration)\."
 )
 # NB: QtWebEngineWidgets pulls in QtPrintSupport (web page printing) and
 # QtQuickWidgets. Both must stay or the bundle only runs on machines that
@@ -218,6 +230,11 @@ def _qt_keep(dest: str) -> bool:
             or _qt_exec_keep.match(base)
         )
     if "/plugins/" in d:
+        # libqpdf.so reads PDFs as images and drags in libQt6Pdf (4.3 MB) for
+        # something the app never does. Dropped with its library rather than
+        # shipped broken - the build check below would fail on it otherwise.
+        if d.endswith("/libqpdf.so") or d.endswith("/qpdf.dll"):
+            return False
         return bool(_qt_plugin_keep.search(dest))
     if "/translations/" in d:
         return d.endswith("/qtwebengine_locales/en-US.pak") or "en-US" in d
@@ -231,6 +248,49 @@ def _qt_keep(dest: str) -> bool:
 
 a.binaries = [b for b in a.binaries if _qt_keep(b[0])]
 a.datas    = [d for d in a.datas    if _qt_keep(d[0])]
+
+
+def _check_qt_plugins_are_self_contained(binaries) -> None:
+    """Fail the build if a bundled Qt plugin needs a Qt library we stripped.
+
+    This is the check that was missing. The filter above is a hand-written
+    allowlist, so a plugin can end up in the bundle while its library does not -
+    and nothing complains, because the loader quietly takes the HOST's copy.
+    The app then runs on the build machine and on any machine with a matching
+    system Qt, and aborts everywhere else. Linux only: it uses ldd, and the
+    Windows bundle keeps bin/ whole so it cannot drift this way.
+    """
+    if not sys.platform.startswith("linux"):
+        return
+    import subprocess
+
+    have = {os.path.basename(src) for dest, src, _ in binaries}
+    libdirs = {os.path.dirname(src) for dest, src, _ in binaries
+               if "/Qt6/lib/" in src.replace("\\", "/")}
+    env = dict(os.environ, LD_LIBRARY_PATH=os.pathsep.join(libdirs))
+    problems = []
+    for dest, src, _ in binaries:
+        u = src.replace("\\", "/")
+        # Everything PyQt6 ships, not just the Qt6 tree: the Python extension
+        # modules link Qt libraries too. `PyQt6/QtWebEngineWidgets.abi3.so` needs
+        # libQt6OpenGLWidgets, which the allowlist missed because the pattern
+        # demanded "OpenGL." exactly - so the host's copy was loaded instead.
+        if "/PyQt6/" not in u or not (".so" in os.path.basename(u)):
+            continue
+        out = subprocess.run(["ldd", src], capture_output=True, text=True,
+                             env=env).stdout
+        for lib in sorted(set(re.findall(r"libQt6[A-Za-z]+\.so\.6", out))):
+            if lib not in have:
+                problems.append(f"  {os.path.relpath(dest)} needs {lib}")
+    if problems:
+        raise SystemExit(
+            "Qt bundle is not self-contained - these plugins would load the "
+            "host's Qt (and abort whenever it differs):\n" + "\n".join(problems)
+            + "\nAdd the library to _qt_lib_keep, or drop the plugin in _qt_keep."
+        )
+
+
+_check_qt_plugins_are_self_contained(a.binaries)
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
