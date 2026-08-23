@@ -160,3 +160,14 @@ def test_the_full_run_copies_and_relaunches(tmp_path, monkeypatch):
     assert rc == 0
     assert (dst / ua.EXE_NAME).read_text() == "v2"
     assert started and started[0][0] == str(dst / ua.EXE_NAME)
+
+
+def test_an_explicit_apply_update_flag_beats_the_smoke_env_var():
+    """CI set EVE_SMOKE=1 so the RELAUNCHED copy would self-test and exit - and the
+    updater itself took the smoke path instead of applying anything. An explicit
+    flag has to win, or an environment variable can silently turn updates into
+    no-ops."""
+    src = (REPO / "launcher.py").read_text()
+    apply_at = src.index('"--apply-update" in sys.argv')
+    smoke_at = src.index('os.environ.get("EVE_SMOKE")', src.index('if __name__'))
+    assert apply_at < smoke_at, "EVE_SMOKE is checked before --apply-update"

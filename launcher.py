@@ -447,14 +447,16 @@ def main() -> None:
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
-    if os.environ.get("EVE_SMOKE") or "--smoke" in sys.argv:
-        os._exit(_smoke_test())
     # An update in progress: this process IS the freshly downloaded copy, started
-    # by the old one to replace it. Handled before anything else - no server, no
-    # window. See app/update_apply.py for why the old update.bat had to go.
+    # by the old one to replace it. Checked FIRST - an explicit flag has to beat
+    # the EVE_SMOKE environment variable, or anyone who happens to have that set
+    # would find updates silently doing nothing but a self-test. (Which is exactly
+    # what the CI step for this path hit.) See app/update_apply.py.
     if "--apply-update" in sys.argv:
         from app.update_apply import main as _apply_update
         os._exit(_apply_update(sys.argv[1:]))
+    if os.environ.get("EVE_SMOKE") or "--smoke" in sys.argv:
+        os._exit(_smoke_test())
     # Ordinary start: clear the staging tree the last update left behind. Doing it
     # here rather than from the updater means nothing has to delete the directory
     # it is running from.
