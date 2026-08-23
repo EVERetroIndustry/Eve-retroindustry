@@ -35,11 +35,23 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller eve_retroindustry.spec --noconfirm
 
+      # The exe is built with console=False, so it is a GUI-subsystem binary:
+      # PowerShell does NOT wait for it and never sets $LASTEXITCODE. This step used
+      # to call it with `&` and test that variable, which means it passed no matter
+      # what the app did - the smoke output turned up asynchronously, after the step
+      # had already "succeeded". Start-Process -Wait is the only way to get a real
+      # exit code, and the streams have to be redirected to be seen at all.
       - name: Smoke-test the built app (headless)
         timeout-minutes: 3
+        shell: pwsh
         run: |
-          & "./dist/EVE_Retroindustry/EVE_Retroindustry.exe" --smoke
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $out = Join-Path $env:RUNNER_TEMP "smoke.out"
+          $err = Join-Path $env:RUNNER_TEMP "smoke.err"
+          $p = Start-Process -FilePath "./dist/EVE_Retroindustry/EVE_Retroindustry.exe" `
+                 -ArgumentList "--smoke" -Wait -PassThru `
+                 -RedirectStandardOutput $out -RedirectStandardError $err
+          Get-Content $out, $err -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { Write-Error "smoke exit $($p.ExitCode)"; exit 1 }
 
       # The updater is Windows-only code that cannot be exercised on Linux: waiting
       # on a process through OpenProcess/WaitForSingleObject, the detached relaunch,
@@ -63,9 +75,16 @@ jobs:
           $env:EVE_SMOKE = "1"
           $sleeper = Start-Process -PassThru powershell -ArgumentList '-Command','Start-Sleep -Seconds 5'
           $t0 = Get-Date
-          & (Join-Path $src "EVE_Retroindustry.exe") --apply-update --src $src --dst $dst `
-              --wait-pid $sleeper.Id --version 9.9.9
-          $code = $LASTEXITCODE
+          # Same trap as the smoke step: a GUI-subsystem exe is not waited for by
+          # `&`, so the checks below would run before the updater had done anything.
+          $uo = Join-Path $env:RUNNER_TEMP "upd.out"
+          $ue = Join-Path $env:RUNNER_TEMP "upd.err"
+          $p = Start-Process -FilePath (Join-Path $src "EVE_Retroindustry.exe") `
+                 -ArgumentList "--apply-update","--src",$src,"--dst",$dst,
+                               "--wait-pid",$sleeper.Id,"--version","9.9.9" `
+                 -Wait -PassThru -RedirectStandardOutput $uo -RedirectStandardError $ue
+          Get-Content $uo, $ue -ErrorAction SilentlyContinue
+          $code = $p.ExitCode
           $waited = ((Get-Date) - $t0).TotalSeconds
           Write-Host "updater exit=$code waited=$([math]::Round($waited,1))s"
           if ($code -ne 0) { Write-Error "updater failed"; exit 1 }
