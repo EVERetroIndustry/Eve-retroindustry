@@ -250,47 +250,80 @@ a.binaries = [b for b in a.binaries if _qt_keep(b[0])]
 a.datas    = [d for d in a.datas    if _qt_keep(d[0])]
 
 
-def _check_qt_plugins_are_self_contained(binaries) -> None:
+def _check_qt_bundle_is_self_contained(binaries) -> None:
     """Fail the build if a bundled Qt plugin needs a Qt library we stripped.
 
     This is the check that was missing. The filter above is a hand-written
     allowlist, so a plugin can end up in the bundle while its library does not -
     and nothing complains, because the loader quietly takes the HOST's copy.
     The app then runs on the build machine and on any machine with a matching
-    system Qt, and aborts everywhere else. Linux only: it uses ldd, and the
-    Windows bundle keeps bin/ whole so it cannot drift this way.
-    """
-    if not sys.platform.startswith("linux"):
-        return
-    import subprocess
+    system Qt, and aborts everywhere else.
 
+    Linux reads dependencies with ldd, Windows with pefile (PyInstaller already
+    depends on it there). Windows currently ships all of Qt6/bin, so it cannot
+    drift the way Linux did - but the PLUGIN allowlist applies on both, and an
+    allowlist without a check is what caused this in the first place. If neither
+    reader is available the build says so instead of pretending it checked.
+    """
     have = {os.path.basename(src) for dest, src, _ in binaries}
-    libdirs = {os.path.dirname(src) for dest, src, _ in binaries
-               if "/Qt6/lib/" in src.replace("\\", "/")}
-    env = dict(os.environ, LD_LIBRARY_PATH=os.pathsep.join(libdirs))
+    if sys.platform.startswith("linux"):
+        import subprocess
+        libdirs = {os.path.dirname(src) for dest, src, _ in binaries
+                   if "/Qt6/lib/" in src.replace("\\", "/")}
+        env = dict(os.environ, LD_LIBRARY_PATH=os.pathsep.join(libdirs))
+        want = re.compile(r"libQt6[A-Za-z]+\.so\.6")
+        suffix, reader = ".so", lambda f: want.findall(
+            subprocess.run(["ldd", f], capture_output=True, text=True,
+                           env=env).stdout)
+    elif sys.platform == "win32":
+        try:
+            import pefile
+        except ImportError:
+            print("WARNING: pefile missing - Qt bundle NOT checked for "
+                  "self-containment")
+            return
+
+        def reader(f):
+            pe = pefile.PE(f, fast_load=True)
+            pe.parse_data_directories(directories=[
+                pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"]])
+            names = [e.dll.decode("ascii", "ignore")
+                     for e in getattr(pe, "DIRECTORY_ENTRY_IMPORT", [])]
+            pe.close()
+            return [n for n in names if n.lower().startswith("qt6")]
+
+        suffix = ".dll"
+    else:
+        print("WARNING: no dependency reader for this platform - Qt bundle "
+              "NOT checked for self-containment")
+        return
     problems = []
+    lower_have = {h.lower() for h in have}
     for dest, src, _ in binaries:
         u = src.replace("\\", "/")
         # Everything PyQt6 ships, not just the Qt6 tree: the Python extension
         # modules link Qt libraries too. `PyQt6/QtWebEngineWidgets.abi3.so` needs
         # libQt6OpenGLWidgets, which the allowlist missed because the pattern
         # demanded "OpenGL." exactly - so the host's copy was loaded instead.
-        if "/PyQt6/" not in u or not (".so" in os.path.basename(u)):
+        if "/PyQt6/" not in u or suffix not in os.path.basename(u).lower():
             continue
-        out = subprocess.run(["ldd", src], capture_output=True, text=True,
-                             env=env).stdout
-        for lib in sorted(set(re.findall(r"libQt6[A-Za-z]+\.so\.6", out))):
-            if lib not in have:
-                problems.append(f"  {os.path.relpath(dest)} needs {lib}")
+        try:
+            needs = reader(src)
+        except Exception as exc:                 # unreadable binary is not a verdict
+            print(f"WARNING: cannot read dependencies of {dest}: {exc}")
+            continue
+        for lib in sorted(set(needs)):
+            if lib.lower() not in lower_have:
+                problems.append(f"  {dest} needs {lib}")
     if problems:
         raise SystemExit(
-            "Qt bundle is not self-contained - these plugins would load the "
-            "host's Qt (and abort whenever it differs):\n" + "\n".join(problems)
+            "Qt bundle is not self-contained - these would load the host's "
+            "Qt (and abort whenever it differs):\n" + "\n".join(problems)
             + "\nAdd the library to _qt_lib_keep, or drop the plugin in _qt_keep."
         )
 
 
-_check_qt_plugins_are_self_contained(a.binaries)
+_check_qt_bundle_is_self_contained(a.binaries)
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
