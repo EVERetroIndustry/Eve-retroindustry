@@ -269,18 +269,63 @@ window.renderContractItems = function (box, data, price) {
     return;
   }
   // Where each line's value came from. Jita sell needs no explanation; the other
-  // two do, because a titan has no Jita price and its number is a contract or an
-  // index value - which is a different kind of claim.
-  const TAG = {
-    contract: ' <span class="text-info" title="Cheapest single-item contract we have indexed - a titan is never on a Jita sell order">c</span>',
-    estimate: ' <span class="text-warning" title="CCP adjusted price - an index value, not an offer">est</span>',
+  // two do, because the number is a contract or an index value, which is a
+  // different kind of claim - and the only reason either is used is that THIS item
+  // has no Jita sell order. So the tooltip names the item on the line: phrased as
+  // a general example ("a titan is never on a Jita sell order") it read as a
+  // statement about whatever the reader was looking at, and for a Wyvern that was
+  // simply false.
+  const tagFor = it => {
+    const what = escHtml(it.name || 'this item');
+    if (it.price_source === 'contract') {
+      // Two different reasons a contract sets the price, and saying which one is the
+      // whole point: either the market does not carry the item, or it does and the
+      // contract is cheaper - in the second case quoting Jita would overstate the
+      // pile and make every contract look like a bargain.
+      // Three different reasons, and the copy is its own case: saying a copy "is
+      // not on a Jita sell order" would be false - the ORIGINAL of that blueprint
+      // usually is, at a hundred times the price, which is the whole problem.
+      const why = it.is_bpc
+        ? 'holding a copy - a copy is never on the market at any price, and copies'
+          + ' differ in runs and ME/TE, so this is the cheapest copy on offer'
+          + ' rather than a matching one'
+        : (it.jita_sell
+            ? `- cheaper than ${escHtml(iskShort(it.jita_sell))} on a Jita sell order`
+            : `- ${what} is not on a Jita sell order`);
+      return ' <span class="text-info" title="Cheapest single-item contract we have'
+        + ` indexed ${why}">c</span>`;
+    }
+    if (it.price_source === 'estimate') {
+      return ' <span class="text-warning" title="CCP adjusted price for '
+        + what + ' - an index value, not an offer">est</span>';
+    }
+    return '';
   };
+  // A copy is a different thing from the original it was made from, even though
+  // ESI gives both the same type_id: it cannot be sold on the market at all, and
+  // its runs and ME/TE are what it is worth. Say which one this is.
+  const bpcBadge = it => {
+    if (!it.is_bpc) return '';
+    const bits = [];
+    if (it.me != null && it.te != null) bits.push(`${it.me}/${it.te}`);
+    if (it.runs) bits.push(it.runs + (it.runs === 1 ? ' run' : ' runs'));
+    const detail = bits.length ? ' ' + bits.join(' &middot; ') : '';
+    return ' <span class="badge badge-bpc" style="font-size:.6rem"'
+      + ' title="Blueprint copy - never on the market, so it is never worth the'
+      + ' original\'s price">BPC' + detail + '</span>';
+  };
+  const noPrice = it => ' <span class="text-warning" title="'
+    + (it.copy_unknown
+        ? 'We have not read yet whether this blueprint is a copy or the original,'
+          + ' and the two are worth entirely different money - so nothing is claimed'
+        : 'Nothing we have - no Jita sell order, no single-item contract, no'
+          + ' adjusted price') + '">&middot; no price</span>';
   const line = it => `<div class="${it.included === false ? 'text-danger' : ''}">`
     + `${it.included === false ? '&#8617; ' : ''}${(it.quantity || 0).toLocaleString()}&times; `
-    + `${escHtml(it.name)}${it.is_bpc ? ' <span class="badge badge-bpc" style="font-size:.6rem">BPC</span>' : ''}`
+    + `${escHtml(it.name)}${bpcBadge(it)}`
     + (it.value ? ` <span class="text-muted">&middot; ${iskShort(it.value)}</span>`
-                  + (TAG[it.price_source] || '')
-                : ' <span class="text-warning">&middot; no price</span>')
+                  + tagFor(it)
+                : noPrice(it))
     + '</div>';
   let html = items.map(line).join('');
   const a = data && data.appraisal;
@@ -288,10 +333,13 @@ window.renderContractItems = function (box, data, price) {
     // With something unpriced the total is a floor, not the value - say so in the
     // number itself, because the comparison underneath is only as good as this.
     const atLeast = a.unpriced ? '&ge; ' : '';
-    const parts = [`<span class="fw-semibold">Jita sell</span> <b>${atLeast}${iskShort(a.net)}</b>`];
-    // Say when the total is not purely a Jita number.
+    const parts = [`<span class="fw-semibold" title="What the same items would cost the`
+      + ` cheapest way we can see: Jita sell orders and single-item contracts we have`
+      + ` indexed, whichever is lower">Cheapest we see</span>`
+      + ` <b>${atLeast}${iskShort(a.net)}</b>`];
+    // Say when the total is not purely a market number.
     const mix = [];
-    if (a.counts.contract) mix.push(`${a.counts.contract} from contracts`);
+    if (a.counts.contract) mix.push(`${a.counts.contract} priced off contracts`);
     if (a.counts.estimate) mix.push(`${a.counts.estimate} estimated`);
     if (mix.length) parts.push(`<span class="text-muted">incl. ${mix.join(', ')}</span>`);
     const p = Number(price) || 0;

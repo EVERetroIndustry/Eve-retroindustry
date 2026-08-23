@@ -6215,11 +6215,15 @@ async def api_contract_items(request: Request, contract_id: int,
             names = {r[0]: r[1] for r in conn.execute(
                 f"SELECT type_id, name FROM sde_types WHERE type_id IN ({ph})", list(tids)
             ).fetchall()}
+        # This endpoint has no is_blueprint_copy: ESI marks a copy with
+        # raw_quantity == -2 (-1 = a non-stackable original). It matters, because a
+        # copy can never be on the market, so it is never worth the original's price.
         out = [{
             "type_id":  it.get("type_id"),
             "name":     names.get(it.get("type_id"), f"#{it.get('type_id')}"),
             "quantity": it.get("quantity", 0),
             "included": it.get("is_included", True),
+            "is_bpc":   it.get("raw_quantity") == -2,
         } for it in items]
         # Worth of the pile, from our own price cache - the Janice question, answered
         # locally and comparable to the contract price right next to it.
@@ -6811,6 +6815,20 @@ async def api_public_index(request: Request, region_id: int):
 async def api_public_contract_items(request: Request, contract_id: int):
     conn = get_conn()
     try:
+        # Contracts indexed before the app read blueprint copy flags cannot be
+        # appraised honestly: a copy and the original share a type_id and are worth
+        # wildly different money. Re-reading all of them would be 27k ESI calls, so
+        # the one being opened is re-read now - a single public call, no token
+        # bucket, and it fixes that contract for good.
+        if contracts_helper.public_items_need_reread(conn, contract_id):
+            try:
+                async with esi_client() as client:
+                    fresh = await contracts_api.fetch_public_contract_items(
+                        client, contract_id)
+                if fresh:
+                    contracts_helper.store_public_items(conn, {contract_id: fresh})
+            except Exception:
+                pass                 # the flags stay unknown and say so
         items = contracts_helper.get_contract_items(conn, contract_id)
         return {"items": items,
                 "appraisal": contracts_helper.appraise_items(conn, items, contract_id)}

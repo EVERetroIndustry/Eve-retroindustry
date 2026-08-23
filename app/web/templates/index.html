@@ -213,7 +213,7 @@
         + `style="font-size:.72rem;white-space:nowrap;flex-shrink:0">${esc(t.remaining)}</span>`;
       if (t.sp_per_hour_str) {
         h += `<span class="text-muted" style="font-size:.72rem;white-space:nowrap;flex-shrink:0;opacity:.8" `
-          + `title="Skillpoints per hour for the skill in training (reflects this character's attributes, implants and boosters)">`
+          + `title="Skillpoints per hour for the skill in training, read off the queue's own timing - so it is the rate CCP last computed for this character, attributes, implants and boosters included">`
           + `<span style="opacity:.45">·</span> ${esc(t.sp_per_hour_str)} SP/h</span>`;
       }
     } else {

@@ -40,11 +40,20 @@ def ensure_public_contract_tables(conn: sqlite3.Connection) -> None:
             issuer_id         INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_pc_region ON public_contracts(region_id);
+        -- is_bpc/runs/me/te: this endpoint says outright whether a blueprint is a
+        -- COPY, and with what runs and ME/TE. That is not a detail - a copy cannot
+        -- be sold on the market at all, so the original's price (a Wyvern Blueprint
+        -- BPO is ~18b) is never its value. NULL = indexed before we read the flag,
+        -- which is only ambiguous for blueprints; nothing else can be a copy.
         CREATE TABLE IF NOT EXISTS public_contract_items (
             contract_id  INTEGER,
             type_id      INTEGER,
             quantity     INTEGER,
-            is_included  INTEGER
+            is_included  INTEGER,
+            is_bpc       INTEGER,
+            runs         INTEGER,
+            me           INTEGER,
+            te           INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_pci_contract ON public_contract_items(contract_id);
         CREATE INDEX IF NOT EXISTS idx_pci_type ON public_contract_items(type_id);
@@ -74,6 +83,15 @@ def ensure_public_contract_tables(conn: sqlite3.Connection) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(public_contracts)").fetchall()}
     if "system_id" not in cols:
         conn.execute("ALTER TABLE public_contracts ADD COLUMN system_id INTEGER")
+    # Blueprint copy flags, added later. Existing rows keep NULL rather than being
+    # thrown away: over half of the indexed contracts hold a blueprint (measured:
+    # 27 133 of 48 029), so re-reading them all would cost hours of ESI calls. A
+    # blueprint row with NULL is treated as "we do not know" and re-read when that
+    # one contract is actually opened.
+    icols = {r[1] for r in conn.execute("PRAGMA table_info(public_contract_items)").fetchall()}
+    for col in ("is_bpc", "runs", "me", "te"):
+        if col not in icols:
+            conn.execute(f"ALTER TABLE public_contract_items ADD COLUMN {col} INTEGER")
     conn.commit()
 
 
@@ -346,7 +364,7 @@ async def fill_public_items(conn: sqlite3.Connection, budget: int = 12000,
             if len(batch) >= 300:
                 flush = dict(batch)
                 batch.clear()
-                _store_public_items(conn, flush)
+                store_public_items(conn, flush)
                 stored[0] += len(flush)
 
     async with esi_client(timeout=20) as client:
@@ -358,13 +376,13 @@ async def fill_public_items(conn: sqlite3.Connection, budget: int = 12000,
             if batch:
                 flush = dict(batch)
                 batch.clear()
-                _store_public_items(conn, flush)
+                store_public_items(conn, flush)
                 stored[0] += len(flush)
             if gone:
                 _mark_public_absent(conn, gone)
                 gone.clear()
     if batch:
-        _store_public_items(conn, batch)
+        store_public_items(conn, batch)
         stored[0] += len(batch)
     if gone:
         _mark_public_absent(conn, gone)
@@ -398,21 +416,39 @@ def clear_public_absent(conn: sqlite3.Connection) -> int:
     return n
 
 
-def _store_public_items(conn: sqlite3.Connection, items_by_cid: dict[int, list[dict]]) -> None:
-    rows = []
-    for cid, items in items_by_cid.items():
-        for it in items or []:
-            if it.get("type_id"):
-                rows.append((cid, it["type_id"], it.get("quantity") or 0,
-                             1 if it.get("is_included", True) else 0))
+_PUBLIC_ITEM_COLS = "contract_id, type_id, quantity, is_included, is_bpc, runs, me, te"
+
+
+def _public_item_row(cid: int, it: dict) -> tuple:
+    """One public_contract_items row.
+
+    `is_blueprint_copy` is what makes a copy priceable honestly, and `runs` is a
+    second witness for it: ESI documents runs as "remaining runs if the blueprint
+    is a copy, -1 if it is an original", so a positive runs count means copy even
+    if the flag were ever missing. An original stores runs NULL, not -1, so the
+    column reads as "runs this copy has left" and nothing else.
+    """
+    runs = it.get("runs")
+    runs = int(runs) if isinstance(runs, (int, float)) and runs > 0 else None
+    is_copy = bool(it.get("is_blueprint_copy")) or runs is not None
+    return (cid, it["type_id"], it.get("quantity") or 0,
+            1 if it.get("is_included", True) else 0,
+            1 if is_copy else 0, runs,
+            it.get("material_efficiency"), it.get("time_efficiency"))
+
+
+def store_public_items(conn: sqlite3.Connection, items_by_cid: dict[int, list[dict]]) -> None:
+    rows = [_public_item_row(cid, it)
+            for cid, items in items_by_cid.items()
+            for it in items or [] if it.get("type_id")]
     if not rows:
         return
     cids = list(items_by_cid)
     ph = ",".join("?" * len(cids))
     conn.execute(f"DELETE FROM public_contract_items WHERE contract_id IN ({ph})", cids)
     conn.executemany(
-        "INSERT INTO public_contract_items (contract_id, type_id, quantity, is_included)"
-        " VALUES (?,?,?,?)", rows)
+        f"INSERT INTO public_contract_items ({_PUBLIC_ITEM_COLS})"
+        " VALUES (?,?,?,?,?,?,?,?)", rows)
     conn.commit()
 
 
@@ -461,16 +497,13 @@ def _store(conn: sqlite3.Connection, region_id: int, contracts: list[dict],
           c.get("start_location_id"), c.get("end_location_id"), c.get("issuer_id"))
          for c in contracts],
     )
-    item_rows = []
-    for cid, items in items_by_cid.items():
-        for it in items:
-            if it.get("type_id"):
-                item_rows.append((cid, it["type_id"], it.get("quantity", 0),
-                                  1 if it.get("is_included", True) else 0))
+    item_rows = [_public_item_row(cid, it)
+                 for cid, items in items_by_cid.items()
+                 for it in items or [] if it.get("type_id")]
     if item_rows:
         conn.executemany(
-            "INSERT INTO public_contract_items (contract_id, type_id, quantity, is_included) "
-            "VALUES (?,?,?,?)", item_rows)
+            f"INSERT INTO public_contract_items ({_PUBLIC_ITEM_COLS}) "
+            "VALUES (?,?,?,?,?,?,?,?)", item_rows)
     conn.execute(
         "INSERT OR REPLACE INTO public_contract_meta (region_id, indexed_at, contract_count) "
         "VALUES (?,?,?)", (region_id, time.time(), len(contracts)))
@@ -626,13 +659,26 @@ def search_public_contracts(conn: sqlite3.Connection, region_id: int | None = No
     return [dict(zip(cols, r)) for r in rows], total
 
 
+def _original_only(conn: sqlite3.Connection, type_id: int, alias: str) -> str:
+    """SQL condition keeping COPIES out of a product's contract price.
+
+    These lookups answer "what does this market item go for on a contract", and the
+    item in question is the original: a copy is not the same product and sells for a
+    fraction of it. For a blueprint an unread flag is not good enough (it could be
+    either), for anything else NULL can only mean original.
+    """
+    if type_id in _blueprint_types(conn, [type_id]):
+        return f"AND {alias}.is_bpc = 0"
+    return f"AND COALESCE({alias}.is_bpc, 0) = 0"
+
+
 def best_contract_price(conn: sqlite3.Connection, region_id: int, type_id: int) -> dict | None:
     """Cheapest price/unit of a product from public item_exchange contracts in the region.
     Prefers single-item contracts (clean price/unit); if there is none, it takes a
     bundle (multiple items) and marks is_bundle=True (the price/unit is then only
     indicative - it also covers the other items in the bundle). Returns None if the product is nowhere."""
     ensure_public_contract_tables(conn)
-    rows = conn.execute("""
+    rows = conn.execute(f"""
         SELECT c.contract_id, c.price, pi.quantity,
                (SELECT COUNT(*) FROM public_contract_items x
                  WHERE x.contract_id = c.contract_id AND x.is_included = 1) AS incl
@@ -640,6 +686,7 @@ def best_contract_price(conn: sqlite3.Connection, region_id: int, type_id: int) 
         JOIN public_contract_items pi ON pi.contract_id = c.contract_id
         WHERE c.region_id = ? AND c.type = 'item_exchange' AND c.price > 0
           AND pi.type_id = ? AND pi.is_included = 1
+          {_original_only(conn, type_id, "pi")}
     """, (region_id, type_id)).fetchall()
     singles: list[tuple[float, int]] = []
     bundles: list[tuple[float, int]] = []
@@ -662,11 +709,33 @@ def best_contract_price(conn: sqlite3.Connection, region_id: int, type_id: int) 
 def get_contract_items(conn: sqlite3.Connection, contract_id: int) -> list[dict]:
     ensure_public_contract_tables(conn)
     rows = conn.execute(
-        "SELECT i.type_id, i.quantity, i.is_included, COALESCE(t.name, '#'||i.type_id) "
+        "SELECT i.type_id, i.quantity, i.is_included, COALESCE(t.name, '#'||i.type_id),"
+        " i.is_bpc, i.runs, i.me, i.te "
         "FROM public_contract_items i LEFT JOIN sde_types t ON t.type_id = i.type_id "
         "WHERE i.contract_id=?", (contract_id,)).fetchall()
-    return [{"type_id": r[0], "quantity": r[1], "included": bool(r[2]), "name": r[3]}
+    # A blueprint row stored before the copy flag existed is genuinely unknown, and
+    # the two possibilities are worth wildly different money - so it is marked, not
+    # guessed. See public_items_need_reread(): opening such a contract re-reads it.
+    bps = _blueprint_types(conn, [r[0] for r in rows])
+    return [{"type_id": r[0], "quantity": r[1], "included": bool(r[2]), "name": r[3],
+             "is_bpc": bool(r[4]), "copy_unknown": r[4] is None and r[0] in bps,
+             "runs": r[5], "me": r[6], "te": r[7]}
             for r in rows]
+
+
+def public_items_need_reread(conn: sqlite3.Connection, contract_id: int) -> bool:
+    """True when this contract holds a blueprint we never read the copy flag for.
+
+    Cheap enough to check on every open, and one public ESI call fixes it for good
+    (the endpoint has no token bucket). That is what keeps the migration free: the
+    27k older contracts holding a blueprint are repaired one at a time, when and
+    only when somebody actually looks at one.
+    """
+    ensure_public_contract_tables(conn)
+    rows = conn.execute(
+        "SELECT type_id FROM public_contract_items WHERE contract_id=? AND is_bpc IS NULL",
+        (contract_id,)).fetchall()
+    return bool(rows) and bool(_blueprint_types(conn, [r[0] for r in rows]))
 
 
 # ── Alliance contracts ────────────────────────────────────────────────────────
@@ -1177,8 +1246,28 @@ def search_alliance_contracts(conn: sqlite3.Connection, alliance_id: int, *,
     return [dict(zip(cols, r)) for r in rows], total
 
 
+def _blueprint_types(conn: sqlite3.Connection, type_ids) -> set[int]:
+    """Which of these type_ids are blueprints, per the SDE's own list.
+
+    A blueprint's type_id says nothing about whether the item in a contract is the
+    original or a copy - both share it - and only for a blueprint is a missing copy
+    flag ambiguous, because nothing else can be a copy.
+    """
+    ids = sorted({int(t) for t in type_ids if t})
+    if not ids:
+        return set()
+    ph = ",".join("?" * len(ids))
+    try:
+        return {int(r[0]) for r in conn.execute(
+            f"SELECT blueprint_type_id FROM sde_blueprints"
+            f" WHERE blueprint_type_id IN ({ph})", ids).fetchall()}
+    except sqlite3.OperationalError:
+        return set()               # SDE not loaded yet
+
+
 def contract_unit_prices(conn: sqlite3.Connection, type_ids,
-                         exclude_contract_id: int | None = None
+                         exclude_contract_id: int | None = None,
+                         copies: bool = False
                          ) -> dict[int, tuple[float, str, int]]:
     """{type_id: (cheapest price per unit, "alliance"|"public")} from SINGLE-item
     contracts we have indexed.
@@ -1195,6 +1284,12 @@ def contract_unit_prices(conn: sqlite3.Connection, type_ids,
     `exclude_contract_id` is available for callers that want a reference price from
     somewhere else, but the appraisal deliberately does NOT use it - excluding self
     made the same hull worth 42.5b in one row and 46.5b in another.
+
+    `copies` picks which of the two things sharing a blueprint type_id is being
+    priced. They are never interchangeable: a BPO is a market item, a BPC cannot be
+    on the market at all, and a "10/20" pile of copies went out at 490-650M while
+    the original asks ~18b. So a copy is only ever priced from contracts holding a
+    COPY, and an original only from contracts holding an original.
     """
     ids = sorted({int(t) for t in type_ids if t})
     if not ids:
@@ -1203,6 +1298,19 @@ def contract_unit_prices(conn: sqlite3.Connection, type_ids,
     ensure_public_contract_tables(conn)
     ph = ",".join("?" * len(ids))
     out: dict[int, tuple[float, str]] = {}
+    if copies:
+        copy_cond, copy_args = "i.is_bpc = 1", ()
+    else:
+        # NULL is only ambiguous for a blueprint (public rows indexed before the flag
+        # existed); for anything else it can only mean "original", because nothing
+        # else can be a copy.
+        plain = sorted(set(ids) - _blueprint_types(conn, ids))
+        if plain:
+            copy_cond = ("(i.is_bpc = 0 OR (i.is_bpc IS NULL AND i.type_id IN ("
+                         + ",".join("?" * len(plain)) + ")))")
+            copy_args = tuple(plain)
+        else:
+            copy_cond, copy_args = "i.is_bpc = 0", ()
     queries = (
         ("alliance", f"""
             SELECT i.type_id, c.price * 1.0 / i.quantity AS unit, c.contract_id
@@ -1210,7 +1318,7 @@ def contract_unit_prices(conn: sqlite3.Connection, type_ids,
             JOIN alliance_contract_items i ON i.contract_id = c.contract_id
             WHERE c.type = 'item_exchange' AND c.status = 'outstanding' AND c.price > 0
               AND i.is_included = 1 AND i.quantity > 0 AND i.type_id IN ({ph})
-              AND c.contract_id != ?
+              AND c.contract_id != ? AND {copy_cond}
               AND (SELECT COUNT(*) FROM alliance_contract_items x
                     WHERE x.contract_id = c.contract_id AND x.is_included = 1) = 1
             ORDER BY unit"""),
@@ -1228,7 +1336,7 @@ def contract_unit_prices(conn: sqlite3.Connection, type_ids,
             LEFT JOIN sov_map_cache s ON s.system_id = c.system_id
             WHERE c.type = 'item_exchange' AND c.price > 0
               AND i.is_included = 1 AND i.quantity > 0 AND i.type_id IN ({ph})
-              AND c.contract_id != ?
+              AND c.contract_id != ? AND {copy_cond}
               AND c.system_id IS NOT NULL AND s.alliance_id IS NULL
               AND (SELECT COUNT(*) FROM public_contract_items x
                     WHERE x.contract_id = c.contract_id AND x.is_included = 1) = 1
@@ -1236,7 +1344,8 @@ def contract_unit_prices(conn: sqlite3.Connection, type_ids,
     )
     for source, sql in queries:
         try:
-            rows = conn.execute(sql, (*ids, exclude_contract_id or -1)).fetchall()
+            rows = conn.execute(
+                sql, (*ids, exclude_contract_id or -1, *copy_args)).fetchall()
         except sqlite3.OperationalError:
             continue                      # that index has never been built
         for tid, price, from_cid in rows:
@@ -1262,35 +1371,80 @@ def _adjusted_prices(conn: sqlite3.Connection, type_ids) -> dict[int, float]:
     return {int(t): float(v) for t, v in rows if v and v > 0}
 
 
+# A contract asking less than a tenth of the market price for the one thing in it
+# is not a price signal. Below this fraction of the Jita sell price the contract is
+# ignored as a reference (it is still shown and searchable like any other).
+_BAIT_FLOOR = 0.10
+
+
 def appraise_items(conn: sqlite3.Connection, items: list[dict],
                    contract_id: int | None = None) -> dict:
-    """Value a contract's contents from the app's own data, best source first.
+    """Value a contract's contents from the app's own data: what it would cost to
+    get the same items the cheapest way we can see.
 
     This is the Janice question answered locally - no third-party key, no network -
-    and the point of the fallback chain is the things the market cannot hold:
+    and the number it produces is a BUYER's number, because that is what it is put
+    next to: the contract's asking price. So the reference is the cheapest real
+    offer we know of, not the market by default:
 
-      1. **Jita sell** - a real instant-buy price.
-      2. **Contract price** - the cheapest single-item contract we have indexed
-         (alliance or public). A titan or a supercarrier is never on a Jita sell
-         order; it is on a contract, and that IS its price.
-      3. **CCP adjusted price** - an index value, not an offer. Labelled as an
+      1. **The lower of a Jita sell order and the cheapest single-item contract we
+         have indexed** (alliance or public). Reading the market first was wrong in
+         both directions: a titan or a supercarrier is never on a Jita sell order at
+         all, and a Thanatos that Jita sells at 2.70b sat on contracts in C-N at
+         2.18b - quoting Jita there made every one of those contracts look like a
+         20 % bargain when the real alternative was cheaper than all of them.
+      2. **CCP adjusted price** - an index value, not an offer. Labelled as an
          estimate so nobody mistakes it for a quote. (Measured: a titan has no Jita
          sell, a ~450M lowball buy order, and an adjusted price of ~73b - only the
          last is in the right universe.)
-      4. Nothing: counted and named, never silently valued at zero.
+      3. Nothing: counted and named, never silently valued at zero.
+
+    The contract itself is never excluded from the comparison - excluding self made
+    the same hull worth 42.5b in one row and 46.5b in another. When this contract IS
+    the cheapest offer, `self_priced` says so and the caller stops pretending there
+    is a margin to report.
 
     Items the contract ASKS FOR (is_included = 0) are valued separately: accepting
     such a contract means handing those over, so they are a cost, not a gain.
+
+    BLUEPRINT COPIES take none of that chain. A copy shares its type_id with the
+    original, but it is a different thing: it cannot be listed on the market, so the
+    Jita sell price, the Jita buy price and CCP's adjusted price all describe the
+    ORIGINAL and none of them is a statement about the copy. Valuing a pile of
+    "10/20" copies at the BPO price turned a 600M contract into 83.64b (+13841 %),
+    which is the kind of number that discredits every other number on the screen. A
+    copy is therefore priced only from contracts that also hold a copy, and a
+    blueprint whose copy flag we never read is left unpriced rather than guessed.
     """
     from app.web.prices_helper import get_cached_jita_prices
 
     ids = sorted({int(i["type_id"]) for i in items if i.get("type_id")})
-    jita = get_cached_jita_prices(conn, ids) if ids else {}
-    need_fallback = [t for t in ids if (jita.get(t) or (None, None))[0] is None]
-    # No exclusion on purpose: one price per hull, everywhere.
-    from_contracts = contract_unit_prices(conn, need_fallback) if need_fallback else {}
-    still = [t for t in need_fallback if t not in from_contracts]
+    bps = _blueprint_types(conn, ids)
+
+    def _kind(it) -> str:
+        """"copy", "unknown", or "original" - for anything but a blueprint the last."""
+        tid = int(it.get("type_id") or 0)
+        if it.get("is_bpc"):
+            return "copy"
+        if tid in bps and (it.get("copy_unknown") or it.get("is_bpc") is None):
+            return "unknown"
+        return "original"
+
+    kinds = {id(it): _kind(it) for it in items}
+    plain_ids = sorted({int(i["type_id"]) for i in items
+                        if i.get("type_id") and kinds[id(i)] == "original"})
+    copy_ids = sorted({int(i["type_id"]) for i in items
+                       if i.get("type_id") and kinds[id(i)] == "copy"})
+    jita = get_cached_jita_prices(conn, plain_ids) if plain_ids else {}
+    # Asked for EVERY item, not only the ones the market does not carry: a contract
+    # can undercut Jita, and then the contract price is what the item costs.
+    # (Measured: 50 of the most-contracted types answer in ~210 ms, and this runs
+    # once when a contract is expanded.)
+    from_contracts = contract_unit_prices(conn, plain_ids) if plain_ids else {}
+    still = [t for t in plain_ids
+             if (jita.get(t) or (None, None))[0] is None and t not in from_contracts]
     estimates = _adjusted_prices(conn, still) if still else {}
+    copy_prices = contract_unit_prices(conn, copy_ids, copies=True) if copy_ids else {}
 
     out = {"value": 0.0, "asked": 0.0, "by_source": {"jita": 0.0, "contract": 0.0,
                                                      "estimate": 0.0},
@@ -1300,21 +1454,38 @@ def appraise_items(conn: sqlite3.Connection, items: list[dict],
     for it in items:
         tid = int(it.get("type_id") or 0)
         qty = it.get("quantity") or 0
-        sell, buy = jita.get(tid, (None, None))
+        kind = kinds[id(it)]
+        # A copy has no market side at all, so it gets no buy price either.
+        sell, buy = jita.get(tid, (None, None)) if kind == "original" else (None, None)
         it["buy"] = buy
-        unit, source = None, None
-        if sell is not None:
-            unit, source = sell, "jita"
-        elif tid in from_contracts:
-            unit, source, from_cid = from_contracts[tid]
-            source = "contract"
-            if contract_id and from_cid == int(contract_id):
-                # This very contract is the cheapest offer of that item. Value it the
-                # same as anywhere else and let the caller say so, rather than
-                # comparing the contract against itself.
-                out["self_priced"] += 1
-        elif tid in estimates:
-            unit, source = estimates[tid], "estimate"
+        unit, source, from_cid = None, None, None
+        if kind == "unknown":
+            it["copy_unknown"] = True                 # nothing is claimed
+        elif kind == "copy":
+            if tid in copy_prices:
+                unit, source, from_cid = copy_prices[tid][0], "contract", copy_prices[tid][2]
+        else:
+            it["jita_sell"] = sell
+            offers = []
+            if sell is not None:
+                offers.append((sell, "jita", None))
+            if tid in from_contracts:
+                price, _, ccid = from_contracts[tid]
+                # A single-item contract far under the market price is bait or a
+                # mistake often enough that it must not become the reference for
+                # everything else; with no market price there is nothing to check
+                # it against, which is exactly the capital case we want.
+                if sell is None or price >= sell * _BAIT_FLOOR:
+                    offers.append((price, "contract", ccid))
+            if offers:
+                unit, source, from_cid = min(offers, key=lambda o: o[0])
+            elif tid in estimates:
+                unit, source = estimates[tid], "estimate"
+        if source == "contract" and contract_id and from_cid == int(contract_id):
+            # This very contract is the cheapest offer of that item. Value it the
+            # same as anywhere else and let the caller say so, rather than
+            # comparing the contract against itself.
+            out["self_priced"] += 1
         it["unit"] = unit
         it["price_source"] = source
         it["value"] = unit * qty if unit is not None else None
@@ -1360,6 +1531,7 @@ def best_alliance_contract_price(conn: sqlite3.Connection, alliance_ids,
         WHERE c.alliance_id IN ({ph}) AND c.type = 'item_exchange'
           AND c.status = 'outstanding' AND c.price > 0
           AND i.type_id = ? AND i.is_included = 1
+          {_original_only(conn, type_id, "i")}
     """, (*ids, type_id)).fetchall()
     singles: list[tuple] = []
     bundles: list[tuple] = []
