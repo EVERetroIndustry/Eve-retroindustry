@@ -41,6 +41,47 @@ jobs:
           & "./dist/EVE_Retroindustry/EVE_Retroindustry.exe" --smoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # The updater is Windows-only code that cannot be exercised on Linux: waiting
+      # on a process through OpenProcess/WaitForSingleObject, the detached relaunch,
+      # and the registry touch. It replaced a batch file that antivirus flagged, so
+      # it has to be right - run it for real against throwaway directories.
+      - name: Smoke-test the update path
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $src = Join-Path $env:RUNNER_TEMP "upd-src"
+          $dst = Join-Path $env:RUNNER_TEMP "upd-dst"
+          New-Item -ItemType Directory -Force $src, $dst | Out-Null
+          Copy-Item -Recurse -Force dist/EVE_Retroindustry/* $src
+          # User data lives next to a portable install and must survive; the old
+          # binary must be replaced.
+          Set-Content (Join-Path $dst "eve_cache.db") "keep me"
+          Set-Content (Join-Path $dst "EVE_Retroindustry.exe") "old"
+          # Something to wait for that exits on its own - the point is that nothing
+          # gets killed. EVE_SMOKE makes the relaunched copy check itself and exit
+          # instead of sitting on the runner with a server and a window.
+          $env:EVE_SMOKE = "1"
+          $sleeper = Start-Process -PassThru powershell -ArgumentList '-Command','Start-Sleep -Seconds 5'
+          $t0 = Get-Date
+          & (Join-Path $src "EVE_Retroindustry.exe") --apply-update --src $src --dst $dst `
+              --wait-pid $sleeper.Id --version 9.9.9
+          $code = $LASTEXITCODE
+          $waited = ((Get-Date) - $t0).TotalSeconds
+          Write-Host "updater exit=$code waited=$([math]::Round($waited,1))s"
+          if ($code -ne 0) { Write-Error "updater failed"; exit 1 }
+          if ($waited -lt 3) { Write-Error "did not wait for the old process"; exit 1 }
+          if (-not $sleeper.HasExited) { Write-Error "old process still running"; exit 1 }
+          $exe = Get-Item (Join-Path $dst "EVE_Retroindustry.exe")
+          if ($exe.Length -lt 100000) { Write-Error "binary was not replaced"; exit 1 }
+          if ((Get-Content (Join-Path $dst "eve_cache.db")) -ne "keep me") {
+            Write-Error "user data was clobbered"; exit 1 }
+          if (Get-ChildItem $dst -Recurse -Filter "update.bat") {
+            Write-Error "a helper script was written"; exit 1 }
+          # Never CREATE the uninstall entry - a portable copy must not grow one.
+          $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{7F3A9C42-5D18-4B6E-9E2A-1C8B0F4D7A63}_is1"
+          if (Test-Path $key) { Write-Error "uninstall key was created"; exit 1 }
+          Write-Host "update path OK"
+
       - name: Create ZIP (portable)
         shell: pwsh
         run: Compress-Archive -Path dist/EVE_Retroindustry -DestinationPath EVE_Retroindustry-${{ github.ref_name }}-win64-portable.zip

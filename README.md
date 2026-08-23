@@ -79,7 +79,7 @@ The installer sets the app up **per user** (into `%LOCALAPPDATA%\Programs`), so 
 
 No Python and no dependencies to install.
 
-> **Note:** the app is unsigned, so Windows SmartScreen may warn you the first time you run it - click *More info → Run anyway*. Nothing hides this short of a code-signing certificate, which isn't practical for a hobby project; the releases publish SHA256 checksums so you can verify what you downloaded.
+> **Note:** the app is unsigned, so Windows SmartScreen may warn you the first time you run it - click *More info → Run anyway*. Nothing hides this short of a code-signing certificate, which isn't practical for a hobby project; the releases publish SHA256 checksums so you can verify what you downloaded The same lack of a signature means an antivirus may occasionally object on heuristics rather than on anything it actually found - a build with no signature has no reputation to go on, and an unsigned binary's reputation restarts with every release because it is tied to the file's hash. If yours does object, the checksums are how you check that what you have is what was built.
 
 ### Android (experimental)
 
