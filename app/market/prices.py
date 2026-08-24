@@ -36,11 +36,15 @@ TRADE_HUBS: dict[int, dict] = {
 
 _JITA_SEM = asyncio.Semaphore(10)
 # The 7-day history is fetched per-type (no bulk endpoint), so it is the dominant
-# part of a refresh (~19k calls). Concurrency 30 = ~2.5x faster than 10 (515 vs
-# 204 req/s measured), while staying safely under the ESI rate limit - from ~45
-# concurrent, ESI starts returning HTTP 420 (error-limit), which is slower AND
-# damages the shared error budget of the whole app. 30 keeps zero 420s with margin.
-_HIST_SEM = asyncio.Semaphore(30)
+# part of a refresh (~19k calls).
+# Concurrency for market history. 30 used to be the saturation point (measured
+# 2026-08: 496 req/s at 30, worse above), but ESI has since started rate-limiting
+# this endpoint: re-measured 2026-08-24, concurrency 30 runs at ~460 req/s and
+# then answers 429 after ~6 000 requests, and each 429 parks the whole group for
+# a minute - which is what turned a custom-station load in a fresh region into
+# "loads a bit, hangs, loads a bit". At 10 the same sweep sustained 226 req/s for
+# 7 000 requests with ZERO 429s. Slower per second, several times faster overall.
+_HIST_SEM = asyncio.Semaphore(10)
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +303,38 @@ def _parse_http_date(v: str | None) -> float:
         return parsedate_to_datetime(v).timestamp()
     except Exception:
         return 0.0
+
+
+def _types_with_market_history(conn, type_ids: list[int]) -> list[int]:
+    """Drop type_ids the history endpoint cannot answer for.
+
+    Measured against the live endpoint (Cloud Ring, 2026-08-24): of 60 sampled
+    types with no market group or published = 0, **60 answered 400 or 404**; of 60
+    ordinary market types, **none did**. A custom-station load sweeps every cached
+    type - 379 of the 19 812 here are such types - so a cold sweep fired ~379
+    GUARANTEED errors against an error budget of 100 per ~60 s window. Our own
+    error-limit governor then froze ALL ESI traffic until the window reset, three
+    or four times per load, which is what "it loads a bit, hangs, loads a bit"
+    was. Things like "Asset Safety Wrap" have no market presence, so their 7-day
+    volume was never going to be anything but blank either way.
+
+    If the SDE is unavailable the list is returned untouched: fewer volumes is a
+    worse failure than a slow sweep.
+    """
+    ids = [int(t) for t in type_ids if t]
+    if not ids:
+        return []
+    keep: set[int] = set()
+    try:
+        for i in range(0, len(ids), 900):
+            chunk = ids[i:i + 900]
+            ph = ",".join("?" * len(chunk))
+            keep.update(int(r[0]) for r in conn.execute(
+                f"SELECT type_id FROM sde_types WHERE type_id IN ({ph})"
+                f" AND market_group_id IS NOT NULL AND published = 1", chunk).fetchall())
+    except Exception:
+        return ids
+    return [t for t in ids if t in keep]
 
 
 async def _fetch_region_volume(client: httpx.AsyncClient, region_id: int, type_id: int) -> int | None:
@@ -765,12 +801,20 @@ async def fetch_structure_market(
                 except Exception:
                     pass
         else:
-            total = len(tids)
+            # Never ask about types the endpoint answers with 400/404 - see
+            # _types_with_market_history. `total` stays the FULL count so the
+            # progress bar still measures what the user asked for.
+            askable = _types_with_market_history(conn, tids)
+            skipped = len(tids) - len(askable)
+            if skipped:
+                print(f"[prices] volume sweep: skipping {skipped} type(s) with no "
+                      f"market history", flush=True)
+            total = len(askable)
             done = 0
             _BATCH = 300
             async with esi_client() as client:
                 for start in range(0, total, _BATCH):
-                    batch = tids[start:start + _BATCH]
+                    batch = askable[start:start + _BATCH]
                     res = await asyncio.gather(
                         *[_fetch_region_volume(client, region_id, t) for t in batch],
                         return_exceptions=True,
@@ -879,12 +923,20 @@ async def fetch_station_volumes(
                 except Exception:
                     pass
         else:
-            total = len(type_ids)
+            # Same filter as the region refresh: a custom station in a region we
+            # have not swept yet is exactly the case where those ~379 guaranteed
+            # 400/404s used to freeze the whole app for a minute at a time.
+            askable = _types_with_market_history(conn, type_ids)
+            skipped = len(type_ids) - len(askable)
+            if skipped:
+                print(f"[prices] station volume sweep: skipping {skipped} type(s) "
+                      f"with no market history", flush=True)
+            total = len(askable)
             done = 0
             _BATCH = 300   # report progress every 300 types (this phase is the slow one)
             async with esi_client() as client:
                 for start in range(0, total, _BATCH):
-                    batch = type_ids[start:start + _BATCH]
+                    batch = askable[start:start + _BATCH]
                     res = await asyncio.gather(
                         *[_fetch_region_volume(client, region_id, t) for t in batch],
                         return_exceptions=True,
