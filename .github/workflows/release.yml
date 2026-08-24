@@ -375,54 +375,23 @@ jobs:
             sde_base.db \
             --clobber
 
-  # Push the website's hardcoded download-card values (version, date, asset
-  # sizes) immediately after a release. Those values are what a visitor sees
-  # when the page's live GitHub API fetch does not happen - no JS, a blocked
-  # API, or a link-preview crawler - so they have to track the latest release.
+  # The website's download page keeps its own hardcoded fallback values (version,
+  # date, asset sizes) current BY ITSELF - see
+  # .github/workflows/update-download-fallback.yml in
+  # EVERetroIndustry/everetroindustry.github.io: hourly, plus manual dispatch for
+  # an immediate run after a release. The updater script lives here, at
+  # scripts/update_website_fallback.py, and that workflow checks it out.
   #
-  # Belt and braces: the website repo ALSO updates itself hourly
-  # (.github/workflows/update-download-fallback.yml there, no credential
-  # needed because this repo is public). That is the safety net; this job is
-  # what makes it immediate. Both are idempotent and no-op when nothing changed.
-  #
-  # WEBSITE_DEPLOY_TOKEN is a fine-grained PAT scoped to ONLY the website repo,
-  # Contents: read and write - kept separate from this repo's own token so a
-  # compromised workflow here cannot reach further than the download page.
-  # Without the secret this job warns and skips; the release still ships and the
-  # hourly job picks the values up within the hour.
-  update-website:
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          sparse-checkout: scripts/update_website_fallback.py
-          sparse-checkout-cone-mode: false
-
-      - name: Read the just-published release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release view ${{ github.ref_name }} \
-            --json tagName,publishedAt,assets > release.json
-          python3 -c "import json;d=json.load(open('release.json'));print('release:', d['tagName'], d['publishedAt'], len(d['assets']), 'assets')"
-
-      - name: Update and push the website
-        env:
-          TOKEN: ${{ secrets.WEBSITE_DEPLOY_TOKEN }}
-        run: |
-          if [ -z "$TOKEN" ]; then
-            echo "::warning::WEBSITE_DEPLOY_TOKEN is not set - skipping. The website's hourly self-update will pick these values up within the hour."
-            exit 0
-          fi
-          git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/EVERetroIndustry/everetroindustry.github.io.git" site
-          python3 scripts/update_website_fallback.py site/index.html release.json
-          cd site
-          if git diff --quiet -- index.html; then
-            echo "Already current - nothing to push."
-            exit 0
-          fi
-          git config user.name "ScoopEMPRetro"
-          git config user.email "286055038+ScoopEMPRetro@users.noreply.github.com"
-          git commit -m "Website: refresh download fallback to ${{ github.ref_name }}" -- index.html
-          git push
+  # Deliberately NOT done from this workflow, decided 2026-08-24. A workflow can
+  # only write to its own repository with the default token, so pushing to the
+  # website from here needs a cross-repo credential - and both options cost more
+  # than they are worth:
+  #   * deploy key: blocked by the org policy (deploy_keys_enabled_for_repositories)
+  #   * fine-grained PAT: the org caps token lifetime at 366 days, so it cannot be
+  #     issued without an expiry, and a credential with write access to the page
+  #     carrying the download links is not something to leave lying around
+  #     unattended for a year.
+  # The website can read this repo with no credential at all, because it is
+  # public. So: no secrets, nothing to rotate, nothing to leak, and the only cost
+  # is that the values land within the hour instead of instantly - for values that
+  # only a no-JS visitor or a link-preview crawler ever sees.
