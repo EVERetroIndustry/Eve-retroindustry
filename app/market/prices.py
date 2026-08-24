@@ -1082,37 +1082,33 @@ async def fetch_structure_market(
         # rate-limit tokens of a 200) simply did not apply to citadels - which is
         # where the slow custom-station loads were reported.
         load_hist_etags(conn, region_id)
-        reuse = _cached_region_volume(conn, region_id)
-        if reuse is not None:
-            # Region already loaded (Jita/Forge or a hub) - full coverage for
-            # free, no network cost either way, so there is no reason to narrow
-            # the type list here.
-            history_map = {tid: reuse.get(tid) for tid in our_type_ids}
-            if progress_cb:
-                try:
-                    progress_cb(len(our_type_ids), len(our_type_ids))
-                except Exception:
-                    pass
-        else:
-            # Cold sweep: only ask about types this structure is actually
-            # SELLING (`aggregated`), not the whole ~19 800-type catalogue we
-            # might be showing prices for. That used to fire history requests
-            # for everything the Prices table can list, most of which this one
-            # remote structure never carries - a real region's worth of a
-            # request budget spent on a handful of visible rows. The trade-off,
-            # made deliberately (reported 2026-08-24): a type traded elsewhere
-            # in the region but not listed HERE keeps a blank vol/7d until
-            # something else warms this region's cache (a Jita/hub-style full
-            # sweep, or a later load of a station that also lists it) - a
-            # blank is honest; the old full sweep's minute-long freezes were not
-            # a fair price for filling it in immediately.
-            tids = [t for t in our_type_ids if t in aggregated]
-            askable = _types_with_market_history(conn, tids)
-            skipped = len(our_type_ids) - len(askable)
-            if skipped:
-                print(f"[prices] volume sweep: skipping {skipped} type(s) not "
-                      f"listed at this structure or with no market history",
-                      flush=True)
+        # Whatever this region already has is a head start, not the answer. It
+        # used to be treated as the answer, and that was correct while only Jita
+        # and the hubs had reusable volumes: a non-empty map really did mean full
+        # coverage. Once ANY swept region became reusable (v0.11.11) a region
+        # with a handful of cached types took the same branch, and every other
+        # type was written as a blank - measured on C-N4OD in Fountain, whose
+        # region had 2 cached types: 4 697 items with a price and exactly 1 with
+        # a volume.
+        reuse = _cached_region_volume(conn, region_id) or {}
+        history_map = {tid: reuse[tid] for tid in our_type_ids if tid in reuse}
+
+        # Ask only about what is still missing AND is actually listed at this
+        # structure (`aggregated`), not the whole ~19 800-type catalogue the
+        # Prices table can show: asking about the rest spent a region's worth of
+        # request budget on rows this one remote structure never carries. The
+        # trade-off, made deliberately (reported 2026-08-24): a type traded
+        # elsewhere in the region but not listed HERE keeps a blank vol/7d until
+        # something warms this region's cache - the background top-up, or a load
+        # of another station that lists it. A blank is honest; the old full
+        # sweep's minute-long freezes were not a fair price for filling it in.
+        tids = [t for t in our_type_ids if t in aggregated and t not in reuse]
+        askable = _types_with_market_history(conn, tids)
+        skipped = len(our_type_ids) - len(askable) - len(history_map)
+        if skipped > 0:
+            print(f"[prices] volume sweep: skipping {skipped} type(s) not "
+                  f"listed at this structure or with no market history", flush=True)
+        if askable:
             total = len(askable)
             done = 0
             _BATCH = 300
@@ -1149,6 +1145,13 @@ async def fetch_structure_market(
                         except Exception:
                             pass
             flush_hist_etags(conn)
+        elif progress_cb:
+            # Nothing left to fetch - the cache had it all. Report done, or the
+            # bar sits at whatever the price phase left behind.
+            try:
+                progress_cb(len(our_type_ids), len(our_type_ids))
+            except Exception:
+                pass
 
     now = time.time()
     result: dict[int, tuple[int | None, float | None, int | None]] = {}
@@ -1249,30 +1252,25 @@ async def fetch_station_volumes(
     # The 7-day regional volume.
     history_map: dict[int, int | None] = {}
     if type_ids:
-        reuse = _cached_region_volume(conn, region_id)
-        if reuse is not None:
-            # Region already loaded (Jita/Forge or a hub) - reuse its 7-day volume
-            # instead of re-fetching ~19k histories. Turns a ~3-minute load into
-            # seconds (only the station-specific orders phase remains).
-            history_map = {tid: reuse.get(tid) for tid in type_ids}
-            if progress_cb:
-                try:
-                    progress_cb(len(type_ids), len(type_ids))
-                except Exception:
-                    pass
-        else:
-            # Cold sweep: only ask about types that actually have an order at
-            # THIS station (order_map), not every type the Prices table can
-            # list - see the identical, more fully explained choice in
-            # fetch_structure_market. A type traded elsewhere in the region but
-            # not sold here keeps a blank vol/7d until something else warms
-            # this region's cache.
-            tids = [t for t in type_ids if order_map.get(t, (None, None))[1] is not None]
-            askable = _types_with_market_history(conn, tids)
-            skipped = len(type_ids) - len(askable)
-            if skipped:
-                print(f"[prices] station volume sweep: skipping {skipped} type(s) "
-                      f"not sold here or with no market history", flush=True)
+        # Same shape as the structure path, and the same fix: what the region
+        # already has is a head start, never a substitute for asking about the
+        # rest. Treating a non-empty map as full coverage was safe only while
+        # Jita and the hubs were the only reusable regions - see the note in
+        # fetch_structure_market for what it cost once that stopped being true.
+        reuse = _cached_region_volume(conn, region_id) or {}
+        history_map = {tid: reuse[tid] for tid in type_ids if tid in reuse}
+
+        # Only types with an order at THIS station, minus whatever the cache
+        # already answered. A type traded elsewhere in the region but not sold
+        # here keeps a blank vol/7d until something warms the region.
+        tids = [t for t in type_ids
+                if order_map.get(t, (None, None))[1] is not None and t not in reuse]
+        askable = _types_with_market_history(conn, tids)
+        skipped = len(type_ids) - len(askable) - len(history_map)
+        if skipped > 0:
+            print(f"[prices] station volume sweep: skipping {skipped} type(s) "
+                  f"not sold here or with no market history", flush=True)
+        if askable:
             total = len(askable)
             done = 0
             _BATCH = 300   # report progress every 300 types (this phase is the slow one)
@@ -1299,6 +1297,11 @@ async def fetch_station_volumes(
                             progress_cb(done, total)
                         except Exception:
                             pass
+        elif progress_cb:
+            try:
+                progress_cb(len(type_ids), len(type_ids))
+            except Exception:
+                pass
 
     now = time.time()
     rows = []
