@@ -798,7 +798,8 @@ _FILL_SLEEP = 0.5
 _FILL_SEM = asyncio.Semaphore(_FILL_CONC)
 
 
-def _region_volume_from_etags(conn: sqlite3.Connection, region_id: int) -> dict[int, int]:
+def _region_volume_from_etags(conn: sqlite3.Connection, region_id: int,
+                              fresh_only: bool = False) -> dict[int, int]:
     """7-day volumes recomputed from the stored daily history of ANY region.
 
     The ETag cache keeps the last few daily volumes per (region, type) precisely
@@ -808,13 +809,27 @@ def _region_volume_from_etags(conn: sqlite3.Connection, region_id: int) -> dict[
     count; see _REGION_VOLUME_MAX_AGE.
     """
     out: dict[int, int] = {}
+    # fresh_only answers a different question, so it gets a different bound.
+    # "What do we show the user" must mean data ESI still calls current: it
+    # rebuilds market history once a day, and a record from before that rebuild
+    # is a generation behind no matter how recently we stored it. Measured: the
+    # Domain hub was fetched at 11:34, ESI rebuilt at 11:03 UTC, and 13 798 of
+    # 13 800 stored records were already expired - which is exactly why a station
+    # in Amarr reported a 7-day volume 8 % below the truth.
+    # "Have we ever swept this region" (coverage, the background top-up) is
+    # happy with the looser bound, or the top-up would re-sweep every region
+    # daily and the request budget cannot pay for that.
+    sql = ("SELECT type_id, days_json FROM market_hist_etag"
+           " WHERE region_id=? AND days_json IS NOT NULL")
+    args: tuple = (region_id,)
+    if fresh_only:
+        sql += " AND expires_at > ?"
+        args += (time.time(),)
+    else:
+        sql += " AND (expires_at > ? OR cached_at > ?)"
+        args += (time.time(), time.time() - _REGION_VOLUME_MAX_AGE)
     try:
-        rows = conn.execute(
-            "SELECT type_id, days_json FROM market_hist_etag"
-            " WHERE region_id=? AND days_json IS NOT NULL"
-            "   AND (expires_at > ? OR cached_at > ?)",
-            (region_id, time.time(), time.time() - _REGION_VOLUME_MAX_AGE),
-        ).fetchall()
+        rows = conn.execute(sql, args).fetchall()
     except sqlite3.OperationalError:
         return out
     for tid, days_json in rows:
@@ -839,7 +854,7 @@ def region_volume_coverage(conn: sqlite3.Connection, region_id: int,
     # volumes in dedicated columns, and counting only ETag rows would report a
     # fully-loaded region as 0 % covered - sending the top-up off to re-fetch
     # ~18k histories we already have.
-    have = _cached_region_volume(conn, region_id) or {}
+    have = _cached_region_volume(conn, region_id, fresh_only=False) or {}
     return sum(1 for t in askable if t in have), len(askable)
 
 
@@ -861,7 +876,7 @@ async def fill_region_volumes(conn: sqlite3.Connection, region_id: int,
     if not askable:
         return {"fetched": 0, "remaining": 0, "reason": "complete"}
     load_hist_etags(conn, region_id)
-    have = _cached_region_volume(conn, region_id) or {}   # see region_volume_coverage
+    have = _cached_region_volume(conn, region_id, fresh_only=False) or {}  # see coverage
     todo = [t for t in askable if t not in have]
     if not todo:
         flush_hist_etags(conn)
@@ -939,7 +954,8 @@ async def fill_region_volumes(conn: sqlite3.Connection, region_id: int,
             "reason": reason}
 
 
-def _cached_region_volume(conn: sqlite3.Connection, region_id: int | None) -> dict[int, int] | None:
+def _cached_region_volume(conn: sqlite3.Connection, region_id: int | None,
+                          fresh_only: bool = True) -> dict[int, int] | None:
     """Reuse an already-fetched 7-day *region* volume map so a custom station in a
     known region needn't re-fetch ~19k histories (the slow part of a station load).
     The Jita refresh stores The Forge volume in market_price_cache; hub refreshes
@@ -949,20 +965,26 @@ def _cached_region_volume(conn: sqlite3.Connection, region_id: int | None) -> di
     {type_id: volume} or None if that region isn't cached yet."""
     if not region_id:
         return None
-    if region_id == JITA_REGION:
+    # The dedicated columns are deliberately NOT consulted when this feeds what
+    # the user sees. They hold a precomputed 7-day sum with no expiry, and a sum
+    # cannot be re-windowed: once ESI has rebuilt its history the stored total is
+    # wrong and nothing about the value says so. Heimatar and Metropolis on a
+    # real cache were last written on 2026-07-28 and would still have been reused
+    # a month later. The ETag layer covers the same regions, keeps the raw daily
+    # volumes, and carries ESI's own expiry - so it can be both re-windowed and
+    # checked. The columns keep doing what they are for: the Jita and hub price
+    # columns, which are honestly a snapshot of their last refresh.
+    have: dict[int, int] = {}
+    if not fresh_only:
         rows = conn.execute(
             "SELECT type_id, volume FROM market_price_cache WHERE volume IS NOT NULL"
+        ).fetchall() if region_id == JITA_REGION else conn.execute(
+            "SELECT type_id, volume FROM hub_price_cache"
+            " WHERE region_id=? AND volume IS NOT NULL", (region_id,)
         ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT type_id, volume FROM hub_price_cache WHERE region_id=? AND volume IS NOT NULL",
-            (region_id,),
-        ).fetchall()
-    have = {r[0]: r[1] for r in rows} if rows else {}
-    # The dedicated columns win where they exist - that is the data the Jita/hub
-    # columns show, so a station in those regions stays consistent with them -
-    # and the ETag-derived map fills in everything else.
-    from_etags = _region_volume_from_etags(conn, region_id)
+        have = {r[0]: r[1] for r in rows} if rows else {}
+
+    from_etags = _region_volume_from_etags(conn, region_id, fresh_only=fresh_only)
     if not have and not from_etags:
         return None
     from_etags.update(have)

@@ -87,15 +87,41 @@ def test_coverage_counts_missing_types():
     assert P.region_volume_coverage(conn, 10000048, [34, 35]) == (1, 2)
 
 
-def test_dedicated_column_wins_over_etag_derived():
-    """A hub station must agree with the number its own column shows."""
+def test_the_displayed_volume_ignores_the_precomputed_columns():
+    """A stored 7-day SUM cannot be re-windowed, so it is not trusted for what
+    the user sees. The Jita and hub columns hold such a sum with no expiry: on a
+    real cache two of them were a month old and still being reused. The ETag
+    layer covers the same regions, keeps the raw days, and carries ESI's expiry,
+    so that is what feeds a station load."""
     conn = _conn()
     conn.execute("INSERT INTO market_price_cache VALUES (34, 999)")
-    _store(conn, P.JITA_REGION, 34, _days(1, 1))
-    _store(conn, P.JITA_REGION, 35, _days(4, 4))
-    vols = P._cached_region_volume(conn, P.JITA_REGION)
-    assert vols[34] == 999      # column, not the 2 from stored days
-    assert vols[35] == 8        # filled in from the ETag cache
+    _store(conn, P.JITA_REGION, 34, _days(1, 1), ttl=3600)
+    vols = P._cached_region_volume(conn, P.JITA_REGION)          # display path
+    assert vols[34] == 2, "the column's 999 must not win"
+
+
+def test_coverage_still_counts_the_columns():
+    """Coverage answers a different question - "have we ever swept this region" -
+    and the background top-up keys off it. Ignoring the columns there would make
+    it re-sweep every hub daily, which the request budget cannot pay for."""
+    conn = _conn()
+    conn.execute("INSERT INTO market_price_cache VALUES (34, 999)")
+    conn.execute("INSERT INTO sde_types VALUES (?,?,?,?)", (34, "Trit", 4, 1))
+    have, total = P.region_volume_coverage(conn, P.JITA_REGION, [34])
+    assert (have, total) == (1, 1)
+
+
+def test_a_record_esi_calls_expired_is_not_shown():
+    """ESI rebuilds market history daily; a record from before that rebuild is a
+    generation behind however recently we stored it. Measured on the Domain hub:
+    13 798 of 13 800 records were expired and a station in Amarr reported a
+    volume 8 % below the truth."""
+    conn = _conn()
+    # stored minutes ago, but ESI's expiry has already passed
+    _store(conn, 10000043, 34, _days(5, 5), age_s=60, ttl=-60)
+    assert P._cached_region_volume(conn, 10000043) is None
+    # ...while the looser coverage bound still counts it as swept
+    assert P.region_volume_coverage(conn, 10000043, [34]) == (1, 1)
 
 
 def test_fill_skips_types_already_covered():
