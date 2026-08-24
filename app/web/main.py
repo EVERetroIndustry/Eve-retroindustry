@@ -16,7 +16,7 @@ from pathlib import Path
 
 import httpx
 from app.esi.client import (
-    esi_client, esi_error_message,
+    esi_client, esi_error_message, esi_throttle_status,
     set_market_token_provider as _esi_set_market_token_provider,
 )
 from fastapi import FastAPI, Request, Form
@@ -55,7 +55,7 @@ from app.manufacturing.planner import (
     MFG_IMPLANTS, MFG_IMPLANT_PCTS,
 )
 from app.bom.resolver import BOMResolver
-from app.market.prices import ensure_price_table, fetch_station_volumes, get_cached_station_volumes, get_station_volumes_any_age, fetch_structure_market, TRADE_HUBS, JITA_REGION
+from app.market.prices import ensure_price_table, fetch_station_volumes, get_cached_station_volumes, get_station_volumes_any_age, fetch_structure_market, TRADE_HUBS, JITA_REGION, HISTORY_ENDPOINT_URL
 from app.web.prices_helper import (
     get_prices_for_ids,
     get_cached_prices_for_ids,
@@ -5226,7 +5226,16 @@ async def prices_station_stream(request: Request, location_id: int):
             while not task.done():
                 await asyncio.sleep(0.5)
                 pct = min(98, 8 + int(holder[0] * 90 / total))
-                yield f"data: {_json.dumps({'phase': 'volumes', 'vol_done': holder[0], 'vol_total': total, 'pct': pct})}\n\n"
+                payload = {'phase': 'volumes', 'vol_done': holder[0], 'vol_total': total, 'pct': pct}
+                # A long region-history sweep goes quiet for a while whenever ESI
+                # is rate-limiting it, which reads exactly like a hang without
+                # this - so say so, with an ETA, instead of letting the bar just
+                # sit there.
+                throttle = esi_throttle_status(HISTORY_ENDPOINT_URL)
+                if throttle["paused"]:
+                    payload["throttled"] = True
+                    payload["wait_s"] = throttle["seconds"]
+                yield f"data: {_json.dumps(payload)}\n\n"
 
             exc = task.exception()
             if exc is not None:

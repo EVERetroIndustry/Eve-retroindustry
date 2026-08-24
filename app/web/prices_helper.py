@@ -9,7 +9,7 @@ import json as _json
 import sqlite3
 import time
 import httpx
-from app.esi.client import esi_client
+from app.esi.client import esi_client, esi_throttle_status
 
 from app.market.prices import (
     fetch_adjusted_prices,
@@ -20,6 +20,7 @@ from app.market.prices import (
     PRICE_CACHE_TTL,
     JITA_REGION,
     TRADE_HUBS,
+    HISTORY_ENDPOINT_URL,
 )
 
 
@@ -367,7 +368,12 @@ async def stream_jita_refresh(conn: sqlite3.Connection, type_ids: list[int]):
     while not vol_task.done():
         d = vol_done_holder[0]
         pct = 80 + int(d * 20 / vol_total) if vol_total else 100
-        yield f"data: {_json.dumps({'phase': 'volumes', 'vol_done': d, 'vol_total': vol_total, 'pct': pct})}\n\n"
+        payload = {'phase': 'volumes', 'vol_done': d, 'vol_total': vol_total, 'pct': pct}
+        throttle = esi_throttle_status(HISTORY_ENDPOINT_URL)
+        if throttle["paused"]:
+            payload["throttled"] = True
+            payload["wait_s"] = throttle["seconds"]
+        yield f"data: {_json.dumps(payload)}\n\n"
         await asyncio.sleep(0.5)
     updated_vol = await vol_task
 
@@ -507,7 +513,12 @@ async def stream_hub_refresh(conn: sqlite3.Connection, type_ids: list[int], regi
     while not vol_task.done():
         d = vol_done_holder[0]
         pct = 80 + int(d * 20 / vol_total) if vol_total else 100
-        yield f"data: {_json.dumps({'phase': 'volumes', 'vol_done': d, 'vol_total': vol_total, 'pct': pct})}\n\n"
+        payload = {'phase': 'volumes', 'vol_done': d, 'vol_total': vol_total, 'pct': pct}
+        throttle = esi_throttle_status(HISTORY_ENDPOINT_URL)
+        if throttle["paused"]:
+            payload["throttled"] = True
+            payload["wait_s"] = throttle["seconds"]
+        yield f"data: {_json.dumps(payload)}\n\n"
         await asyncio.sleep(0.5)
     updated_vol = await vol_task
 

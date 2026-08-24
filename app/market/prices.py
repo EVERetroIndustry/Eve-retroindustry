@@ -305,6 +305,12 @@ def _parse_http_date(v: str | None) -> float:
         return 0.0
 
 
+# Example URL identifying the history endpoint's rate-limit group for
+# esi_throttle_status() - only the path shape matters (region/type id values are
+# collapsed away), so "1" here is a placeholder, not a real region.
+HISTORY_ENDPOINT_URL = f"{ESI_BASE}/markets/1/history/"
+
+
 def _types_with_market_history(conn, type_ids: list[int]) -> list[int]:
     """Drop type_ids the history endpoint cannot answer for.
 
@@ -396,7 +402,14 @@ async def _fetch_region_volume(client: httpx.AsyncClient, region_id: int, type_i
                     _hist_etags[key] = (etag, days, _parse_http_date(r.headers.get("expires")))
                     _hist_etags_dirty.add(key)
                 return _window_sum(days)
-            if (r.status_code == 420 or r.status_code >= 500) and attempt == 0:
+            # 429 reaches here only after the shared token-bucket governor has
+            # already retried it internally (see _GovernedTransport) and waited
+            # out the group's pause each time - a persistent 429 despite that
+            # means real contention, not a fluke, but the type still DOES trade
+            # (a 404/400 means it never will). Worth one more try rather than
+            # quietly recording "no data" for something we simply haven't asked
+            # about successfully yet.
+            if (r.status_code in (420, 429) or r.status_code >= 500) and attempt == 0:
                 await asyncio.sleep(0.6)
                 continue
             return None   # 400/404/… → no usable data
@@ -710,8 +723,10 @@ async def fetch_structure_market(
     progress_cb=None,
 ) -> dict[int, tuple[int | None, float | None, int | None]]:
     """
-    Fetches all sell orders from a player structure via the authorized endpoint.
-    Returns {type_id: (volume, best_sell)} only for type_ids from our cache.
+    Fetches all sell orders from a player structure via the authorized endpoint,
+    plus 7-day regional trade volume for whatever the structure is selling.
+    Returns {type_id: (volume, best_sell, traded_volume)} for every id in
+    our_type_ids (types not listed there get (0, None, traded_volume or None)).
     Requires the esi-markets.structure_markets.v1 scope.
     """
     ensure_price_table(conn)
@@ -771,10 +786,23 @@ async def fetch_structure_market(
                 break
             page += 1
 
+    # Persist the fast phase (this structure's own listings) BEFORE touching
+    # region history - so if the slow phase below gets interrupted (tab closed,
+    # navigated away, a long ESI wait), the sell prices we already have are not
+    # thrown away with it. traded_volume starts NULL and is filled in per batch
+    # further down; a query used to have to wait for BOTH phases to get either.
+    now0 = time.time()
+    conn.executemany(
+        "INSERT OR REPLACE INTO station_volume_cache (location_id, type_id, volume,"
+        " best_sell, traded_volume, cached_at) VALUES (?,?,?,?,?,?)",
+        [(structure_id, tid, (aggregated.get(tid) or {}).get("volume", 0),
+          (aggregated.get(tid) or {}).get("best_sell"), None, now0)
+         for tid in our_type_ids],
+    )
+    conn.commit()
+
     # The 7-day "volume" is REGIONAL history (ESI does not publish trade history
-    # for player structures). Fetch it for ALL requested types - even those
-    # that currently have no offer in the structure, otherwise "sold in the last
-    # 7 days" would be missing for them even though they are traded in the region.
+    # for player structures).
     if region_id is None:
         # Try location_name_cache first (populated by location resolver in web layer)
         try:
@@ -791,24 +819,37 @@ async def fetch_structure_market(
 
     history_map: dict[int, int | None] = {}
     if region_id and our_type_ids:
-        tids = list(our_type_ids)
         reuse = _cached_region_volume(conn, region_id)
         if reuse is not None:
-            history_map = {tid: reuse.get(tid) for tid in tids}
+            # Region already loaded (Jita/Forge or a hub) - full coverage for
+            # free, no network cost either way, so there is no reason to narrow
+            # the type list here.
+            history_map = {tid: reuse.get(tid) for tid in our_type_ids}
             if progress_cb:
                 try:
-                    progress_cb(len(tids), len(tids))
+                    progress_cb(len(our_type_ids), len(our_type_ids))
                 except Exception:
                     pass
         else:
-            # Never ask about types the endpoint answers with 400/404 - see
-            # _types_with_market_history. `total` stays the FULL count so the
-            # progress bar still measures what the user asked for.
+            # Cold sweep: only ask about types this structure is actually
+            # SELLING (`aggregated`), not the whole ~19 800-type catalogue we
+            # might be showing prices for. That used to fire history requests
+            # for everything the Prices table can list, most of which this one
+            # remote structure never carries - a real region's worth of a
+            # request budget spent on a handful of visible rows. The trade-off,
+            # made deliberately (reported 2026-08-24): a type traded elsewhere
+            # in the region but not listed HERE keeps a blank vol/7d until
+            # something else warms this region's cache (a Jita/hub-style full
+            # sweep, or a later load of a station that also lists it) - a
+            # blank is honest; the old full sweep's minute-long freezes were not
+            # a fair price for filling it in immediately.
+            tids = [t for t in our_type_ids if t in aggregated]
             askable = _types_with_market_history(conn, tids)
-            skipped = len(tids) - len(askable)
+            skipped = len(our_type_ids) - len(askable)
             if skipped:
-                print(f"[prices] volume sweep: skipping {skipped} type(s) with no "
-                      f"market history", flush=True)
+                print(f"[prices] volume sweep: skipping {skipped} type(s) not "
+                      f"listed at this structure or with no market history",
+                      flush=True)
             total = len(askable)
             done = 0
             _BATCH = 300
@@ -819,8 +860,19 @@ async def fetch_structure_market(
                         *[_fetch_region_volume(client, region_id, t) for t in batch],
                         return_exceptions=True,
                     )
+                    batch_rows = []
                     for tid, r in zip(batch, res):
-                        history_map[tid] = r if isinstance(r, int) else None
+                        v = r if isinstance(r, int) else None
+                        history_map[tid] = v
+                        batch_rows.append((v, structure_id, tid))
+                    # Committed per batch (~300 types), not once at the end: the
+                    # whole point of the fast-phase write above is that partial
+                    # work survives an interruption, and this is where the slow
+                    # phase actually does its waiting.
+                    conn.executemany(
+                        "UPDATE station_volume_cache SET traded_volume=?"
+                        " WHERE location_id=? AND type_id=?", batch_rows)
+                    conn.commit()
                     done += len(batch)
                     if progress_cb:
                         try:
@@ -839,6 +891,10 @@ async def fetch_structure_market(
         result[tid] = (vol, sell, traded)
         rows.append((structure_id, tid, vol, sell, traded, now))
 
+    # Redundant with the incremental writes above for a completed run (both
+    # phases already landed row by row) - kept as the single source of truth
+    # for what THIS call returns, and it is what actually persists the reuse
+    # branch's result (which never wrote to the table on its own).
     conn.executemany(
         "INSERT OR REPLACE INTO station_volume_cache (location_id, type_id, volume, best_sell, traded_volume, cached_at) VALUES (?,?,?,?,?,?)",
         rows,
@@ -907,8 +963,19 @@ async def fetch_station_volumes(
         for tid, res in zip(type_ids, order_results):
             order_map[tid] = res if isinstance(res, tuple) else (None, None)
 
-    # 7-day regional volume for ALL types - even those that currently have no
-    # order at the station (otherwise "sold in the last 7 days" would be missing for them).
+    # Persist the fast phase (this station's own orders) before touching region
+    # history, same reasoning as fetch_structure_market: a load interrupted
+    # partway through the slow phase below must not lose the fast one.
+    now0 = time.time()
+    conn.executemany(
+        "INSERT OR REPLACE INTO station_volume_cache (location_id, type_id, volume,"
+        " best_sell, traded_volume, cached_at) VALUES (?,?,?,?,?,?)",
+        [(location_id, tid, *order_map.get(tid, (None, None)), None, now0)
+         for tid in type_ids],
+    )
+    conn.commit()
+
+    # The 7-day regional volume.
     history_map: dict[int, int | None] = {}
     if type_ids:
         reuse = _cached_region_volume(conn, region_id)
@@ -923,14 +990,18 @@ async def fetch_station_volumes(
                 except Exception:
                     pass
         else:
-            # Same filter as the region refresh: a custom station in a region we
-            # have not swept yet is exactly the case where those ~379 guaranteed
-            # 400/404s used to freeze the whole app for a minute at a time.
-            askable = _types_with_market_history(conn, type_ids)
+            # Cold sweep: only ask about types that actually have an order at
+            # THIS station (order_map), not every type the Prices table can
+            # list - see the identical, more fully explained choice in
+            # fetch_structure_market. A type traded elsewhere in the region but
+            # not sold here keeps a blank vol/7d until something else warms
+            # this region's cache.
+            tids = [t for t in type_ids if order_map.get(t, (None, None))[1] is not None]
+            askable = _types_with_market_history(conn, tids)
             skipped = len(type_ids) - len(askable)
             if skipped:
                 print(f"[prices] station volume sweep: skipping {skipped} type(s) "
-                      f"with no market history", flush=True)
+                      f"not sold here or with no market history", flush=True)
             total = len(askable)
             done = 0
             _BATCH = 300   # report progress every 300 types (this phase is the slow one)
@@ -941,8 +1012,15 @@ async def fetch_station_volumes(
                         *[_fetch_region_volume(client, region_id, t) for t in batch],
                         return_exceptions=True,
                     )
+                    batch_rows = []
                     for tid, r in zip(batch, res):
-                        history_map[tid] = r if isinstance(r, int) else None
+                        v = r if isinstance(r, int) else None
+                        history_map[tid] = v
+                        batch_rows.append((v, location_id, tid))
+                    conn.executemany(
+                        "UPDATE station_volume_cache SET traded_volume=?"
+                        " WHERE location_id=? AND type_id=?", batch_rows)
+                    conn.commit()
                     done += len(batch)
                     if progress_cb:
                         try:
@@ -959,6 +1037,9 @@ async def fetch_station_volumes(
         rows.append((location_id, tid, vol, sell, traded, now))
         result_map[tid] = (vol, sell, traded)
 
+    # Redundant with the incremental writes above for a completed run - kept as
+    # the single source of truth for what this call returns, and it is what
+    # persists the reuse branch's result (which never wrote on its own).
     conn.executemany(
         "INSERT OR REPLACE INTO station_volume_cache (location_id, type_id, volume, best_sell, traded_volume, cached_at) VALUES (?,?,?,?,?,?)",
         rows,
@@ -983,7 +1064,13 @@ def get_cached_station_volumes(
     if any((now - (r[4] or 0)) > STATION_VOLUME_TTL for r in rows):
         return None
     # If there are records with volume>0 but all traded_volume are NULL,
-    # the cache is incomplete (the region was unknown at save time) - force a refetch.
+    # the cache is incomplete (the region was unknown at save time) - force a
+    # refetch. Note this does NOT catch every incomplete state any more: a
+    # completed sweep now legitimately leaves traded_volume NULL for most types
+    # (only ones actually listed here get a 7-day volume - see
+    # fetch_structure_market), so "some nulls" is normal, not a signal on its
+    # own. What this still catches is the narrower, worse case it was written
+    # for - nothing was even attempted.
     has_stock = any(r[1] and r[1] > 0 for r in rows)
     all_traded_null = all(r[3] is None for r in rows)
     if has_stock and all_traded_null:

@@ -248,6 +248,33 @@ class _GovernedTransport(httpx.AsyncHTTPTransport):
         return last  # exhausted retries - hand it back so raise_for_status fires
 
 
+def esi_throttle_status(url: str | None = None) -> dict:
+    """Longest active pause across the shared ESI governors right now.
+
+    Pass an example URL for one endpoint (region/type ids in it don't matter -
+    signature() collapses numeric segments) to check that endpoint's specific
+    rate-limit group; omit it to get the worst pause across every group seen so
+    far. The old error-limit pause (blocks every ESI call, not just one group)
+    is always folded in either way.
+
+    This is what lets a slow, ESI-bound operation tell a user "this is being
+    throttled by ESI, not stuck" - a long-running sweep that goes quiet for a
+    minute at a time looks identical to a hang without it. Read-only; never
+    blocks (that's what the governors' own .wait() does internally).
+    """
+    now = time.monotonic()
+    remaining = max(0.0, _ERROR_LIMIT._pause_until - now)
+    if url is not None:
+        sig = _TokenBucketGovernor.signature(httpx.URL(url))
+        group = _TOKEN_LIMIT._group_of.get(sig)
+        if group:
+            remaining = max(remaining, _TOKEN_LIMIT._pause_until.get(group, 0.0) - now)
+    else:
+        for until in _TOKEN_LIMIT._pause_until.values():
+            remaining = max(remaining, until - now)
+    return {"paused": remaining > 0.05, "seconds": int(remaining + 0.999) if remaining > 0 else 0}
+
+
 def esi_client(**kwargs) -> httpx.AsyncClient:
     """httpx.AsyncClient with a preset X-Compatibility-Date header, a
     connection pool sized for our concurrency (see _ESI_LIMITS), and a shared

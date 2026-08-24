@@ -751,6 +751,14 @@
     if (text != null) dlText.textContent = text;
   }
   function dlHide(delay) { setTimeout(() => dlProgress.classList.add('d-none'), delay || 2500); }
+  // A region-history sweep goes quiet for stretches whenever ESI itself is
+  // rate-limiting it - which looks exactly like the app having hung. Every SSE
+  // message during a volume phase carries `throttled`/`wait_s` when that is
+  // what is actually happening, so say so instead of leaving the bar sitting
+  // at the same number.
+  function throttleNote(d) {
+    return d.throttled ? ` - ESI is rate-limiting this, resuming in ~${d.wait_s}s` : '';
+  }
 
   // --- Jita refresh (SSE) ---
   const refreshBtn = document.getElementById('refresh-btn');
@@ -770,7 +778,7 @@
         dlFinish('done', `Done! Fetched ${d.refreshed} prices${volMsg}.`);
         setTimeout(() => window.location.reload(), 1500);
       } else if (d.phase === 'volumes') {
-        dlSet(d.pct || 0, `Volumes: ${d.vol_done} / ${d.vol_total}…`);
+        dlSet(d.pct || 0, `Volumes: ${d.vol_done} / ${d.vol_total}…${throttleNote(d)}`);
       } else {
         dlSet(d.pct || 0, `Orders: ${d.current} / ${d.total} pages…`);
       }
@@ -894,7 +902,7 @@
         return;
       }
       const txt = (d.phase === 'volumes' && (d.vol_done || 0) > 0)
-        ? `Fetching 7-day volume… ${euro(d.vol_done || 0, false)} / ${euro(d.vol_total || 0, false)}`
+        ? `Fetching 7-day volume… ${euro(d.vol_done || 0, false)} / ${euro(d.vol_total || 0, false)}${throttleNote(d)}`
         : 'Fetching market orders…';
       dlSet(d.pct || 0, txt);
     };
@@ -954,7 +962,7 @@
           dlFinish('done', 'Done (' + name + '): ' + d.refreshed + ' prices.');
           setTimeout(() => window.location.reload(), 1500);
         } else if (d.phase === 'volumes') {
-          dlSet(d.pct || 0, name + ' volumes: ' + d.vol_done + ' / ' + d.vol_total + '…');
+          dlSet(d.pct || 0, name + ' volumes: ' + d.vol_done + ' / ' + d.vol_total + '…' + throttleNote(d));
         } else {
           dlSet(d.pct || 0, name + ' orders: ' + d.current + ' / ' + d.total + ' pages…');
         }

@@ -75,3 +75,166 @@ def test_history_concurrency_stays_where_it_was_measured():
     """30 answered 429 after ~6 000 requests; 10 sustained 16 500 with none. If this
     is raised again, re-measure first - the endpoint's limits changed under us once."""
     assert P._HIST_SEM._value <= 10
+
+
+# ── fetch_structure_market: scope narrowing + crash-safe persistence ──────────
+
+def _sde_conn(ids, market_group_id=1, published=1):
+    conn = sqlite3.connect(":memory:")
+    P.ensure_price_table(conn)
+    conn.execute("CREATE TABLE sde_types (type_id INTEGER PRIMARY KEY, name TEXT,"
+                 " market_group_id INTEGER, published INTEGER)")
+    conn.executemany("INSERT INTO sde_types VALUES (?,?,?,?)",
+                     [(i, f"t{i}", market_group_id, published) for i in ids])
+    conn.commit()
+    return conn
+
+
+class _StructureOrdersClient:
+    """Fake esi_client(): one page of sell orders for `listed_ids`, no buy orders."""
+
+    def __init__(self, listed_ids):
+        self.listed_ids = listed_ids
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def get(self, url, **kw):
+        class _Resp:
+            status_code = 200
+            headers = {"X-Pages": "1"}
+            def json(inner):
+                return [{"type_id": t, "is_buy_order": False, "volume_remain": 10,
+                         "price": 100.0} for t in self.listed_ids]
+        return _Resp()
+
+
+def test_cold_sweep_only_asks_about_types_actually_listed_here(monkeypatch):
+    """Reported bug: the sweep asked about every cached type (~19 800), most of
+    which a random remote structure never sells - approved fix: narrow to what
+    is actually listed there."""
+    import asyncio
+    all_ids = list(range(1, 21))
+    listed = {1, 2, 3}
+    conn = _sde_conn(all_ids)
+    monkeypatch.setattr(P, "esi_client", lambda **kw: _StructureOrdersClient(listed))
+    monkeypatch.setattr(P, "_cached_region_volume", lambda conn, region: None)
+
+    asked = []
+    async def fake_fetch(client, region_id, type_id):
+        asked.append(type_id)
+        return 99
+    monkeypatch.setattr(P, "_fetch_region_volume", fake_fetch)
+
+    result = asyncio.run(P.fetch_structure_market(
+        conn, 999_000, "tok", set(all_ids), region_id=10000002))
+
+    assert set(asked) == listed
+    for tid in listed:
+        assert result[tid] == (10, 100.0, 99)
+    for tid in set(all_ids) - listed:
+        # Not sold here: no sell order, and no history was ever asked about it -
+        # blank (None), never a wrong number.
+        assert result[tid] == (0, None, None)
+
+
+def test_a_warm_region_still_gets_full_coverage_for_free(monkeypatch):
+    """When the region's volumes are already cached (Jita/Forge, a hub, or a
+    previous sweep), reusing them costs nothing - so there is no reason to
+    narrow the scope in that case."""
+    import asyncio
+    all_ids = list(range(1, 6))
+    conn = _sde_conn(all_ids)
+    monkeypatch.setattr(P, "esi_client", lambda **kw: _StructureOrdersClient({1}))
+    monkeypatch.setattr(P, "_cached_region_volume", lambda conn, region: {i: i * 10 for i in all_ids})
+
+    async def must_not_be_called(client, region_id, type_id):
+        raise AssertionError("cold sweep must not run when the region is cached")
+    monkeypatch.setattr(P, "_fetch_region_volume", must_not_be_called)
+
+    result = asyncio.run(P.fetch_structure_market(
+        conn, 999_000, "tok", set(all_ids), region_id=10000002))
+    for tid in all_ids:
+        assert result[tid][2] == tid * 10          # every type, not just the listed one
+
+
+def test_an_interrupted_sweep_keeps_finished_batches_not_just_the_fast_phase(monkeypatch):
+    """The whole point of committing per batch rather than once at the end: a
+    load cancelled partway (tab closed, navigated away) must not throw away
+    history that was already fetched successfully."""
+    import asyncio
+    listed = set(range(1, 601))                    # 601 listed types -> 3 batches of 300ish? _BATCH=300 -> 2 full + 1
+    all_ids = listed | {700, 701}                   # plus a couple never listed here
+    conn = _sde_conn(list(all_ids))
+    monkeypatch.setattr(P, "esi_client", lambda **kw: _StructureOrdersClient(listed))
+    monkeypatch.setattr(P, "_cached_region_volume", lambda conn, region: None)
+
+    gate = asyncio.Event()
+
+    async def fake_fetch(client, region_id, type_id):
+        if type_id > 300:                           # second batch onward blocks
+            await gate.wait()
+        return 7
+    monkeypatch.setattr(P, "_fetch_region_volume", fake_fetch)
+
+    async def run():
+        task = asyncio.create_task(P.fetch_structure_market(
+            conn, 999_000, "tok", set(all_ids), region_id=10000002))
+        await asyncio.sleep(0.1)                     # let the first batch land
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    asyncio.run(run())
+
+    rows = {r[0]: r[1] for r in conn.execute(
+        "SELECT type_id, traded_volume FROM station_volume_cache")}
+    # First batch (1-300) completed and was committed before cancellation.
+    assert rows[1] == 7 and rows[300] == 7
+    # Second batch never got to commit - NULL, not a wrong value, and still
+    # retryable on the next load rather than looking like "confirmed no trade".
+    assert rows[301] is None
+    # The fast phase (sell prices) is there regardless of what happened to history.
+    sell = {r[0]: r[1] for r in conn.execute(
+        "SELECT type_id, best_sell FROM station_volume_cache")}
+    assert sell[1] == 100.0 and sell[500] == 100.0 and sell[700] is None
+
+
+# ── fetch_station_volumes (NPC stations): same narrowing, same guarantee ──────
+
+def test_npc_station_cold_sweep_also_narrows_to_what_has_an_order_here(monkeypatch):
+    import asyncio
+    all_ids = list(range(1, 11))
+    listed = {2, 4}
+    conn = _sde_conn(all_ids)
+    monkeypatch.setattr(P, "_cached_region_volume", lambda conn, region: None)
+
+    async def fake_orders(client, region_id, location_id, type_id):
+        return (10, 50.0) if type_id in listed else (None, None)
+    monkeypatch.setattr(P, "_fetch_orders_for_type", fake_orders)
+
+    asked = []
+    async def fake_fetch(client, region_id, type_id):
+        asked.append(type_id)
+        return 5
+    monkeypatch.setattr(P, "_fetch_region_volume", fake_fetch)
+    monkeypatch.setattr(P, "esi_client", lambda **kw: _NullClient())
+
+    result = asyncio.run(P.fetch_station_volumes(conn, 60003760, 10000002, all_ids))
+    assert set(asked) == listed
+    for tid in listed:
+        assert result[tid] == (10, 50.0, 5)
+    for tid in set(all_ids) - listed:
+        assert result[tid] == (None, None, None)
+
+
+class _NullClient:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
