@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.11.13"
+APP_VERSION = "0.11.14"
 
 import asyncio
 import datetime
@@ -7042,7 +7042,9 @@ async def api_public_fill_status():
         "done": st.get("done") or 0, "total": st.get("total") or 0,
         "regions": status["regions"], "contracts": status["contracts"],
         "priced": status["priced"], "with_items": status["with_items"],
-        "remaining": max(0, status["priced"] - status["with_items"]),
+        "remaining": max(0, status["priced"] - status["with_items"]
+                         - status.get("absent", 0)),
+        "absent": status.get("absent", 0),
         "newest": status["newest"], "error": st.get("error"),
     }
 

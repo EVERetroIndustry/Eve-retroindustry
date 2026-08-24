@@ -335,6 +335,7 @@ async def fill_public_items(conn: sqlite3.Connection, budget: int = 12000,
     stored = [0]
     done = [0]
     gone: list[int] = []
+    gone_total = [0]
     batch: dict[int, list[dict]] = {}
     lock = asyncio.Lock()
 
@@ -356,11 +357,26 @@ async def fill_public_items(conn: sqlite3.Connection, budget: int = 12000,
                 gone.append(cid)
                 return
             if r.status_code != 200:
-                return
+                return          # 5xx and friends are transient - retry next pass
+            # A 200 with NOTHING in it. ESI really does answer some contracts
+            # that way ("content-length: 0", verified on three of them), and an
+            # empty body is not valid JSON, so this used to raise, return, and
+            # record nothing at all - leaving the contract to be retried on
+            # every pass for ever. That is the "reading contents" spinner that
+            # never finishes: 47 718 of 47 722, three contracts short, going
+            # round for a day. An answer of "this one has no contents" is a real
+            # answer and has to be written down like any other.
             try:
-                batch[cid] = r.json() or []
+                items = r.json() or []
             except Exception:
+                items = []
+            # Same reasoning for contents we cannot index: store_public_items
+            # only writes rows that have a type_id, so a contract whose items
+            # all lack one would leave no trace either and come round again.
+            if not items or not any(it.get("type_id") for it in items):
+                gone.append(cid)
                 return
+            batch[cid] = items
             if len(batch) >= 300:
                 flush = dict(batch)
                 batch.clear()
@@ -379,12 +395,14 @@ async def fill_public_items(conn: sqlite3.Connection, budget: int = 12000,
                 store_public_items(conn, flush)
                 stored[0] += len(flush)
             if gone:
+                gone_total[0] += len(gone)
                 _mark_public_absent(conn, gone)
                 gone.clear()
     if batch:
         store_public_items(conn, batch)
         stored[0] += len(batch)
     if gone:
+        gone_total[0] += len(gone)
         _mark_public_absent(conn, gone)
     remaining = conn.execute(
         "SELECT COUNT(*) FROM public_contracts c"
@@ -393,7 +411,10 @@ async def fill_public_items(conn: sqlite3.Connection, budget: int = 12000,
         "                    WHERE i.contract_id = c.contract_id)"
         "   AND NOT EXISTS (SELECT 1 FROM public_contract_items_absent a"
         "                    WHERE a.contract_id = c.contract_id)").fetchone()[0]
-    return {"fetched": stored[0], "gone": len(gone), "remaining": remaining}
+    # gone_total, not len(gone): the per-chunk flush empties the list, so the
+    # returned count was always 0 and a pass that only recorded absences looked
+    # like a pass that did nothing.
+    return {"fetched": stored[0], "gone": gone_total[0], "remaining": remaining}
 
 
 def _mark_public_absent(conn: sqlite3.Connection, contract_ids) -> None:
@@ -463,8 +484,16 @@ def public_index_status(conn: sqlite3.Connection) -> dict:
         " AND price > 0").fetchone()[0]
     with_items = conn.execute(
         "SELECT COUNT(DISTINCT contract_id) FROM public_contract_items").fetchone()[0]
+    # Contracts ESI has told us have no readable contents. They are DONE, not
+    # outstanding: counting them as outstanding is what kept "remaining" at a
+    # non-zero number after there was nothing left to read.
+    absent = conn.execute(
+        "SELECT COUNT(*) FROM public_contract_items_absent a JOIN public_contracts c"
+        " ON c.contract_id = a.contract_id"
+        " WHERE c.type IN ('item_exchange','auction') AND c.price > 0").fetchone()[0]
     return {"regions": row[0] or 0, "oldest": row[1], "newest": row[2],
-            "contracts": total, "priced": priced, "with_items": with_items}
+            "contracts": total, "priced": priced, "with_items": with_items,
+            "absent": absent}
 
 
 def get_index_status(conn: sqlite3.Connection, region_id: int) -> dict | None:

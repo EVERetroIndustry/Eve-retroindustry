@@ -127,6 +127,15 @@
     let d;
     try { d = await (await fetch('/api/contracts/public/fill-status')).json(); }
     catch (e) { return; }
+    // The age label is rendered once at page load, so a window left open all day
+    // kept showing "23 h ago" while the index behind it was minutes old. The
+    // poll knows better - let it say so.
+    const ageEl = document.getElementById('idx-age');
+    if (ageEl && d.newest) {
+      const mins = Math.floor((Date.now() - d.newest * 1000) / 60000);
+      ageEl.textContent = mins < 1 ? 'just now'
+        : (mins < 60 ? mins + ' min' : Math.floor(mins / 60) + ' h') + ' ago';
+    }
     if (d.phase === 'listing') {
       el.className = 'small ms-2 text-muted';
       el.innerHTML = spin + `listing regions ${d.done}/${d.total}`;
