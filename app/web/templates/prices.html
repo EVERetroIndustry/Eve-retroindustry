@@ -843,11 +843,15 @@
       const r = await fetch('/api/suggest-station?q=' + encodeURIComponent(q));
       const data = await r.json();
       const all = [...(data.owned || []), ...(data.other || [])];
-      if (!all.length) { stationBox.style.display = 'none'; return; }
       if (!all.length) {
-        stationBox.innerHTML = data.cache_empty
+        // The early `display='none'; return` that used to sit here made the
+        // explanation below dead code, so a search that found nothing showed
+        // nothing at all - no stations, and no reason why.
+        stationBox.innerHTML = data.note
+          ? `<div class="px-3 py-2 text-muted small">${escHtml(data.note)}</div>`
+          : data.cache_empty
           ? `<div class="px-3 py-2 small"><div class="text-warning mb-1"><i class="bi bi-exclamation-triangle me-1"></i>Location data not loaded yet</div><div class="text-muted" style="font-size:.8rem">Visit <a href="/assets" class="text-muted">Assets</a> first, or type a full system name (e.g. <em>Jita</em>).</div></div>`
-          : `<div class="px-3 py-2 text-muted small">No stations found - try a system name (e.g. "Jita").</div>`;
+          : `<div class="px-3 py-2 text-muted small">Nothing found. Try a system name, or paste a structure ID from the game.</div>`;
         stationBox.style.display = 'block';
         return;
       }

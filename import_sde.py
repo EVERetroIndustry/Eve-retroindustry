@@ -3,10 +3,13 @@ Import the EVE Online SDE into a SQLite database.
 Parses fsd/blueprints.yaml and fsd/types.yaml.
 Usage: python import_sde.py
 """
+import glob
 import re
 import yaml
+import zipfile
 import sqlite3
 import os
+import sys
 import time
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
@@ -80,6 +83,110 @@ def import_planet_schematics(conn: sqlite3.Connection):
         mat_rows)
     conn.commit()
     console.print(f"[green]Imported {len(sch_rows):,} planet schematics ({len(mat_rows):,} inputs)[/]")
+
+
+def _sde_zip() -> str | None:
+    for zip_path in sorted(glob.glob(os.path.join(_DATA_DIR, "*.zip"))):
+        try:
+            with zipfile.ZipFile(zip_path) as z:
+                if "bsd/staStations.yaml" in z.namelist():
+                    return zip_path
+        except zipfile.BadZipFile:
+            continue
+    return None
+
+
+def import_universe(conn: sqlite3.Connection):
+    """Station and solar-system names, so the app can search them offline.
+
+    ESI's public /search/ endpoint is gone (it answers 404 for every query on
+    every version), and its documented replacement, POST /universe/ids/, matches
+    whole names only. Partial matching - typing "PR-8" and being offered PR-8CA -
+    therefore cannot come from ESI at all any more. It can come from here: this
+    is static data that changes with a patch, not with the market, and it is
+    small.
+
+    Covers all of New Eden, not just k-space: the universe tree carries eve,
+    wormhole, abyssal, hidden and void branches and all of them are imported.
+
+    Systems are read straight out of the zip with a regex rather than parsed as
+    YAML - 8 437 files in 0.4 s against 8.6 s to parse invUniqueNames.yaml, and
+    the directory layout gives the region as well, which invUniqueNames does not.
+    Region matters: it is what a station's prices are fetched against, so having
+    it locally saves two ESI calls per load and works offline.
+    """
+    zip_path = _sde_zip()
+    if not zip_path:
+        console.print("[yellow]No SDE zip with bsd/staStations.yaml in data/ - "
+                      "skipping station and system names[/]")
+        return
+
+    # Rebuilt outright rather than merged: this is derived data, and a schema that
+    # gained a column (region_id) would otherwise keep the old shape for ever.
+    conn.execute("DROP TABLE IF EXISTS sde_stations")
+    conn.execute("DROP TABLE IF EXISTS sde_systems")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sde_stations (
+            station_id INTEGER PRIMARY KEY,
+            name       TEXT,
+            system_id  INTEGER,
+            region_id  INTEGER
+        )""")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sde_systems (
+            system_id INTEGER PRIMARY KEY,
+            name      TEXT,
+            region_id INTEGER
+        )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sde_stations_system"
+                 " ON sde_stations(system_id)")
+
+    _SYS_ID = re.compile(rb"solarSystemID:\s*(\d+)")
+    _REG_ID = re.compile(rb"regionID:\s*(\d+)")
+
+    with zipfile.ZipFile(zip_path) as z, \
+            Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
+                     BarColumn(), TimeElapsedColumn(), console=console) as prog:
+        entries = z.namelist()
+        task = prog.add_task("Stations and systems", total=3)
+
+        stations = _yaml_load(z.read("bsd/staStations.yaml")) or []
+        conn.executemany(
+            "INSERT OR REPLACE INTO sde_stations VALUES (?,?,?,?)",
+            [(e["stationID"], e.get("stationName") or "",
+              e.get("solarSystemID"), e.get("regionID"))
+             for e in stations if e.get("stationID")])
+        prog.advance(task)
+
+        # universe/<branch>/<region>/region.yaml -> the region id for that subtree
+        region_of: dict[str, int] = {}
+        for name in entries:
+            if name.endswith("/region.yaml"):
+                m = _REG_ID.search(z.read(name))
+                if m:
+                    region_of["/".join(name.split("/")[:3])] = int(m.group(1))
+        prog.advance(task)
+
+        # universe/<branch>/<region>/<constellation>/<SYSTEM NAME>/solarsystem.yaml
+        rows = []
+        for name in entries:
+            if not name.endswith("/solarsystem.yaml"):
+                continue
+            m = _SYS_ID.search(z.read(name))
+            if not m:
+                continue
+            parts = name.split("/")
+            rows.append((int(m.group(1)), parts[-2],
+                         region_of.get("/".join(parts[:3]))))
+        conn.executemany("INSERT OR REPLACE INTO sde_systems VALUES (?,?,?)", rows)
+        prog.advance(task)
+
+    conn.commit()
+    n_st = conn.execute("SELECT COUNT(*) FROM sde_stations").fetchone()[0]
+    n_sy = conn.execute("SELECT COUNT(*) FROM sde_systems").fetchone()[0]
+    n_nr = conn.execute("SELECT COUNT(*) FROM sde_systems WHERE region_id IS NULL").fetchone()[0]
+    console.print(f"  [green]{n_st}[/] stations, [green]{n_sy}[/] solar systems"
+                  + (f" ([yellow]{n_nr}[/] without a region)" if n_nr else ""))
 
 
 def init_db(conn: sqlite3.Connection):
@@ -360,6 +467,16 @@ def main():
         return
 
     conn = sqlite3.connect(DB_PATH)
+
+    # Station and system names only - lets a rebuild add them to an existing
+    # database without re-parsing the 150 MB types.yaml.
+    if "--universe-only" in sys.argv:
+        t0 = time.time()
+        import_universe(conn)
+        conn.close()
+        console.print(f"\n[bold green]Done in {time.time()-t0:.1f}s[/]")
+        return
+
     init_db(conn)
 
     t_start = time.time()
@@ -368,6 +485,7 @@ def main():
     import_blueprints(conn)
     import_groups(conn)
     import_planet_schematics(conn)
+    import_universe(conn)
     conn.close()
 
     console.print(f"\n[bold green]Done in {time.time()-t_start:.1f}s[/]")

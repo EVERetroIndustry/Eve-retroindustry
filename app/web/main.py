@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.11.11"
+APP_VERSION = "0.11.12"
 
 import asyncio
 import datetime
@@ -74,6 +74,8 @@ from app.web.location_resolver import (
     ensure_location_name_table,
     load_location_names_from_db,
     locations_in_system,
+    public_structures_stale,
+    refresh_public_structures,
     get_region_for_location,
     get_security_status,
 )
@@ -225,6 +227,11 @@ _SDE_TABLES_TO_REFRESH = (
     "sde_skill_time_bonus",
     "sde_planet_schematics",           # v0.8.106 (PI factory chains)
     "sde_planet_schematic_materials",  # v0.8.106
+    # v0.11.12: station and system names, so the custom-station box can search
+    # offline. ESI's public /search/ is gone and its replacement matches whole
+    # names only, so partial matching has to come from local data or not at all.
+    "sde_stations",
+    "sde_systems",
     # Which SDE build the bundle was made from. Easy to forget when adding a table
     # here: caught on a release-candidate run, where About said "build not
     # recorded" although the bundled database knew it.
@@ -4127,6 +4134,12 @@ async def suggest_station(request: Request, q: str = ""):
             if not a.get("is_singleton", False):
                 asset_locs.add(a["location_id"])
 
+    # Kicked off here because this is where someone is looking for a place: due
+    # at most once a day, runs in the background, and this request uses whatever
+    # is already cached rather than waiting for it.
+    if public_structures_stale(conn):
+        ensure_public_structures(token)
+
     all_names = load_location_names_from_db(conn)
     cache_empty = len(all_names) == 0
 
@@ -4149,7 +4162,69 @@ async def suggest_station(request: Request, q: str = ""):
             other_ids.add(loc_id)
     other.sort(key=lambda x: x["name"])
 
-    # ESI lookup - NPC stations + systems + player structures (in parallel)
+    # Offline substring search over the SDE's own station and system names. This
+    # is what gives partial matching back: ESI cannot do it any more (the public
+    # /search/ endpoint is gone, and /universe/ids/ matches whole names only),
+    # but the names are static data that ships with the app - 5 154 stations and
+    # 8 436 systems, so an unindexed LIKE over them costs nothing.
+    sde_systems: list[tuple[int, str]] = []
+    try:
+        for sid, nm in conn.execute(
+            "SELECT station_id, name FROM sde_stations"
+            " WHERE lower(name) LIKE ? ORDER BY name LIMIT 40",
+            (f"%{pattern}%",),
+        ).fetchall():
+            all_names.setdefault(sid, nm)
+            if sid in asset_locs and sid not in owned_ids:
+                owned.append({"location_id": sid, "name": nm})
+                owned_ids.add(sid)
+            elif sid not in asset_locs and sid not in other_ids:
+                other.append({"location_id": sid, "name": nm})
+                other_ids.add(sid)
+
+        # A system name is what people actually type for a place they have never
+        # docked at ("PR-8CA"), so offer what is in the system as well.
+        sde_systems = conn.execute(
+            "SELECT system_id, name FROM sde_systems"
+            " WHERE lower(name) LIKE ? ORDER BY length(name), name LIMIT 10",
+            (f"%{pattern}%",),
+        ).fetchall()
+        for sys_id, _sys_name in sde_systems:
+            for sid, nm in conn.execute(
+                "SELECT station_id, name FROM sde_stations WHERE system_id=? ORDER BY name",
+                (sys_id,),
+            ).fetchall():
+                all_names.setdefault(sid, nm)
+                if sid in asset_locs and sid not in owned_ids:
+                    owned.append({"location_id": sid, "name": nm})
+                    owned_ids.add(sid)
+                elif sid not in asset_locs and sid not in other_ids:
+                    other.append({"location_id": sid, "name": nm})
+                    other_ids.add(sid)
+            # Structures in that system we already know about
+            for entry in locations_in_system(conn, sys_id):
+                lid = entry["location_id"]
+                if lid in asset_locs and lid not in owned_ids:
+                    owned.append(entry)
+                    owned_ids.add(lid)
+                elif lid not in asset_locs and lid not in other_ids:
+                    other.append(entry)
+                    other_ids.add(lid)
+    except sqlite3.OperationalError:
+        # An older eve_cache.db that has not been refreshed from the bundle yet.
+        # The ESI paths below still answer whole names, so this degrades rather
+        # than breaks.
+        pass
+
+    # ESI lookup - player structures, and whole names the local index missed.
+    # Player structures are the one thing the SDE cannot know about, so that call
+    # is always worth making when signed in; the name lookup is not.
+    ask_esi_ids = not owned and not other
+    if not ask_esi_ids and not (char and token):
+        conn.close()
+        return {"owned": owned[:15], "other": other[:10], "note": None,
+                "cache_empty": False}
+
     try:
         async with esi_client() as client:
             # CCP removed the public /search/ endpoint: it now 404s on every
@@ -4164,14 +4239,19 @@ async def suggest_station(request: Request, q: str = ""):
             # names only - the old strict=false partial matching is gone for
             # good - which is why the local-cache pass above still does the
             # substring matching over every name already known.
-            esi_tasks: list = [
-                client.post(
-                    "https://esi.evetech.net/latest/universe/ids/",
-                    params={"datasource": "tranquility"},
-                    json=[q.strip()],
-                    timeout=5.0,
-                ),
-            ]
+            # Only worth a request when the local index came up empty: the SDE
+            # ships with the app and can be a patch behind, so a brand-new
+            # station is the case this still covers.
+            esi_tasks: list = []
+            if ask_esi_ids:
+                esi_tasks.append(
+                    client.post(
+                        "https://esi.evetech.net/latest/universe/ids/",
+                        params={"datasource": "tranquility"},
+                        json=[q.strip()],
+                        timeout=5.0,
+                    )
+                )
             # Authenticated search for player structures (citadels, engineering complexes…)
             if char and token:
                 esi_tasks.append(
@@ -4185,14 +4265,15 @@ async def suggest_station(request: Request, q: str = ""):
                 )
 
             results = await asyncio.gather(*esi_tasks, return_exceptions=True)
-            ids_res = results[0]
-            structure_search = results[1] if len(results) > 1 else None
+            ids_res = results[0] if ask_esi_ids else None
+            structure_search = results[-1] if (char and token) else None
 
             # A name that matches nothing comes back as an empty object with a
             # 200, so there is no error case to distinguish here.
             npc_ids: list[int] = []
             system_ids: list[int] = []
-            if not isinstance(ids_res, Exception) and ids_res.status_code == 200:
+            if (ids_res is not None and not isinstance(ids_res, Exception)
+                    and ids_res.status_code == 200):
                 payload = ids_res.json() or {}
                 npc_ids = [e["id"] for e in (payload.get("stations") or [])][:20]
                 system_ids = [e["id"] for e in (payload.get("systems") or [])]
@@ -4266,8 +4347,19 @@ async def suggest_station(request: Request, q: str = ""):
     except Exception:
         pass
 
+    note = None
+    if not owned and not other and sde_systems:
+        # The system exists, so "nothing found" would read as a failure of the
+        # search. It is not: some systems have no NPC station at all, and the
+        # only markets are in structures we cannot see unless they are public or
+        # the character can dock there.
+        names = ", ".join(n for _, n in sde_systems[:3])
+        note = (f"{names} has no NPC station, and no structure there is public or "
+                f"open to this character. Paste a structure ID from the game to add it.")
+
     conn.close()
-    return {"owned": owned[:15], "other": other[:10], "cache_empty": cache_empty and not owned and not other}
+    return {"owned": owned[:15], "other": other[:10], "note": note,
+            "cache_empty": cache_empty and not owned and not other}
 
 
 @app.post("/api/add-station")
@@ -6683,6 +6775,53 @@ def _any_structure_token(conn: sqlite3.Connection) -> str | None:
         if tok and token_has_scope(tok, "esi-universe.read_structures.v1"):
             return tok
     return None
+
+
+# ── Public structures across New Eden ─────────────────────────────────────────
+# The SDE has every NPC station, but player structures are not in it, so a
+# Keepstar in 1DQ1-A or anything in a wormhole could only ever be found if the
+# character happened to have docking access. ESI will say which structures are
+# public - 872 of them, 57 with a public market - and that list moves on the
+# order of a day, so it is fetched once and cached in location_name_cache, where
+# the ordinary name search picks it up.
+_PUBSTRUCT_WORKER: dict[str, object] = {}
+_PUBSTRUCT_STATE: dict = {"phase": "idle"}
+
+
+def public_structure_state() -> dict:
+    return dict(_PUBSTRUCT_STATE)
+
+
+async def _public_structure_refresh(token: str) -> None:
+    conn = get_conn()
+    try:
+        _PUBSTRUCT_STATE.update(phase="filling", named=0, total=0)
+
+        def _p(named, total):
+            _PUBSTRUCT_STATE.update(phase="filling", named=named, total=total)
+
+        res = await refresh_public_structures(conn, token, progress_cb=_p)
+        _PUBSTRUCT_STATE.update(phase="done", **res)
+    except asyncio.CancelledError:
+        _PUBSTRUCT_STATE.update(phase="stopped")
+        raise
+    except Exception as exc:
+        _PUBSTRUCT_STATE.update(phase="error", error=str(exc)[:200])
+    finally:
+        conn.close()
+
+
+def ensure_public_structures(token: str | None) -> None:
+    """Start the daily refresh if it is due. Never blocks the caller."""
+    if not token:
+        return                      # the structure-info endpoint needs one
+    task = _PUBSTRUCT_WORKER.get("task")
+    if task is not None and not task.done():      # type: ignore[union-attr]
+        return
+    try:
+        _PUBSTRUCT_WORKER["task"] = asyncio.create_task(_public_structure_refresh(token))
+    except RuntimeError:
+        pass                        # no running loop (CLI/tests)
 
 
 # ── Region volume top-up ──────────────────────────────────────────────────────

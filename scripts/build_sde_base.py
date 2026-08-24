@@ -36,6 +36,8 @@ SDE_TABLES = {
     "sde_skill_time_bonus",
     "sde_planet_schematics",
     "sde_planet_schematic_materials",
+    "sde_stations",
+    "sde_systems",
     "rig_bonuses",
     META_TABLE,
 }

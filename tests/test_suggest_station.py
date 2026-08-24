@@ -77,7 +77,23 @@ def test_the_removed_search_endpoint_is_not_called(client, stub_esi):
     client.get("/api/suggest-station?q=PR-8CA")
     urls = [u for _, u in stub_esi]
     assert not any(u.rstrip("/").endswith("/latest/search") for u in urls)
-    assert any("/universe/ids/" in u for u in urls)
+
+
+def test_a_name_the_local_index_knows_costs_no_request(client, stub_esi):
+    """The SDE ships with the app, so a station or system it already knows must
+    not cost a round trip - only the structure search, which needs ESI."""
+    r = client.get("/api/suggest-station?q=PR-8CA")
+    assert r.status_code == 200
+    assert any(e["location_id"] == PR_8CA_STATION
+               for e in r.json()["other"] + r.json()["owned"])
+    assert not any("/universe/ids/" in u for _, u in stub_esi)
+
+
+def test_a_name_the_local_index_misses_still_asks_esi(client, stub_esi):
+    """The bundled SDE can be a patch behind, so a name it does not know is
+    exactly the case /universe/ids/ still covers."""
+    client.get("/api/suggest-station?q=Some Brand New Station")
+    assert any("/universe/ids/" in u for _, u in stub_esi)
 
 
 def test_a_name_matching_nothing_is_not_an_error(client, app_module, monkeypatch):

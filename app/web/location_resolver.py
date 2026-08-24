@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import sqlite3
+import time
 import httpx
 from app.esi.client import esi_client
 
@@ -139,6 +140,29 @@ def get_station_security_multiplier(
     return security_multiplier(get_cached_security(conn, row[0]), is_reaction)
 
 
+def _region_from_sde(conn: sqlite3.Connection, location_id: int,
+                     sys_id: int | None) -> int | None:
+    """Region straight from the bundled SDE, for an NPC station or any system.
+
+    Player structures are not in the SDE, but once their system is known (from
+    the name cache) the system's region is - which covers them too.
+    """
+    try:
+        if location_id < 1_000_000_000:
+            row = conn.execute("SELECT region_id FROM sde_stations WHERE station_id=?",
+                               (location_id,)).fetchone()
+            if row and row[0]:
+                return row[0]
+        if sys_id:
+            row = conn.execute("SELECT region_id FROM sde_systems WHERE system_id=?",
+                               (sys_id,)).fetchone()
+            if row and row[0]:
+                return row[0]
+    except sqlite3.OperationalError:
+        pass          # database not refreshed from the bundle yet
+    return None
+
+
 async def get_region_for_location(conn: sqlite3.Connection, location_id: int, token: str | None = None) -> int | None:
     """Return the region_id for the given location_id. Caches the result in the DB."""
     ensure_location_name_table(conn)
@@ -151,6 +175,17 @@ async def get_region_for_location(conn: sqlite3.Connection, location_id: int, to
         return row[1]
 
     sys_id = row[0] if row else None
+
+    # The SDE knows every NPC station's region outright, and every system's, so
+    # neither needs a round trip. Two ESI calls saved per load, and it works with
+    # no network at all.
+    local = _region_from_sde(conn, location_id, sys_id)
+    if local:
+        if row:
+            conn.execute("UPDATE location_name_cache SET region_id=? WHERE location_id=?",
+                         (local, location_id))
+            conn.commit()
+        return local
 
     # If we don't have a system_id, resolve the station
     if not sys_id:
@@ -209,6 +244,109 @@ def load_location_sys_from_db(conn: sqlite3.Connection) -> dict[int, int]:
         "SELECT location_id, solar_system_id FROM location_name_cache WHERE solar_system_id IS NOT NULL"
     ).fetchall()
     return {r[0]: r[1] for r in rows}
+
+
+# ── Public structures across New Eden ────────────────────────────────────────
+# Player structures are not in the SDE, so the only way to offer one the
+# character has never docked at is to ask ESI which ones are public. That list is
+# small (872 with public access, 57 of them with a public market) and changes on
+# the order of a day, so it is fetched once and cached. Without this, searching
+# for a structure only ever found the ones a character could already dock at.
+_PUBLIC_STRUCTURES_TTL = 24 * 3600
+_PUBLIC_STRUCTURE_CONC = 10
+
+
+def ensure_public_structure_meta(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS public_structure_meta (
+            id           INTEGER PRIMARY KEY CHECK (id = 1),
+            refreshed_at REAL,
+            count        INTEGER
+        )""")
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(location_name_cache)")}
+    if "has_market" not in cols:
+        conn.execute("ALTER TABLE location_name_cache ADD COLUMN has_market INTEGER")
+    conn.commit()
+
+
+def public_structures_stale(conn: sqlite3.Connection) -> bool:
+    ensure_location_name_table(conn)
+    ensure_public_structure_meta(conn)
+    row = conn.execute("SELECT refreshed_at FROM public_structure_meta WHERE id=1").fetchone()
+    return not row or not row[0] or (time.time() - row[0]) > _PUBLIC_STRUCTURES_TTL
+
+
+async def refresh_public_structures(conn: sqlite3.Connection, token: str,
+                                    progress_cb=None) -> dict:
+    """Name every publicly accessible structure in New Eden and cache it.
+
+    Needs a token: the structure-info endpoint is authenticated even for public
+    structures (401 without one). Structures whose ACL changed under us answer
+    403 and are simply skipped - a name we cannot read is not an error worth
+    failing the whole refresh over.
+    """
+    ensure_location_name_table(conn)
+    ensure_public_structure_meta(conn)
+
+    async with esi_client() as client:
+        listed = await client.get(f"{ESI_BASE}/universe/structures/",
+                                  params={"datasource": "tranquility"}, timeout=20)
+        if listed.status_code != 200:
+            return {"named": 0, "total": 0, "error": f"HTTP {listed.status_code}"}
+        ids = [int(x) for x in (listed.json() or [])]
+
+        market_ids: set[int] = set()
+        mkt = await client.get(f"{ESI_BASE}/universe/structures/",
+                               params={"datasource": "tranquility", "filter": "market"},
+                               timeout=20)
+        if mkt.status_code == 200:
+            market_ids = {int(x) for x in (mkt.json() or [])}
+
+        sem = asyncio.Semaphore(_PUBLIC_STRUCTURE_CONC)
+        rows: list[tuple] = []
+
+        async def one(sid: int):
+            async with sem:
+                try:
+                    r = await client.get(
+                        f"{ESI_BASE}/universe/structures/{sid}/",
+                        params={"datasource": "tranquility"},
+                        headers={"Authorization": f"Bearer {token}"}, timeout=10)
+                except Exception:
+                    return
+                if r.status_code != 200:
+                    return
+                d = r.json() or {}
+                name = d.get("name")
+                if not name:
+                    return
+                sys_id = d.get("solar_system_id")
+                region_id = None
+                if sys_id:
+                    got = conn.execute("SELECT region_id FROM sde_systems WHERE system_id=?",
+                                       (sys_id,)).fetchone()
+                    region_id = got[0] if got else None
+                rows.append((sid, name, sys_id, region_id,
+                             1 if sid in market_ids else 0))
+
+        for start in range(0, len(ids), 200):
+            await asyncio.gather(*[one(sid) for sid in ids[start:start + 200]],
+                                 return_exceptions=True)
+            if progress_cb:
+                try:
+                    progress_cb(len(rows), len(ids))
+                except Exception:
+                    pass
+
+    if rows:
+        conn.executemany(
+            "INSERT OR REPLACE INTO location_name_cache"
+            " (location_id, name, solar_system_id, region_id, has_market)"
+            " VALUES (?,?,?,?,?)", rows)
+    conn.execute("INSERT OR REPLACE INTO public_structure_meta (id, refreshed_at, count)"
+                 " VALUES (1, ?, ?)", (time.time(), len(rows)))
+    conn.commit()
+    return {"named": len(rows), "total": len(ids)}
 
 
 def locations_in_system(conn: sqlite3.Connection, solar_system_id: int) -> list[dict]:
