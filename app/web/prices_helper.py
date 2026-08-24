@@ -33,8 +33,10 @@ def get_cached_jita_prices(conn: sqlite3.Connection, type_ids: list[int]) -> dic
     The Forge region (Jita station + surrounding systems), so if there is currently no
     sell order in Jita itself, the nearest one in the region is used.
 
-    PRICE_CACHE_TTL is used only for the UI freshness indicator
-    (`fresh` flag in /prices), not for filtering the value.
+    PRICE_CACHE_TTL does not filter the value here - the last fetched price is
+    always used. It drives the `fresh` flag in /prices, and it does gate one
+    other path: fetch_jita_price(), the single-type lookup, refetches once a
+    stored price is older than that.
     """
     result = {}
     for tid in type_ids:

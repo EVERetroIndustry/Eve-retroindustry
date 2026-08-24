@@ -16,7 +16,13 @@ from app.esi.client import esi_client, esi_throttle_status, esi_budget_share
 ESI_BASE = "https://esi.evetech.net/latest"
 JITA_REGION = 10000002   # The Forge
 JITA_STATION = 60003760  # Jita 4-4 CNAP
-PRICE_CACHE_TTL = 60 * 60 * 12  # 12 hours
+# How long a stored Jita price counts as current. ESI's own order cache is about
+# five minutes (measured: expires 90 s ahead, last-modified 3.5 min back), so
+# anything longer is our choice, not a limit. It was 12 hours, which on Jita can
+# be badly wrong for anything volatile - and the docstring on fetch_jita_price
+# had claimed 30 minutes all along. Now it is 30 minutes in both places: someone
+# who wants current numbers should get them.
+PRICE_CACHE_TTL = 60 * 30  # 30 minutes
 
 # Secondary trade hubs - region_id → {name, station}. Jita stays the app-wide
 # reference (market_price_cache); these are fetched on demand per hub into
