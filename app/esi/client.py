@@ -86,6 +86,7 @@ class _TokenBucketGovernor:
     def __init__(self) -> None:
         self._pause_until: dict[str, float] = {}   # group -> monotonic deadline
         self._group_of: dict[str, str] = {}        # path signature -> group
+        self._headroom: dict[str, tuple[int, int]] = {}   # group -> (remaining, limit)
 
     @staticmethod
     def signature(url: httpx.URL) -> str:
@@ -110,6 +111,8 @@ class _TokenBucketGovernor:
         self._group_of[sig] = group
         remaining = _int_header(response, "x-ratelimit-remaining")
         limit = _limit_header_total(response.headers.get("x-ratelimit-limit"))
+        if remaining is not None and limit:
+            self._headroom[group] = (remaining, limit)
         if remaining is not None and limit and remaining <= limit * self._LOW_WATER:
             self._pause_until[group] = max(
                 self._pause_until.get(group, 0.0), time.monotonic() + self._BRAKE_SECONDS
@@ -273,6 +276,27 @@ def esi_throttle_status(url: str | None = None) -> dict:
         for until in _TOKEN_LIMIT._pause_until.values():
             remaining = max(remaining, until - now)
     return {"paused": remaining > 0.05, "seconds": int(remaining + 0.999) if remaining > 0 else 0}
+
+
+def esi_budget_share(url: str) -> float | None:
+    """Fraction of this endpoint's token bucket still unspent, or None if unknown.
+
+    The buckets are large but finite over a long window (the history endpoint
+    reports something like "12000/15m"), which a full region sweep of ~19k types
+    simply cannot fit inside. That makes it essential for a background job to be
+    able to see how much is left and leave a cushion: a user-initiated station
+    load needs only a few hundred requests, so as long as the background stops
+    well short of the floor, clicking Load never lands on a 429 the background
+    earned. Read-only.
+    """
+    sig = _TokenBucketGovernor.signature(httpx.URL(url))
+    group = _TOKEN_LIMIT._group_of.get(sig)
+    if not group:
+        return None
+    pair = _TOKEN_LIMIT._headroom.get(group)
+    if not pair or not pair[1]:
+        return None
+    return max(0.0, min(1.0, pair[0] / pair[1]))
 
 
 def esi_client(**kwargs) -> httpx.AsyncClient:

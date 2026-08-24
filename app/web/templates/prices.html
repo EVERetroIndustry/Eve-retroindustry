@@ -86,6 +86,7 @@
         </div>
       </div>
       <div id="station-vol-status" class="small text-muted mt-2 d-none"></div>
+      <div id="region-fill-status" class="small text-muted mt-1 d-none"></div>
     </div>
   </div>
   <div class="col-xl-4">
@@ -799,6 +800,36 @@
   const stationBox     = document.getElementById('station-vol-suggestions');
   const stationLoad    = document.getElementById('station-vol-load');
   const stationStatus  = document.getElementById('station-vol-status');
+  const regionFillEl   = document.getElementById('region-fill-status');
+
+  // A station load only asks about what that station sells, which is what makes
+  // it quick; the rest of the region is topped up afterwards in the background.
+  // Without saying so, the blank vol/7d cells look like a failure.
+  let regionFillTimer = null;
+  function pollRegionFill(regionId) {
+    if (!regionId) return;
+    clearInterval(regionFillTimer);
+    const tick = () => {
+      fetch('/api/prices/region-fill-status?region_id=' + encodeURIComponent(regionId))
+        .then(r => r.json())
+        .then(st => {
+          const phase = st.phase || 'idle';
+          if (phase === 'filling' || phase === 'starting') {
+            const have = euro(st.have || 0, false), total = euro(st.total || 0, false);
+            regionFillEl.textContent =
+              `Filling this region's 7-day volumes in the background: ${have} / ${total}. `
+              + 'The next station load here will use them.';
+            regionFillEl.classList.remove('d-none');
+          } else {
+            clearInterval(regionFillTimer);
+            regionFillEl.classList.add('d-none');
+          }
+        })
+        .catch(() => clearInterval(regionFillTimer));
+    };
+    tick();
+    regionFillTimer = setInterval(tick, 5000);
+  }
 
   let stationDebounce = null;
 
@@ -896,6 +927,7 @@
             if (!j.ok) { dlFinish('error', 'Loaded, but no data returned.'); endBtn(); dlHide(3000); return; }
             applyStationResult(j.data, d.region_id, d.cached, shortName, locId);
             dlFinish('done', d.cached ? 'Data from cache (< 30 min).' : 'Done.');
+            pollRegionFill(d.region_id);
             endBtn(); dlHide(2500);
           })
           .catch(() => { dlFinish('error', 'Loaded, but failed to read data.'); endBtn(); dlHide(3000); });

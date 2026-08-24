@@ -6,11 +6,12 @@ Two modes:
   jita      - live Jita sell/buy prices, N parallel calls, 30 min cache
 """
 import asyncio
+import functools
 import json
 import time
 import sqlite3
 import httpx
-from app.esi.client import esi_client
+from app.esi.client import esi_client, esi_throttle_status, esi_budget_share
 
 ESI_BASE = "https://esi.evetech.net/latest"
 JITA_REGION = 10000002   # The Forge
@@ -53,6 +54,47 @@ _JITA_SEM = asyncio.Semaphore(10)
 # long and cannot sustain the rate that trips anything. If a 429 does arrive, the
 # governor parks the group and the ETag layer makes the retry nearly free.
 _HIST_SEM = asyncio.Semaphore(30)
+
+
+# Foreground price work in flight. The background region top-up shares ESI's
+# rate-limit group with it, and a 429 parks the WHOLE group - so a background
+# burst can make a user who just clicked Load wait out a minute they did not
+# earn. Measured before this existed: a cold station load that takes 0.8 s alone
+# took 42.2 s issued right after the top-up had collected a penalty. The top-up
+# now stands aside whenever something the user is waiting for is running.
+_foreground_ops = 0
+
+
+class foreground_prices:
+    """Context manager marking a price operation a user is waiting for."""
+
+    def __enter__(self):
+        global _foreground_ops
+        _foreground_ops += 1
+        return self
+
+    def __exit__(self, *exc):
+        global _foreground_ops
+        _foreground_ops = max(0, _foreground_ops - 1)
+        return False
+
+
+def foreground_prices_active() -> bool:
+    return _foreground_ops > 0
+
+
+def foreground(fn):
+    """Mark an async price fetch as work a user is waiting for.
+
+    A decorator rather than a with-block inside each body: the point is to
+    reserve ESI's rate-limit group for these calls, and nesting them is fine
+    (the counter, not a flag, is what makes that safe).
+    """
+    @functools.wraps(fn)
+    async def wrapper(*a, **kw):
+        with foreground_prices():
+            return await fn(*a, **kw)
+    return wrapper
 
 
 # ---------------------------------------------------------------------------
@@ -508,6 +550,7 @@ async def fetch_jita_price(
     return best_sell, best_buy
 
 
+@foreground
 async def fetch_jita_prices_bulk(
     client: httpx.AsyncClient,
     conn: sqlite3.Connection,
@@ -716,6 +759,186 @@ async def get_region_for_structure(structure_id: int) -> int | None:
         return None
 
 
+# How stale a stored daily-volume record may be before it stops counting as
+# coverage. ESI rebuilds market history once a day, and the stored days are only
+# useful while they still overlap the moving 7-day window: left long enough they
+# fall out of it one by one and _window_sum quietly decays towards 0 - which
+# would read as "nothing traded here" when the truth is "we have not looked
+# lately". A missing number is honest; a wrong one is not.
+_REGION_VOLUME_MAX_AGE = 36 * 3600
+
+# Pacing for the background top-up. Deliberately far below what the foreground
+# sweeps use: the history endpoint limits by request RATE, so firing a batch
+# through the shared semaphore of 30 is a short sharp burst that trips 429s even
+# though the average works out low - and each 429 parks the whole rate-limit
+# group for 60 s, which the next user-initiated load pays for.
+#
+# Measured on region 10000038, 75 s each from a cooled-down start:
+#   conc 30 (shared sem)  24 req/s, 6 penalties
+#   conc 6                48 req/s, 3 penalties
+#   conc 3                58 req/s, 0 penalties
+# A gentle trickle is both faster and penalty-free, because the 60 s waits
+# dominate everything else. Those are opening-burst rates though: sustained, the
+# bucket becomes the ceiling and the client's own low-water brake takes over.
+# Measured over 8 minutes on a cold region: 0 -> 10 534 of 19 432 types, zero
+# penalties, the rate tapering from ~3 200/min to a few hundred as the bucket
+# drained. A cold region therefore takes a long while to finish - which is fine,
+# since every batch persists its ETags and the next pass resumes where it left
+# off. What must not happen is a user waiting for it, and that is the guard above.
+_FILL_CONC = 3
+# Share of the endpoint's token bucket the top-up refuses to dip below, when we
+# can see it at all. Usually we cannot: the history responses list the
+# x-ratelimit-* headers in access-control-expose-headers but do not actually send
+# them, so esi_budget_share() returns None and this check does nothing. It is
+# kept as a second line of defence for the responses that do carry them; the
+# mechanism that actually holds is stopping the moment a penalty is observed.
+_FILL_MIN_BUDGET_SHARE = 0.35
+_FILL_BATCH = 300        # how often progress is flushed, not a burst size
+_FILL_SLEEP = 0.5
+_FILL_SEM = asyncio.Semaphore(_FILL_CONC)
+
+
+def _region_volume_from_etags(conn: sqlite3.Connection, region_id: int) -> dict[int, int]:
+    """7-day volumes recomputed from the stored daily history of ANY region.
+
+    The ETag cache keeps the last few daily volumes per (region, type) precisely
+    so the moving window can be recomputed locally - which means every region we
+    have ever fetched is already reusable, not just Jita and the hubs that have
+    dedicated columns. Only records fresh enough to still overlap the window
+    count; see _REGION_VOLUME_MAX_AGE.
+    """
+    out: dict[int, int] = {}
+    try:
+        rows = conn.execute(
+            "SELECT type_id, days_json FROM market_hist_etag"
+            " WHERE region_id=? AND days_json IS NOT NULL"
+            "   AND (expires_at > ? OR cached_at > ?)",
+            (region_id, time.time(), time.time() - _REGION_VOLUME_MAX_AGE),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return out
+    for tid, days_json in rows:
+        try:
+            out[int(tid)] = _window_sum(json.loads(days_json))
+        except (ValueError, TypeError, AttributeError):
+            continue      # one malformed row must not cost the whole region
+    return out
+
+
+def region_volume_coverage(conn: sqlite3.Connection, region_id: int,
+                           type_ids: list[int]) -> tuple[int, int]:
+    """(types with a fresh 7-day volume, types worth asking about).
+
+    The denominator leaves out types the history endpoint cannot answer for -
+    counting those would mean progress never reached 100 %.
+    """
+    askable = _types_with_market_history(conn, type_ids)
+    if not askable:
+        return 0, 0
+    # _cached_region_volume, not the ETag map alone: Jita and the hubs keep their
+    # volumes in dedicated columns, and counting only ETag rows would report a
+    # fully-loaded region as 0 % covered - sending the top-up off to re-fetch
+    # ~18k histories we already have.
+    have = _cached_region_volume(conn, region_id) or {}
+    return sum(1 for t in askable if t in have), len(askable)
+
+
+async def fill_region_volumes(conn: sqlite3.Connection, region_id: int,
+                              type_ids: list[int], budget: int = 3000,
+                              progress_cb=None) -> dict:
+    """Top up the 7-day volumes for a whole region, in the background.
+
+    A custom-station load only asks about what that station actually sells, which
+    is what makes it fast; this fills in the rest afterwards so the next load
+    there - at any station in the region - is served from cache with full
+    coverage. Paced deliberately, and it yields to foreground work: the job is to
+    use capacity nobody else wants, not to race a user who just clicked Load.
+
+    Interruptible at any point: every batch persists its own ETags, so a
+    cancelled pass is progress rather than waste.
+    """
+    askable = _types_with_market_history(conn, type_ids)
+    if not askable:
+        return {"fetched": 0, "remaining": 0, "reason": "complete"}
+    load_hist_etags(conn, region_id)
+    have = _cached_region_volume(conn, region_id) or {}   # see region_volume_coverage
+    todo = [t for t in askable if t not in have]
+    if not todo:
+        flush_hist_etags(conn)
+        return {"fetched": 0, "remaining": 0, "reason": "complete"}
+
+    fetched = 0
+    stopped_on_budget = False
+    stopped_on_penalty = False
+    try:
+        async with esi_client() as client:
+            for start in range(0, min(len(todo), budget), _FILL_BATCH):
+                # Checked before every batch, not once: a load can start at any
+                # point during a pass that takes minutes.
+                waited = 0.0
+                while foreground_prices_active() and waited < 300:
+                    await asyncio.sleep(1.0)
+                    waited += 1.0
+                # Wait out any penalty already in force rather than adding to
+                # it - the governor would block us anyway, but asking first
+                # keeps this job from being the reason the budget stays low.
+                # A penalty is in force. Don't wait it out and carry straight
+                # on: that is how a depleted bucket turns into a spiral, and the
+                # next thing to pay for it is a user clicking Load. Stop, and let
+                # the caller come back much later.
+                if esi_throttle_status(HISTORY_ENDPOINT_URL).get("paused"):
+                    stopped_on_penalty = True
+                    break
+
+                # Second line of defence, when CCP sends the headers for it. On
+                # the history endpoint they are usually absent (the response
+                # lists them in access-control-expose-headers but does not set
+                # them), so this normally does nothing - hence the check above,
+                # which relies only on what we can actually observe.
+                waited = 0.0
+                while waited < 600:
+                    share = esi_budget_share(HISTORY_ENDPOINT_URL)
+                    if share is None or share >= _FILL_MIN_BUDGET_SHARE:
+                        break
+                    if progress_cb:
+                        try:
+                            progress_cb(fetched, len(todo))
+                        except Exception:
+                            pass
+                    await asyncio.sleep(10.0)
+                    waited += 10.0
+                if waited >= 600:
+                    stopped_on_budget = True
+                    break        # bucket stayed low - stop and let a later pass resume
+
+                async def _one(t: int):
+                    async with _FILL_SEM:
+                        return await _fetch_region_volume(client, region_id, t)
+
+                batch = todo[start:start + _FILL_BATCH]
+                await asyncio.gather(*[_one(t) for t in batch],
+                                     return_exceptions=True)
+                fetched += len(batch)
+                flush_hist_etags(conn, clear=False)
+                if progress_cb:
+                    try:
+                        progress_cb(fetched, len(todo))
+                    except Exception:
+                        pass
+                await asyncio.sleep(_FILL_SLEEP)
+    finally:
+        flush_hist_etags(conn)
+    # "budget" tells the caller this stopped early with work left rather than
+    # finishing - the difference between "wait and try again" and "done".
+    reason = "complete"
+    if stopped_on_penalty:
+        reason = "throttled"
+    elif stopped_on_budget:
+        reason = "budget"
+    return {"fetched": fetched, "remaining": max(0, len(todo) - fetched),
+            "reason": reason}
+
+
 def _cached_region_volume(conn: sqlite3.Connection, region_id: int | None) -> dict[int, int] | None:
     """Reuse an already-fetched 7-day *region* volume map so a custom station in a
     known region needn't re-fetch ~19k histories (the slow part of a station load).
@@ -735,9 +958,18 @@ def _cached_region_volume(conn: sqlite3.Connection, region_id: int | None) -> di
             "SELECT type_id, volume FROM hub_price_cache WHERE region_id=? AND volume IS NOT NULL",
             (region_id,),
         ).fetchall()
-    return {r[0]: r[1] for r in rows} if rows else None
+    have = {r[0]: r[1] for r in rows} if rows else {}
+    # The dedicated columns win where they exist - that is the data the Jita/hub
+    # columns show, so a station in those regions stays consistent with them -
+    # and the ETag-derived map fills in everything else.
+    from_etags = _region_volume_from_etags(conn, region_id)
+    if not have and not from_etags:
+        return None
+    from_etags.update(have)
+    return from_etags
 
 
+@foreground
 async def fetch_structure_market(
     conn: sqlite3.Connection,
     structure_id: int,
@@ -968,6 +1200,7 @@ async def _fetch_orders_for_type(
     return volume, best_sell
 
 
+@foreground
 async def fetch_station_volumes(
     conn: sqlite3.Connection,
     location_id: int,

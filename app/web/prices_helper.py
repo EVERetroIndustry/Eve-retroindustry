@@ -248,6 +248,10 @@ def _persist_bulk_orders(
     return refreshed, traded
 
 
+from app.market.prices import foreground as _foreground  # noqa: E402
+
+
+@_foreground
 async def _fill_volumes(
     conn: sqlite3.Connection,
     type_ids: list[int],
@@ -445,6 +449,7 @@ def _persist_hub_bulk_orders(
     return refreshed, traded
 
 
+@_foreground
 async def _fill_hub_volumes(
     conn: sqlite3.Connection,
     region_id: int,

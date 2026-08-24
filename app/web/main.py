@@ -55,7 +55,7 @@ from app.manufacturing.planner import (
     MFG_IMPLANTS, MFG_IMPLANT_PCTS,
 )
 from app.bom.resolver import BOMResolver
-from app.market.prices import ensure_price_table, fetch_station_volumes, get_cached_station_volumes, get_station_volumes_any_age, fetch_structure_market, TRADE_HUBS, JITA_REGION, HISTORY_ENDPOINT_URL
+from app.market.prices import ensure_price_table, fetch_station_volumes, get_cached_station_volumes, get_station_volumes_any_age, fetch_structure_market, TRADE_HUBS, JITA_REGION, HISTORY_ENDPOINT_URL, fill_region_volumes, region_volume_coverage
 from app.web.prices_helper import (
     get_prices_for_ids,
     get_cached_prices_for_ids,
@@ -5204,9 +5204,7 @@ async def prices_station_stream(request: Request, location_id: int):
             # here (a previous partial/failed fetch could otherwise be replayed,
             # e.g. blank sell/available with only 7d volume). The cache still backs
             # the silent restore-on-page-load path (/station-volume/cached).
-            type_ids = [r[0] for r in conn.execute("SELECT type_id FROM market_price_cache").fetchall()]
-            if not type_ids:
-                type_ids = _refresh_type_ids(conn)
+            type_ids = _priceable_type_ids(conn)
             total = len(type_ids) or 1
             holder = [0]
             def _prog(done, _tot):
@@ -5242,6 +5240,11 @@ async def prices_station_stream(request: Request, location_id: int):
                 yield f"data: {_json.dumps({'error': str(exc) or 'Fetch failed.'})}\n\n"
                 return
             task = None   # completed cleanly - don't cancel in finally
+            # The sweep above only asked about what this station sells. Top the
+            # rest of the region up in the background so the next load here (or
+            # at any other station in the region) is served from cache with full
+            # coverage instead of sweeping again.
+            ensure_region_filler(region_id)
             yield f"data: {_json.dumps({'done': True, 'cached': False, 'region_id': region_id, 'pct': 100})}\n\n"
         except Exception as e:
             yield f"data: {_json.dumps({'error': str(e)})}\n\n"
@@ -5258,6 +5261,26 @@ async def prices_station_stream(request: Request, location_id: int):
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/prices/region-fill-status")
+async def api_region_fill_status(request: Request, region_id: int = 0):
+    """Progress of the background region volume top-up.
+
+    Exists so the page can say what is happening instead of leaving a half-filled
+    column with no explanation - the same reason the load itself reports when ESI
+    is throttling it.
+    """
+    st = region_fill_state(region_id or None)
+    if not st.get("total") and region_id:
+        conn = get_conn()
+        try:
+            type_ids = _priceable_type_ids(conn)
+            have, total = region_volume_coverage(conn, region_id, type_ids)
+            st = {**st, "have": have, "total": total}
+        finally:
+            conn.close()
+    return st
 
 
 @app.post("/api/prices/station-volume")
@@ -6651,6 +6674,122 @@ def _any_structure_token(conn: sqlite3.Connection) -> str | None:
         if tok and token_has_scope(tok, "esi-universe.read_structures.v1"):
             return tok
     return None
+
+
+# ── Region volume top-up ──────────────────────────────────────────────────────
+# A custom-station load only asks about what that station actually sells - that is
+# what turned a cold load from minutes with freezes into seconds. This fills in
+# the rest of the region afterwards, in the background, so the NEXT load there
+# (any station) gets full coverage straight from cache. Same shape as the public
+# contract filler above: one task, a state dict the UI can read, paced passes.
+def _priceable_type_ids(conn) -> list[int]:
+    """The type universe the Prices page works with.
+
+    Shared by the station load, the background top-up and the status endpoint so
+    "coverage" counts the same denominator in all three - a filler measuring a
+    different set than the loader would report progress that never matches.
+    """
+    ids = [r[0] for r in conn.execute("SELECT type_id FROM market_price_cache").fetchall()]
+    return ids or _refresh_type_ids(conn)
+
+
+_REGION_FILL: dict = {}
+_REGION_WORKER: dict[str, object] = {}
+_REGION_FILL_BUDGET = 3000          # types per pass, then a pause
+# Give up after this many passes that made no progress, so a region that can
+# never be finished (ESI persistently unavailable) does not loop for ever.
+_REGION_FILL_MAX_IDLE = 20
+
+
+def region_fill_state(region_id: int | None = None) -> dict:
+    if region_id is None:
+        return dict(_REGION_FILL)
+    st = dict(_REGION_FILL)
+    return st if st.get("region_id") == region_id else {"phase": "idle", "region_id": region_id}
+
+
+def _set_region(**kw) -> None:
+    _REGION_FILL.update(kw)
+    _REGION_FILL["updated"] = _time.time()
+
+
+async def _region_fill_loop(region_id: int) -> None:
+    """Fill one region to full coverage, then stop. Started by a station load."""
+    idle_passes = 0
+    while True:
+        conn = get_conn()
+        try:
+            type_ids = _priceable_type_ids(conn)
+            have, total = region_volume_coverage(conn, region_id, type_ids)
+            if total and have >= total:
+                _set_region(region_id=region_id, phase="done", have=have, total=total)
+                return
+            _set_region(region_id=region_id, phase="filling", have=have, total=total)
+
+            def _p(done, todo):
+                # `done` counts requests sent, not types newly covered (a type
+                # can answer "never traded"), so clamp rather than report >100 %.
+                _set_region(region_id=region_id, phase="filling",
+                            have=min(have + done, total), total=total)
+
+            res = await fill_region_volumes(conn, region_id, type_ids,
+                                            budget=_REGION_FILL_BUDGET, progress_cb=_p)
+            have2, _ = region_volume_coverage(conn, region_id, type_ids)
+            _set_region(region_id=region_id, have=have2, total=total,
+                        phase="done" if not res["remaining"] else "filling")
+            if not res["remaining"]:
+                return
+            if res["reason"] in ("budget", "throttled") or not res["fetched"]:
+                # Out of ESI budget, not out of work: a cold region needs more
+                # requests than the bucket holds, so waiting for it to refill is
+                # the normal case, not a failure. Returning here instead would
+                # abandon the region half-filled after the first squeeze.
+                idle_passes += 1
+                if idle_passes >= _REGION_FILL_MAX_IDLE:
+                    _set_region(region_id=region_id, phase="stalled",
+                                have=have2, total=total)
+                    return
+                _set_region(region_id=region_id, phase="waiting",
+                            have=have2, total=total, reason=res["reason"])
+            else:
+                idle_passes = 0
+        except asyncio.CancelledError:
+            _set_region(region_id=region_id, phase="stopped")
+            raise
+        except Exception as exc:
+            _set_region(region_id=region_id, phase="error", error=str(exc)[:200])
+            return
+        finally:
+            conn.close()
+        # Between passes, not just between batches: a user clicking around the app
+        # should never be waiting behind this. Waiting on the bucket to refill is
+        # a longer wait than waiting on courtesy.
+        # Backing off after a penalty is a much longer wait than pacing: the
+        # point is to stop contributing to a depleted bucket, not to tiptoe.
+        if _REGION_FILL.get("phase") == "waiting":
+            await asyncio.sleep(600 if _REGION_FILL.get("reason") == "throttled" else 120)
+        else:
+            await asyncio.sleep(20)
+
+
+def ensure_region_filler(region_id: int | None) -> None:
+    """Start topping this region up, unless a fill is already running."""
+    if not region_id:
+        return
+    task = _REGION_WORKER.get("task")
+    if task is not None and not task.done():        # type: ignore[union-attr]
+        if _REGION_FILL.get("region_id") == region_id:
+            return
+        # The user moved to a different region, so that is the one worth warming
+        # now. Cancelling costs nothing: every batch persists its own ETags, so
+        # the abandoned region keeps whatever it already fetched and resumes from
+        # there if it is visited again.
+        task.cancel()                               # type: ignore[union-attr]
+    try:
+        _REGION_WORKER["task"] = asyncio.create_task(_region_fill_loop(region_id))
+        _set_region(region_id=region_id, phase="starting")
+    except RuntimeError:
+        pass                                        # no running loop (CLI/tests)
 
 
 def public_fill_state() -> dict:
