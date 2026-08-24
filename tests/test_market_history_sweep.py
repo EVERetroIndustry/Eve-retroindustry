@@ -72,9 +72,17 @@ def test_more_types_than_sqlite_takes_variables_are_chunked(sde):
 
 
 def test_history_concurrency_stays_where_it_was_measured():
-    """30 answered 429 after ~6 000 requests; 10 sustained 16 500 with none. If this
-    is raised again, re-measure first - the endpoint's limits changed under us once."""
-    assert P._HIST_SEM._value <= 10
+    """The limiter goes by request RATE, not by a cumulative count.
+
+    Measured 2026-08-24 on the same 17 307-type list: the refresh path at
+    concurrency 30 reaches ~290-380 req/s (it commits every 200 results, which
+    paces it) and finishes in 45 s with zero 429s; at 10 it is clean too but takes
+    ~105 s. A bare unpaced loop at 30 hits ~460 req/s and does get 429s - which is
+    what the custom-station sweep used to be before it stopped asking about types
+    the station does not sell. Raise this only with a fresh measurement of BOTH
+    paths; the endpoint's behaviour changed under us once already.
+    """
+    assert P._HIST_SEM._value == 30
 
 
 # ── fetch_structure_market: scope narrowing + crash-safe persistence ──────────
@@ -238,3 +246,71 @@ class _NullClient:
 
     async def __aexit__(self, *a):
         return False
+
+
+# ── the HTTP-caching layer: what survives, and what used to be skipped ────────
+
+def test_an_empty_history_is_remembered_instead_of_re_asked(tmp_path, monkeypatch):
+    """"This type has never traded here" is an answer. Not storing it meant the
+    same types were re-requested on every single load - measured 84 of 537 at one
+    station, every time."""
+    import asyncio
+    conn = sqlite3.connect(tmp_path / "e.db")
+    P.ensure_hist_etag_table(conn)
+    P._hist_etags.clear(); P._hist_etags_dirty.clear()
+
+    class _Resp:
+        status_code = 200
+        headers = {"etag": 'W/"abc"', "expires": "Wed, 21 Oct 2099 07:28:00 GMT"}
+        def json(self): return []            # traded here: never
+
+    class _Client:
+        async def get(self, *a, **k): return _Resp()
+
+    vol = asyncio.run(P._fetch_region_volume(_Client(), 10000002, 34))
+    assert vol == 0
+    assert (10000002, 34) in P._hist_etags          # remembered...
+    assert P.flush_hist_etags(conn) == 1            # ...and persisted
+    stored = conn.execute("SELECT etag, days_json FROM market_hist_etag").fetchone()
+    assert stored[0] == 'W/"abc"' and stored[1] == "{}"
+    P._hist_etags.clear(); P._hist_etags_dirty.clear()
+
+
+def test_flush_without_clear_keeps_the_map_for_the_rest_of_the_run(tmp_path):
+    """A per-batch flush must not drop the in-memory map: the remaining batches
+    need it for their If-None-Match headers, or cheap 304s become full bodies."""
+    conn = sqlite3.connect(tmp_path / "f.db")
+    P.ensure_hist_etag_table(conn)
+    P._hist_etags.clear(); P._hist_etags_dirty.clear()
+    P._hist_etags[(1, 2)] = ('W/"x"', {"2026-08-20": 5}, 9e9)
+    P._hist_etags_dirty.add((1, 2))
+
+    assert P.flush_hist_etags(conn, clear=False) == 1
+    assert (1, 2) in P._hist_etags                  # still usable
+    assert not P._hist_etags_dirty                  # but no longer pending
+
+    P._hist_etags_dirty.add((1, 2))
+    P.flush_hist_etags(conn)                        # final call does clear
+    assert not P._hist_etags
+    P._hist_etags.clear(); P._hist_etags_dirty.clear()
+
+
+def test_the_structure_path_uses_the_etag_cache_at_all(monkeypatch):
+    """It did not. A citadel load re-fetched every history body every time and
+    stored nothing for the next load, so the whole HTTP-caching layer skipped the
+    exact case the slow loads were reported for."""
+    import asyncio
+    all_ids = [1, 2, 3]
+    conn = _sde_conn(all_ids)
+    calls = []
+    monkeypatch.setattr(P, "load_hist_etags", lambda c, r: calls.append(("load", r)))
+    monkeypatch.setattr(P, "flush_hist_etags", lambda c, clear=True: calls.append(("flush", clear)))
+    monkeypatch.setattr(P, "esi_client", lambda **kw: _StructureOrdersClient({1}))
+    monkeypatch.setattr(P, "_cached_region_volume", lambda conn, region: None)
+
+    async def fake_fetch(client, region_id, type_id): return 1
+    monkeypatch.setattr(P, "_fetch_region_volume", fake_fetch)
+
+    asyncio.run(P.fetch_structure_market(conn, 999, "tok", set(all_ids), region_id=10000002))
+    assert ("load", 10000002) in calls, calls
+    assert any(k == "flush" for k, _ in calls), calls

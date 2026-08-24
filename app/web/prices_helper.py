@@ -261,8 +261,24 @@ async def _fill_volumes(
     """
     from app.market.prices import (  # type: ignore
         _fetch_region_volume, JITA_REGION, load_hist_etags, flush_hist_etags,
+        _types_with_market_history,
     )
 
+    if not type_ids:
+        return 0
+    # Measured on a full cold Jita refresh (2026-08-24): 107 of these answered
+    # 400/404 and drove the shared error budget from 100 down to 3, which tripped
+    # the governor's proactive brake right at the end of the run. 96 of the 107
+    # were types with no market group or published = 0 - "Expired ... Booster",
+    # "Mutated ... Drone" - things that can carry an order but have no history to
+    # fetch. They were never going to yield a volume, so not asking is free.
+    # (The other 11 were brand-new items that have orders but have not traded
+    # yet; those fix themselves once they do.)
+    asked = _types_with_market_history(conn, type_ids)
+    if len(asked) != len(type_ids):
+        print(f"[prices] volume fill: skipping {len(type_ids) - len(asked)} type(s) "
+              f"with no market history", flush=True)
+    type_ids = asked
     if not type_ids:
         return 0
 
@@ -292,6 +308,10 @@ async def _fill_volumes(
                     "UPDATE market_price_cache SET volume=? WHERE type_id=?", rows
                 )
                 conn.commit()
+                # ETags per batch too: an interrupted refresh used to lose every
+                # one it had collected (see fetch_structure_market for the
+                # measurement), making the next attempt pay full price again.
+                flush_hist_etags(conn, clear=False)
                 updated += len(rows)
             done_holder[0] = start + len(batch)
             if progress_cb:
@@ -435,7 +455,16 @@ async def _fill_hub_volumes(
     _fill_volumes but for an arbitrary region."""
     from app.market.prices import (  # type: ignore
         _fetch_region_volume, load_hist_etags, flush_hist_etags,
+        _types_with_market_history,
     )
+    if not type_ids:
+        return 0
+    # Same filter as the Jita path - see _fill_volumes for the measurement.
+    asked = _types_with_market_history(conn, type_ids)
+    if len(asked) != len(type_ids):
+        print(f"[prices] hub volume fill: skipping {len(type_ids) - len(asked)} "
+              f"type(s) with no market history", flush=True)
+    type_ids = asked
     if not type_ids:
         return 0
     load_hist_etags(conn, region_id)
@@ -461,6 +490,7 @@ async def _fill_hub_volumes(
                     "UPDATE hub_price_cache SET volume=? WHERE region_id=? AND type_id=?", rows
                 )
                 conn.commit()
+                flush_hist_etags(conn, clear=False)   # see _fill_volumes
                 updated += len(rows)
             done_holder[0] = start + len(batch)
             if progress_cb:

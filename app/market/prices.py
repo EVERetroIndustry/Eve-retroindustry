@@ -37,14 +37,22 @@ TRADE_HUBS: dict[int, dict] = {
 _JITA_SEM = asyncio.Semaphore(10)
 # The 7-day history is fetched per-type (no bulk endpoint), so it is the dominant
 # part of a refresh (~19k calls).
-# Concurrency for market history. 30 used to be the saturation point (measured
-# 2026-08: 496 req/s at 30, worse above), but ESI has since started rate-limiting
-# this endpoint: re-measured 2026-08-24, concurrency 30 runs at ~460 req/s and
-# then answers 429 after ~6 000 requests, and each 429 parks the whole group for
-# a minute - which is what turned a custom-station load in a fresh region into
-# "loads a bit, hangs, loads a bit". At 10 the same sweep sustained 226 req/s for
-# 7 000 requests with ZERO 429s. Slower per second, several times faster overall.
-_HIST_SEM = asyncio.Semaphore(10)
+# Concurrency for market history. ESI rate-limits this endpoint by REQUEST RATE,
+# not by a cumulative count - measured 2026-08-24 on the same 17 307-type list:
+#
+#   * a bare loop at concurrency 30 reaches ~460 req/s and gets 429s, each of
+#     which parks the whole group for a minute;
+#   * the refresh path at concurrency 30 reaches only ~290-380 req/s, because it
+#     commits every 200 results, and finishes 17 307 types in 45 s with ZERO 429s;
+#   * the same path at concurrency 10 is clean too, but takes ~105 s.
+#
+# So 10 was an over-correction that cost 60 s on every cold price refresh. What
+# actually tripped the limiter was the custom-station sweep, which used to fire
+# ~19 800 requests in one unpaced burst; it now asks only about types the station
+# actually sells (a few hundred to a couple thousand), so that burst is seconds
+# long and cannot sustain the rate that trips anything. If a 429 does arrive, the
+# governor parks the group and the ETag layer makes the retry nearly free.
+_HIST_SEM = asyncio.Semaphore(30)
 
 
 # ---------------------------------------------------------------------------
@@ -254,8 +262,15 @@ def load_hist_etags(conn: sqlite3.Connection, region_id: int) -> int:
     return n
 
 
-def flush_hist_etags(conn: sqlite3.Connection) -> int:
-    """Persist ETags collected during a volume phase (bulk, one transaction)."""
+def flush_hist_etags(conn: sqlite3.Connection, clear: bool = True) -> int:
+    """Persist ETags collected during a volume phase (bulk, one transaction).
+
+    `clear=False` writes without dropping the in-memory map, which is what a
+    per-batch flush needs: dropping it mid-run would cost the REMAINING batches
+    their If-None-Match headers, turning cheap 304s back into full bodies. The
+    final call clears, because holding every region's map (~19k types each) in a
+    desktop app is tens of MB.
+    """
     if not _hist_etags_dirty:
         return 0
     ensure_hist_etag_table(conn)
@@ -273,10 +288,8 @@ def flush_hist_etags(conn: sqlite3.Connection) -> int:
     )
     conn.commit()
     _hist_etags_dirty.clear()
-    # Drop the in-memory copy: it is now durable in SQLite, and holding every
-    # region's map (Jita + 4 hubs + custom stations, ~19k types each) would cost
-    # tens of MB in a desktop app. Each phase reloads just the region it needs.
-    _hist_etags.clear()
+    if clear:
+        _hist_etags.clear()
     return len(rows)
 
 
@@ -395,6 +408,17 @@ async def _fetch_region_volume(client: httpx.AsyncClient, region_id: int, type_i
             if r.status_code == 200:
                 history = r.json()
                 if not isinstance(history, list) or not history:
+                    # "This type has never traded in this region" is an answer
+                    # worth remembering. Without storing it, the same types get
+                    # re-requested on every single load - measured 84 of 537 at
+                    # one station, every time. Cached the same way as a real
+                    # history: the Expires window skips the call outright, and
+                    # after it a 304 confirms it is still empty. If it ever
+                    # starts trading the ETag changes and a 200 replaces this.
+                    etag = r.headers.get("etag")
+                    if etag:
+                        _hist_etags[key] = (etag, {}, _parse_http_date(r.headers.get("expires")))
+                        _hist_etags_dirty.add(key)
                     return 0
                 etag = r.headers.get("etag")
                 days = _recent_days(history)
@@ -819,6 +843,13 @@ async def fetch_structure_market(
 
     history_map: dict[int, int | None] = {}
     if region_id and our_type_ids:
+        # Reuse stored history ETags, exactly like the NPC-station path does.
+        # This was missing entirely: a structure load re-fetched every history
+        # body every time and never stored an ETag for the next load, so the
+        # whole HTTP-caching layer (a 304 has no body at all, and costs half the
+        # rate-limit tokens of a 200) simply did not apply to citadels - which is
+        # where the slow custom-station loads were reported.
+        load_hist_etags(conn, region_id)
         reuse = _cached_region_volume(conn, region_id)
         if reuse is not None:
             # Region already loaded (Jita/Forge or a hub) - full coverage for
@@ -873,12 +904,19 @@ async def fetch_structure_market(
                         "UPDATE station_volume_cache SET traded_volume=?"
                         " WHERE location_id=? AND type_id=?", batch_rows)
                     conn.commit()
+                    # ETags per batch as well. Flushing only at the end meant an
+                    # interrupted load threw away every ETag it had collected, so
+                    # the next attempt re-fetched full bodies for work already
+                    # done - measured: a sweep cancelled after 4 of 6 batches
+                    # re-requested all 1 817 histories instead of the 565 left.
+                    flush_hist_etags(conn, clear=False)
                     done += len(batch)
                     if progress_cb:
                         try:
                             progress_cb(done, total)
                         except Exception:
                             pass
+            flush_hist_etags(conn)
 
     now = time.time()
     result: dict[int, tuple[int | None, float | None, int | None]] = {}
@@ -1021,6 +1059,7 @@ async def fetch_station_volumes(
                         "UPDATE station_volume_cache SET traded_volume=?"
                         " WHERE location_id=? AND type_id=?", batch_rows)
                     conn.commit()
+                    flush_hist_etags(conn, clear=False)   # see the structure path
                     done += len(batch)
                     if progress_cb:
                         try:
