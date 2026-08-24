@@ -374,3 +374,48 @@ jobs:
             artifacts/version.json \
             sde_base.db \
             --clobber
+
+  # The website (everetroindustry.github.io) fetches version/date/sizes live from
+  # the GitHub API on load, but the values baked into its HTML are what a visitor
+  # actually sees when that fetch does not happen - no JS, a blocked API call, or
+  # a link-preview crawler (Reddit, Discord, ...). Doing this by hand after each
+  # tag is exactly the kind of step that gets forgotten; it did, at least once.
+  # Needs WEBSITE_DEPLOY_TOKEN: a fine-grained PAT scoped to ONLY the website
+  # repo, Contents: read and write - kept separate from this repo's own token so
+  # a compromised workflow here cannot reach further than the download page.
+  update-website:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/update_website_fallback.py
+          sparse-checkout-cone-mode: false
+
+      - name: Read the just-published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view ${{ github.ref_name }} \
+            --json tagName,publishedAt,assets > release.json
+          cat release.json
+
+      - name: Update and push the website
+        env:
+          TOKEN: ${{ secrets.WEBSITE_DEPLOY_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::warning::WEBSITE_DEPLOY_TOKEN is not set - skipping the website update. The download page's fallback values will be stale until this is fixed or someone runs scripts/update_website_fallback.py by hand."
+            exit 0
+          fi
+          git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/EVERetroIndustry/everetroindustry.github.io.git" site
+          python3 scripts/update_website_fallback.py site/index.html release.json
+          cd site
+          if git diff --quiet; then
+            echo "Already up to date - nothing to push."
+            exit 0
+          fi
+          git config user.name "ScoopEMPRetro"
+          git config user.email "286055038+ScoopEMPRetro@users.noreply.github.com"
+          git commit -am "Website: refresh download fallback to ${{ github.ref_name }}"
+          git push
