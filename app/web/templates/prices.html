@@ -855,12 +855,15 @@
         stationBox.style.display = 'block';
         return;
       }
+      const moreNote = data.more
+        ? `<div class="px-3 py-1 text-muted small" style="border-top:1px solid var(--eve-border)">and ${data.more} more - type a bit more to narrow it down</div>`
+        : '';
       stationBox.innerHTML = all.map(s =>
         `<div class="suggest-item px-3 py-2" style="cursor:pointer;font-size:.875rem"
               data-id="${s.location_id}" data-name="${escHtml(s.name)}">
            <i class="bi bi-geo-alt me-2 text-muted"></i>${escHtml(s.name)}
          </div>`
-      ).join('');
+      ).join('') + moreNote;
       stationBox.style.display = 'block';
       stationBox.querySelectorAll('.suggest-item').forEach(el => {
         el.addEventListener('mousedown', e => {

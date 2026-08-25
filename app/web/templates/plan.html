@@ -1687,6 +1687,12 @@ function makeStationSelector({ displayId, hiddenId, boxId, onSelect }) {
           <div style="color:#8b949e;font-size:.75rem">${item.location_id}</div></div></div>`;
       });
     }
+    if (data.more) {
+      // Without this, a station just past the cap looks like one that does not
+      // exist, and nothing suggests that another letter would reach it.
+      html += `<div class="px-3 py-1 text-muted" style="font-size:.75rem;border-top:1px solid #30363d">
+        and ${data.more} more - type a bit more to narrow it down</div>`;
+    }
     if (!items.length) {
       if (data.cache_empty) {
         html += `<div class="px-3 py-2 small">

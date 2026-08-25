@@ -4115,6 +4115,36 @@ async def api_rig_types(structure_type: str = ""):
     return {"rigs": rigs}
 
 
+_SUGGEST_OWNED_MAX = 25
+_SUGGEST_OTHER_MAX = 50
+
+
+def _suggest_rank(name: str, q: str) -> tuple:
+    """Sort key that puts the likeliest match first.
+
+    Plain alphabetical order was the whole problem behind "my station is not in
+    the list": with a cap on the rows, a station whose name merely contains the
+    query could push out one that starts with it. A name beginning with what was
+    typed comes first, then one where a word does, then the rest - and within
+    each group, shorter names before longer, so "Jita IV - Moon 4" beats
+    "Jita IV - Moon 4 - Caldari Navy Assembly Plant Annex".
+    """
+    low = name.lower()
+    if low.startswith(q):
+        tier = 0
+    elif any(w.startswith(q) for w in low.replace("-", " ").split()):
+        tier = 1
+    elif q in low:
+        tier = 2
+    else:
+        # Does not contain what was typed at all. ESI's structure search is
+        # fuzzy - "Moon 4" brings back "4X0-8B - IX -Moon 2", which matches the
+        # two words separately - and those belong below every real match rather
+        # than above them just for being short.
+        tier = 3
+    return (tier, len(name), low)
+
+
 @app.get("/api/suggest-station")
 async def suggest_station(request: Request, q: str = ""):
     if len(q.strip()) < 2:
@@ -4151,7 +4181,7 @@ async def suggest_station(request: Request, q: str = ""):
         if pattern in name.lower() or pattern in str(loc_id):
             owned.append({"location_id": loc_id, "name": name})
             owned_ids.add(loc_id)
-    owned.sort(key=lambda x: x["name"])
+    owned.sort(key=lambda x: _suggest_rank(x["name"], pattern))
 
     # Other known stations from the cache without assets
     other = []
@@ -4160,7 +4190,7 @@ async def suggest_station(request: Request, q: str = ""):
         if loc_id not in asset_locs and (pattern in name.lower() or pattern in str(loc_id)):
             other.append({"location_id": loc_id, "name": name})
             other_ids.add(loc_id)
-    other.sort(key=lambda x: x["name"])
+    other.sort(key=lambda x: _suggest_rank(x["name"], pattern))
 
     # Offline substring search over the SDE's own station and system names. This
     # is what gives partial matching back: ESI cannot do it any more (the public
@@ -4171,7 +4201,7 @@ async def suggest_station(request: Request, q: str = ""):
     try:
         for sid, nm in conn.execute(
             "SELECT station_id, name FROM sde_stations"
-            " WHERE lower(name) LIKE ? ORDER BY name LIMIT 40",
+            " WHERE lower(name) LIKE ? ORDER BY name LIMIT 400",
             (f"%{pattern}%",),
         ).fetchall():
             all_names.setdefault(sid, nm)
@@ -4186,7 +4216,7 @@ async def suggest_station(request: Request, q: str = ""):
         # docked at ("PR-8CA"), so offer what is in the system as well.
         sde_systems = conn.execute(
             "SELECT system_id, name FROM sde_systems"
-            " WHERE lower(name) LIKE ? ORDER BY length(name), name LIMIT 10",
+            " WHERE lower(name) LIKE ? ORDER BY length(name), name LIMIT 25",
             (f"%{pattern}%",),
         ).fetchall()
         for sys_id, _sys_name in sde_systems:
@@ -4222,7 +4252,10 @@ async def suggest_station(request: Request, q: str = ""):
     ask_esi_ids = not owned and not other
     if not ask_esi_ids and not (char and token):
         conn.close()
-        return {"owned": owned[:15], "other": other[:10], "note": None,
+        return {"owned": owned[:_SUGGEST_OWNED_MAX],
+                "other": other[:_SUGGEST_OTHER_MAX], "note": None,
+                "more": max(0, len(owned) - _SUGGEST_OWNED_MAX)
+                        + max(0, len(other) - _SUGGEST_OTHER_MAX),
                 "cache_empty": False}
 
     try:
@@ -4342,8 +4375,8 @@ async def suggest_station(request: Request, q: str = ""):
                         other.append({"location_id": sid, "name": all_names.get(sid, str(sid))})
                         other_ids.add(sid)
 
-            other.sort(key=lambda x: x["name"])
-            owned.sort(key=lambda x: x["name"])
+            other.sort(key=lambda x: _suggest_rank(x["name"], pattern))
+            owned.sort(key=lambda x: _suggest_rank(x["name"], pattern))
     except Exception:
         pass
 
@@ -4358,7 +4391,13 @@ async def suggest_station(request: Request, q: str = ""):
                 f"open to this character. Paste a structure ID from the game to add it.")
 
     conn.close()
-    return {"owned": owned[:15], "other": other[:10], "note": note,
+    # `more` so the box can say there is something past the cap: without it, a
+    # station just outside the limit is indistinguishable from one that does not
+    # exist, and there is no hint that typing another letter would reach it.
+    return {"owned": owned[:_SUGGEST_OWNED_MAX],
+            "other": other[:_SUGGEST_OTHER_MAX], "note": note,
+            "more": max(0, len(owned) - _SUGGEST_OWNED_MAX)
+                    + max(0, len(other) - _SUGGEST_OTHER_MAX),
             "cache_empty": cache_empty and not owned and not other}
 
 
