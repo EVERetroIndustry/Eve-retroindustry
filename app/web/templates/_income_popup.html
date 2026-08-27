@@ -1,0 +1,275 @@
+{# Income across characters - floating window. Include once, then call
+   window.openIncome(). The dashboard tile does.
+
+   The window is rolling ("the last N hours"), not "today": the question gets
+   asked differently every time, and a rolling window needs no decision about
+   which timezone a day starts in. Journals are stored locally, so changing the
+   window is a local query and costs nothing. #}
+<style>
+  #incModal .inc-dialog { max-width: min(1100px, 94vw); width: 100%; }
+  #incModal .modal-content { background: linear-gradient(180deg,#171e28,#131922);
+                             border: 1px solid var(--eve-border); }
+  /* Grows with the app window and scrolls inside itself, so the controls at the
+     top stay reachable however small the window is. */
+  #incModal .modal-body { max-height: calc(100vh - 11rem); overflow-y: auto; }
+  #incModal .inc-total { font-size: 1.9rem; line-height: 1.1; }
+  #incModal .inc-chip.active { background: var(--eve-gold); color: #0d1117;
+                               border-color: var(--eve-gold); }
+  #incModal .inc-scroll { max-height: 15rem; overflow-y: auto; }
+  #incModal .inc-bar { height: 4px; border-radius: 2px; background: var(--eve-gold); }
+</style>
+<div class="modal fade" id="incModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered inc-dialog">
+    <div class="modal-content">
+      <div class="modal-header py-2">
+        <div class="me-auto">
+          <h6 class="modal-title mb-0"><i class="bi bi-graph-up-arrow me-1"></i>Income across characters</h6>
+          <div class="text-muted" style="font-size:.75rem" id="inc-sub"></div>
+        </div>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+
+        <div class="d-flex flex-wrap gap-3 align-items-end mb-3">
+          <div>
+            <div class="text-muted small mb-1">Period</div>
+            <div class="btn-group btn-group-sm" id="inc-presets">
+              <button type="button" class="btn btn-outline-secondary inc-chip" data-h="6">6h</button>
+              <button type="button" class="btn btn-outline-secondary inc-chip" data-h="12">12h</button>
+              <button type="button" class="btn btn-outline-secondary inc-chip" data-h="24">24h</button>
+              <button type="button" class="btn btn-outline-secondary inc-chip" data-h="48">48h</button>
+              <button type="button" class="btn btn-outline-secondary inc-chip" data-h="168">7d</button>
+              <button type="button" class="btn btn-outline-secondary inc-chip" data-h="720">30d</button>
+            </div>
+          </div>
+          <div>
+            <div class="text-muted small mb-1">Or exactly</div>
+            <div class="input-group input-group-sm" style="width:11rem">
+              <input type="number" class="form-control" id="inc-n" min="1" step="1" value="18">
+              <select class="form-select" id="inc-unit" style="max-width:5.6rem">
+                <option value="1">hours</option>
+                <option value="24">days</option>
+              </select>
+              <button class="btn btn-outline-secondary" id="inc-apply" type="button">Set</button>
+            </div>
+          </div>
+          <div class="ms-auto text-end">
+            <div class="text-muted small mb-1">Total for the period</div>
+            <div class="fw-bold text-isk inc-total" id="inc-total">-</div>
+            <div class="text-muted" style="font-size:.75rem" id="inc-total-sub"></div>
+          </div>
+        </div>
+
+        <div class="row g-3">
+          <div class="col-12 col-lg-5">
+            <div class="card p-2 h-100">
+              <div class="d-flex align-items-center mb-1">
+                <span class="text-muted small">Include</span>
+                <div class="ms-auto d-flex gap-1">
+                  <button class="btn btn-link btn-sm p-0 text-muted" id="inc-t-all" style="font-size:.72rem">All</button>
+                  <span class="text-muted" style="font-size:.72rem">/</span>
+                  <button class="btn btn-link btn-sm p-0 text-muted" id="inc-t-rats" style="font-size:.72rem">Bounty + ESS</button>
+                </div>
+              </div>
+              <div class="inc-scroll" id="inc-groups"></div>
+            </div>
+          </div>
+          <div class="col-12 col-lg-7">
+            <div class="card p-2 h-100">
+              <div class="d-flex align-items-center mb-1">
+                <span class="text-muted small">Characters</span>
+                <div class="ms-auto d-flex gap-1">
+                  <button class="btn btn-link btn-sm p-0 text-muted" id="inc-c-all" style="font-size:.72rem">All</button>
+                  <span class="text-muted" style="font-size:.72rem">/</span>
+                  <button class="btn btn-link btn-sm p-0 text-muted" id="inc-c-none" style="font-size:.72rem">None</button>
+                </div>
+              </div>
+              <div class="inc-scroll" id="inc-chars"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-3">
+          <div class="text-muted small mb-1">Where it came from</div>
+          <div class="table-responsive">
+            <table class="table table-sm tbl-compact mb-0" id="inc-types">
+              <thead><tr>
+                <th>Source</th><th class="text-end">Amount</th>
+                <th class="text-end">Entries</th><th style="width:30%"></th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="text-muted mt-3" style="font-size:.72rem" id="inc-note"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const modalEl = document.getElementById('incModal');
+  if (!modalEl) return;
+  let hours = 24;
+  let selChars = null;        // null = all
+  let selTypes = null;        // null = everything
+  let data = null;
+  let busy = false;
+
+  function iskShort(v) {
+    const a = Math.abs(v || 0);
+    if (a >= 1e9) return (v / 1e9).toFixed(2) + 'b';
+    if (a >= 1e6) return (v / 1e6).toFixed(2) + 'm';
+    if (a >= 1e3) return (v / 1e3).toFixed(1) + 'k';
+    return Math.round(v || 0).toString();
+  }
+  function iskFull(v) {
+    return Math.round(v || 0).toLocaleString('en-GB').replace(/,/g, ' ') + ' ISK';
+  }
+  function periodLabel(h) {
+    if (h % 24 === 0 && h >= 24) return (h / 24) + (h === 24 ? ' day' : ' days');
+    return h + (h === 1 ? ' hour' : ' hours');
+  }
+
+  async function load() {
+    if (busy) return;
+    busy = true;
+    document.getElementById('inc-sub').textContent = 'Loading…';
+    const q = new URLSearchParams({hours: String(hours)});
+    // Sent even when empty: an absent parameter means "everything", a present
+    // but empty one means "nothing ticked", and the server tells them apart.
+    if (selChars !== null) q.set('chars', selChars.join(','));
+    if (selTypes !== null) q.set('types', selTypes.join(','));
+    try {
+      const r = await fetch('/api/income?' + q.toString());
+      data = await r.json();
+    } catch (e) {
+      document.getElementById('inc-sub').textContent = 'Could not load income.';
+      busy = false;
+      return;
+    }
+    busy = false;
+    render();
+  }
+
+  function render() {
+    if (!data) return;
+    const sub = document.getElementById('inc-sub');
+    const stored = data.stored || {};
+    let subTxt = 'Rolling window, ending now.';
+    if (stored.oldest) {
+      const days = Math.floor((Date.now() / 1000 - stored.oldest) / 86400);
+      subTxt += ` Stored history goes back ${days} day${days === 1 ? '' : 's'}`
+              + ` (${(stored.entries || 0).toLocaleString()} entries).`;
+    }
+    sub.textContent = subTxt;
+
+    document.getElementById('inc-total').textContent = iskShort(data.total);
+    document.getElementById('inc-total').title = iskFull(data.total);
+    document.getElementById('inc-total-sub').textContent =
+      `${periodLabel(hours)} · ${(data.entries || 0).toLocaleString()} entries`
+      + ` · bounty + ESS ${iskShort(data.bounty_ess)}`;
+
+    // Period chips
+    document.querySelectorAll('#inc-presets .inc-chip').forEach(b => {
+      b.classList.toggle('active', +b.dataset.h === hours);
+    });
+
+    // What to include
+    const groups = data.groups || [];
+    document.getElementById('inc-groups').innerHTML = groups.map(g => {
+      const on = !selTypes || g.ref_types.some(t => selTypes.includes(t));
+      return `<label class="d-flex align-items-center gap-2 py-1" style="cursor:pointer">
+        <input type="checkbox" class="form-check-input mt-0 inc-g" ${on ? 'checked' : ''}
+               data-types="${escHtml(g.ref_types.join(','))}">
+        <span class="small">${escHtml(g.label)}</span></label>`;
+    }).join('');
+
+    // Characters. Names are player-chosen, so they go through escHtml.
+    const chars = data.characters || [];
+    const perChar = {};
+    (data.by_character || []).forEach(r => { perChar[r.character_id] = r; });
+    document.getElementById('inc-chars').innerHTML = chars.map(c => {
+      const on = !selChars || selChars.includes(c.character_id);
+      const row = perChar[c.character_id];
+      const amount = row ? iskShort(row.total) : '-';
+      return `<label class="d-flex align-items-center gap-2 py-1" style="cursor:pointer">
+        <input type="checkbox" class="form-check-input mt-0 inc-c" ${on ? 'checked' : ''}
+               data-cid="${c.character_id}">
+        <span class="small text-truncate" style="flex:1">${escHtml(c.name)}</span>
+        <span class="small font-monospace ${row && row.total ? 'text-isk' : 'text-muted'}"
+              title="${row ? escHtml(iskFull(row.total)) : ''}">${amount}</span></label>`;
+    }).join('');
+
+    // Where it came from, with a bar so the big source is obvious at a glance
+    const types = data.by_ref_type || [];
+    const max = types.reduce((m, r) => Math.max(m, r.total), 0) || 1;
+    const body = document.querySelector('#inc-types tbody');
+    body.innerHTML = types.length ? types.map(r => `<tr>
+        <td>${escHtml(r.label || r.ref_type)}</td>
+        <td class="text-end font-monospace text-isk" title="${escHtml(iskFull(r.total))}">${iskShort(r.total)}</td>
+        <td class="text-end font-monospace text-muted">${r.entries}</td>
+        <td><div class="inc-bar" style="width:${Math.max(2, r.total / max * 100)}%"></div></td>
+      </tr>`).join('')
+      : `<tr><td colspan="4" class="text-muted small">Nothing in this period.</td></tr>`;
+
+    const note = [];
+    if (data.internal_entries) {
+      note.push(`ISK moved between your own characters is left out`
+              + ` (${iskShort(data.internal_excluded)} in ${data.internal_entries} entries):`
+              + ` both sides are yours, so nothing entered the account.`);
+    }
+    note.push('Only incoming amounts are counted, so this is income and not a balance.');
+    note.push('ESI keeps 30 days of wallet journal; anything older is what this app has stored itself.');
+    document.getElementById('inc-note').textContent = note.join(' ');
+  }
+
+  document.getElementById('inc-presets').addEventListener('click', e => {
+    const b = e.target.closest('.inc-chip');
+    if (!b) return;
+    hours = +b.dataset.h;
+    load();
+  });
+  document.getElementById('inc-apply').addEventListener('click', () => {
+    const n = Math.max(1, parseInt(document.getElementById('inc-n').value || '1', 10));
+    hours = n * (+document.getElementById('inc-unit').value);
+    load();
+  });
+  document.getElementById('inc-n').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); document.getElementById('inc-apply').click(); }
+  });
+
+  document.getElementById('inc-groups').addEventListener('change', () => {
+    const boxes = [...document.querySelectorAll('.inc-g')];
+    const on = boxes.filter(b => b.checked);
+    // Everything ticked means "no filter" rather than a list of every type -
+    // otherwise a ref_type the app has never heard of would drop out silently.
+    selTypes = on.length === boxes.length ? null
+             : on.flatMap(b => b.dataset.types.split(','));
+    load();
+  });
+  document.getElementById('inc-t-all').addEventListener('click', () => { selTypes = null; load(); });
+  document.getElementById('inc-t-rats').addEventListener('click', () => {
+    const g = (data.groups || []).filter(x => x.key === 'bounty' || x.key === 'ess');
+    selTypes = g.flatMap(x => x.ref_types);
+    load();
+  });
+
+  document.getElementById('inc-chars').addEventListener('change', () => {
+    const boxes = [...document.querySelectorAll('.inc-c')];
+    const on = boxes.filter(b => b.checked).map(b => +b.dataset.cid);
+    selChars = on.length === boxes.length ? null : on;
+    load();
+  });
+  document.getElementById('inc-c-all').addEventListener('click', () => { selChars = null; load(); });
+  document.getElementById('inc-c-none').addEventListener('click', () => { selChars = []; load(); });
+
+  window.openIncome = function (h) {
+    if (h) hours = h;
+    new bootstrap.Modal(modalEl).show();
+    load();
+  };
+})();
+</script>

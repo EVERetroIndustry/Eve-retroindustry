@@ -65,6 +65,21 @@
       <a href="/prices" class="small mt-1 d-block">Refresh →</a>
     </div>
   </div>
+  {# Income tile - the recurring question is "what did every character earn in
+     the last N hours", so the tile answers the common case (24 h) and the
+     button opens the window where the period, the sources and the characters
+     can all be chosen. #}
+  <div class="col">
+    <div class="card stat-card h-100 p-3" id="income-tile" style="border-left-color:#e3b341;cursor:pointer">
+      <div class="text-muted small mb-1"><i class="bi bi-graph-up-arrow me-1"></i>Income 24h</div>
+      <div id="income-tile-body">
+        <div class="d-flex align-items-center gap-2 mt-1">
+          <span class="spinner-border spinner-border-sm text-muted" style="width:1rem;height:1rem"></span>
+          <span class="text-muted small">Loading…</span>
+        </div>
+      </div>
+    </div>
+  </div>
   {# PI extractor alert tile - filled live by loadPiAlerts() #}
   <div class="col">
     <a href="/planets" class="text-decoration-none">
@@ -410,5 +425,36 @@ function refreshDashboardData(btn) {
     });
   }, 60000);
 })();
+
+// Income tile. The stored journal makes this a local query, so the only cost is
+// the hourly top-up the endpoint does when a character's copy has aged out of
+// ESI's own cache.
+(function () {
+  const body = document.getElementById('income-tile-body');
+  const tile = document.getElementById('income-tile');
+  if (!body || !tile) return;
+  function short(v) {
+    const a = Math.abs(v || 0);
+    if (a >= 1e9) return (v / 1e9).toFixed(2) + 'b';
+    if (a >= 1e6) return (v / 1e6).toFixed(1) + 'm';
+    if (a >= 1e3) return (v / 1e3).toFixed(1) + 'k';
+    return Math.round(v || 0).toString();
+  }
+  async function load() {
+    try {
+      const d = await (await fetch('/api/income?hours=24')).json();
+      body.innerHTML =
+        `<div class="fw-bold text-isk" style="font-size:1.05rem">${short(d.total)}</div>`
+        + `<div class="text-muted" style="font-size:.7rem">bounty + ESS ${short(d.bounty_ess)}`
+        + ` &middot; <span class="text-decoration-underline">details</span></div>`;
+    } catch (e) {
+      body.innerHTML = '<div class="fs-4 fw-bold text-muted">-</div>'
+        + '<div class="text-muted" style="font-size:.7rem">could not load</div>';
+    }
+  }
+  tile.addEventListener('click', () => window.openIncome && window.openIncome(24));
+  load();
+})();
 </script>
+{% include "_income_popup.html" %}
 {% endblock %}

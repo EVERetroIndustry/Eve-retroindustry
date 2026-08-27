@@ -37,6 +37,7 @@ from app.auth.token_store import (
 from app.auth.esi_oauth import start_web_login, cancel_web_login, token_has_scope
 from app.character.blueprints import fetch_blueprints, ensure_bp_table
 from app.character import wallet as wallet_api
+from app.character import income as income_api
 from app.character import orders as orders_api
 from app.character import jobs as jobs_api
 from app.character import contracts as contracts_api
@@ -8073,6 +8074,73 @@ def _pi_alert_summary(conn: sqlite3.Connection, limit: int = 8) -> dict:
         "soonest_secs": items[0]["secs"] if items else None,
         "age": cache_age,
     }
+
+
+@app.get("/api/income")
+async def api_income(request: Request, hours: float = 24.0,
+                     chars: str | None = None,
+                     types: str | None = None, refresh: int = 1):
+    """Income across characters for a rolling window.
+
+    The window is a parameter rather than a fixed "today" because the question
+    is asked differently every time - the last 24 hours, the last 18, the last
+    week - and a rolling window needs no decision about which timezone a day
+    starts in.
+
+    Journals are topped up here when a character's copy is older than ESI's own
+    hour-long cache, which is why there is no sync step: opening the dashboard
+    keeps the stored history growing, and once stored, every window is a local
+    query.
+    """
+    conn = get_conn()
+    try:
+        income_api.ensure_income_tables(conn)
+        all_chars = list_characters(conn)
+        stale = [cid for cid, _n in all_chars
+                 if income_api.journal_is_stale(conn, cid)] if refresh else []
+        added = 0
+        if stale:
+            # Sequential on purpose: this is 12 requests at most, once an hour,
+            # and the wallet route's rate-limit group is the tightest we touch
+            # (char-wallet, 150 per 15 minutes).
+            async with esi_client(timeout=20) as client:
+                for cid in stale:
+                    token = await _valid_token_async(cid)
+                    if not token:
+                        continue
+                    try:
+                        added += await income_api.refresh_journal(
+                            client, conn, cid, token)
+                    except Exception:
+                        continue          # one character must not fail the tile
+
+        # An ABSENT parameter means "everything"; a parameter that is present but
+        # empty means "nothing selected", and those are different answers. With
+        # `chars: str = ""` they were indistinguishable, so unticking every
+        # character silently showed the total for all of them.
+        char_ids = None if chars is None else [
+            int(x) for x in chars.split(",") if x.strip().lstrip("-").isdigit()]
+        ref_types = None if types is None else [t for t in types.split(",") if t.strip()]
+        summary = income_api.income_summary(conn, hours, char_ids, ref_types)
+
+        # The per-character list is deliberately NOT filtered by the character
+        # selection: it is what you tick the boxes from, so a character has to
+        # keep showing what it earned even while it is switched off.
+        per_char = income_api.income_summary(conn, hours, None, ref_types)
+        names = dict(all_chars)
+        summary["by_character"] = [
+            {**row, "name": names.get(row["character_id"], str(row["character_id"]))}
+            for row in per_char["by_character"]]
+        for row in summary["by_ref_type"]:
+            row["label"] = wallet_api.humanize_ref_type(row["ref_type"])
+        summary["characters"] = [{"character_id": c, "name": n} for c, n in all_chars]
+        summary["groups"] = [{"key": k, "label": lbl, "ref_types": list(ts)}
+                             for k, lbl, ts in income_api.INCOME_GROUPS]
+        summary["stored"] = income_api.stored_range(conn)
+        summary["added"] = added
+        return summary
+    finally:
+        conn.close()
 
 
 @app.get("/api/dashboard/pi-alerts")
