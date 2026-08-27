@@ -293,6 +293,43 @@ def main() -> None:
 
     # Planet names come from ESI at runtime and are cached in planet_name_cache.
     # Seed the demo DB so the screenshot reads "Ashab VII" instead of "Planet #40009082".
+    # The income tile reads the STORED wallet journal, which a demo database has
+    # none of - so the tile would advertise the feature with a zero. Invented
+    # entries, spread over the last day, in the shape ESI actually sends.
+    def _seed_wallet_journal(db_path: str) -> None:
+        import sqlite3 as _sq
+        import time as _t
+        from app.character import income as _inc
+        c = _sq.connect(db_path)
+        _inc.ensure_income_tables(c)
+        chars = [r[0] for r in c.execute("SELECT character_id FROM characters")]
+        now = _t.time()
+        # (hours ago, ref_type, amount) per character, rotated so the three do
+        # not look like copies of each other.
+        pattern = [
+            (1.2, "bounty_prizes", 18_400_000), (2.6, "ess_escrow_transfer", 11_250_000),
+            (4.1, "bounty_prizes", 22_800_000), (6.5, "ess_escrow_transfer", 9_600_000),
+            (9.0, "bounty_prizes", 15_300_000), (13.5, "daily_goal_payouts", 5_000_000),
+            (17.0, "bounty_prizes", 12_700_000), (21.0, "ess_escrow_transfer", 8_150_000),
+        ]
+        jid = 900_000_000
+        rows = []
+        for i, cid in enumerate(chars):
+            for k, (h, ref, amount) in enumerate(pattern):
+                jid += 1
+                rows.append((cid, jid, now - (h + i * 0.7) * 3600, ref,
+                             amount * (1 + 0.11 * i) - k * 130_000, ""))
+        rows.append((chars[0], jid + 1, now - 3 * 3600, "market_transaction", 214_000_000, ""))
+        c.executemany(
+            "INSERT OR IGNORE INTO wallet_journal"
+            " (character_id, journal_id, date_ts, ref_type, amount, description)"
+            " VALUES (?,?,?,?,?,?)", rows)
+        # Marked as just fetched, so the page does not try to reach ESI for it.
+        c.executemany("INSERT OR REPLACE INTO wallet_journal_meta"
+                      " (character_id, fetched_at, entries) VALUES (?,?,?)",
+                      [(cid, now, len(pattern)) for cid in chars])
+        c.commit(); c.close()
+
     def _seed_planet_names(db_path: str) -> None:
         import sqlite3 as _sq
         names = {40009082: "Ashab VII", 40009077: "Ashab IV",
@@ -353,6 +390,7 @@ def main() -> None:
     _seed_alliance_contracts(demo_db)
 
     _seed_planet_names(demo_db)
+    _seed_wallet_journal(demo_db)
 
     @m.app.get("/demo/assetsshot")
     async def _assetsshot(request: Request):
