@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.11.16"
+APP_VERSION = "0.11.17"
 
 import asyncio
 import datetime
@@ -38,6 +38,9 @@ from app.auth.esi_oauth import start_web_login, cancel_web_login, token_has_scop
 from app.character.blueprints import fetch_blueprints, ensure_bp_table
 from app.character import wallet as wallet_api
 from app.character import income as income_api
+from app.web.page_cache import (
+    ensure_page_cache, get_cached, put_cached, drop_cached, age_label,
+)
 from app.character import orders as orders_api
 from app.character import jobs as jobs_api
 from app.character import contracts as contracts_api
@@ -1442,6 +1445,48 @@ def _fmt_remaining(finish_iso: str, now) -> str:
         return ""
 
 
+# Background refreshes in flight, so clicking a tab five times does not queue
+# five identical fetches.
+_BG_REFRESH: set = set()
+
+
+def _schedule_refresh(keys, worker) -> None:
+    """Refresh stale page data AFTER the response has been sent.
+
+    This is the half that makes a stale cache pleasant rather than merely old:
+    the visit that finds stale data still renders instantly, and the visit after
+    it finds fresh data. Failures are deliberately silent - the page has already
+    been served, and there is nothing left to tell.
+    """
+    for key in keys:
+        tag = (getattr(worker, "__qualname__", str(worker)), key)
+        if tag in _BG_REFRESH:
+            continue
+        try:
+            task = asyncio.create_task(worker(key))
+        except RuntimeError:
+            return                      # no running loop (CLI/tests)
+        _BG_REFRESH.add(tag)
+        task.add_done_callback(lambda _t, tag=tag: _BG_REFRESH.discard(tag))
+
+
+async def _any_valid_token_async(char_ids) -> str | None:
+    """The first usable token, asked for once per character and off the loop.
+
+    Replaces
+        next((_get_valid_token_for(conn, c) for c in ids if _get_valid_token_for(conn, c)), None)
+    which called the blocking refresh TWICE per character - once to test the
+    token, once to take it - and each call is a synchronous SSO round trip on the
+    event loop.
+    """
+    for cid in char_ids:
+        tok = await _valid_token_async(cid)
+        if tok:
+            return tok
+    return None
+
+
+
 async def _valid_token_async(char_id: int) -> str | None:
     """Fetch (refreshing if expired) a character's access token WITHOUT blocking
     the event loop. get_valid_token() does a synchronous httpx.post on expiry;
@@ -1855,7 +1900,7 @@ async def plan_form(request: Request, char: str = "", station: str = ""):
     if plan_char_id is None:
         plan_char_id = get_active_character_id(request, conn)
     char_row = get_character_row(conn, plan_char_id) if plan_char_id else None
-    token = _get_valid_token_for(conn, plan_char_id) if plan_char_id else None
+    token = await _valid_token_async(plan_char_id) if plan_char_id else None
 
     location_ids = []
     char_skills: dict[int, int] = {}
@@ -2071,7 +2116,7 @@ async def plan_result(
     try:
         if plan_char_id_int is None:
             raise ValueError("You are not signed in.")
-        token = _get_valid_token_for(conn, plan_char_id_int)
+        token = await _valid_token_async(plan_char_id_int)
         row = get_character_row(conn, plan_char_id_int)
         if not token or not row:
             raise ValueError("You are not signed in.")
@@ -2483,7 +2528,7 @@ async def plan_result(
 
     # Stock-source options (names via ESI, not bare IDs). Default = manufacturing
     # station unless the user selected explicitly.
-    _stock_token = _get_valid_token_for(conn, plan_char_id_int) if plan_char_id_int else None
+    _stock_token = await _valid_token_async(plan_char_id_int) if plan_char_id_int else None
     stock_station_options = await _build_stock_station_options(
         conn, plan_char_id_int, _stock_token,
         selected_ids=stock_station_ids, default_station=station, explicit=stock_explicit,
@@ -2974,7 +3019,7 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
     if selected_chars:
         async with esi_client() as client:
             for cid, _name in selected_chars:
-                tok = _get_valid_token_for(conn, cid)
+                tok = await _valid_token_async(cid)
                 if not tok:
                     continue
                 primary_token = primary_token or tok
@@ -3274,7 +3319,7 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
         container_info: dict[int, tuple[str, int]] = {}
         if all_container_ids:
             for owner_id, _ in selected_chars:
-                tok = _get_valid_token_for(conn, owner_id)
+                tok = await _valid_token_async(owner_id)
                 if not tok:
                     continue
                 owner_assets = assets_raw_by_char.get(owner_id, [])
@@ -3887,7 +3932,7 @@ async def blueprints_page(request: Request, search: str = "", view: str = ""):
         async with esi_client() as client:
             all_unique_type_ids: set[int] = set()
             for cid_sel, _name in selected_chars:
-                tok = _get_valid_token_for(conn, cid_sel)
+                tok = await _valid_token_async(cid_sel)
                 if not tok:
                     continue
                 primary_token = primary_token or tok
@@ -3956,7 +4001,7 @@ async def blueprints_page(request: Request, search: str = "", view: str = ""):
     container_info: dict[int, tuple[str, int]] = {}
     if container_ids:
         for owner_id, _ in selected_chars:
-            tok = _get_valid_token_for(conn, owner_id)
+            tok = await _valid_token_async(owner_id)
             if not tok:
                 continue
             owner_assets = assets_by_char.get(owner_id, [])
@@ -5754,7 +5799,7 @@ async def wallet_page(request: Request, char: str = "", scope: str = "personal",
         conn.close()
         return _tr("wallet.html", request, ctx)
 
-    token = _get_valid_token_for(conn, plan_char_id)
+    token = await _valid_token_async(plan_char_id)
     row = get_character_row(conn, plan_char_id)
     if not token or not row:
         ctx["error"] = "The character token expired - sign in again."
@@ -6027,7 +6072,7 @@ async def orders_page(request: Request, char: str = "", scope: str = "personal",
             return _tr("orders.html", request, ctx)
 
         async def _char_orders(cid: int, cname: str) -> list[dict]:
-            tok = _get_valid_token_for(conn, cid)
+            tok = await _valid_token_async(cid)
             if not tok:
                 return []
             async with esi_client() as client:
@@ -6060,7 +6105,7 @@ async def orders_page(request: Request, char: str = "", scope: str = "personal",
                 corp_token: dict[int, str] = {}
                 async with esi_client() as client:
                     for cid, _cn in chars:
-                        tok = _get_valid_token_for(conn, cid)
+                        tok = await _valid_token_async(cid)
                         if not tok:
                             continue
                         crow = get_character_row(conn, cid) or {}
@@ -6108,7 +6153,7 @@ async def orders_page(request: Request, char: str = "", scope: str = "personal",
         ctx["error"] = "You are not signed in."
         conn.close()
         return _tr("orders.html", request, ctx)
-    token = _get_valid_token_for(conn, plan_char_id)
+    token = await _valid_token_async(plan_char_id)
     row = get_character_row(conn, plan_char_id)
     if not token or not row:
         ctx["error"] = "The character token expired - sign in again."
@@ -6416,7 +6461,7 @@ async def contracts_page(request: Request, char: str = "", scope: str = "persona
             else:
                 async with esi_client() as client:
                     for cid, cname in chars:
-                        tok = _get_valid_token_for(conn, cid)
+                        tok = await _valid_token_async(cid)
                         if not tok:
                             continue
                         for c in await contracts_api.fetch_character_contracts(client, cid, tok):
@@ -6426,8 +6471,7 @@ async def contracts_page(request: Request, char: str = "", scope: str = "persona
             # dedup by contract_id (several characters may see the same contract)
             seen: set[int] = set()
             raw = [c for c in raw if not (c.get("contract_id") in seen or seen.add(c.get("contract_id")))]
-            any_tok = next((_get_valid_token_for(conn, c) for c, _ in chars
-                            if _get_valid_token_for(conn, c)), None)
+            any_tok = await _any_valid_token_async([c for c, _ in chars])
             ctx["contracts"], ctx["total_contracts"], ctx["truncated"] = \
                 _apply_contract_view(await _finalize_contracts(conn, raw, any_tok),
                                      status, _own_party_ids(conn))
@@ -6439,7 +6483,7 @@ async def contracts_page(request: Request, char: str = "", scope: str = "persona
         if plan_char_id is None:
             plan_char_id = get_active_character_id(request, conn)
         ctx["contracts_char_id"] = plan_char_id
-        token = _get_valid_token_for(conn, plan_char_id) if plan_char_id else None
+        token = await _valid_token_async(plan_char_id) if plan_char_id else None
         row = get_character_row(conn, plan_char_id) if plan_char_id else None
         if not token or not row:
             ctx["error"] = "The character token expired - sign in again."
@@ -6499,14 +6543,14 @@ async def api_contract_items(request: Request, contract_id: int,
                 tok = None
                 for cid, _ in list_characters(conn):
                     if (get_character_row(conn, cid) or {}).get("corporation_id") == corp_id:
-                        tok = _get_valid_token_for(conn, cid)
+                        tok = await _valid_token_async(cid)
                         if tok:
                             break
                 if tok:
                     items = (await contracts_api.fetch_corp_contract_items(
                         client, corp_id, contract_id, tok)).items or []
             elif char_id:
-                tok = _get_valid_token_for(conn, char_id)
+                tok = await _valid_token_async(char_id)
                 if tok:
                     items = await contracts_api.fetch_character_contract_items(client, char_id, contract_id, tok)
         tids = {it.get("type_id") for it in items if it.get("type_id")}
@@ -6628,8 +6672,7 @@ async def public_contracts_page(
         party_names = await _resolve_party_names(party_ids) if party_ids else {}
         loc_names: dict[int, str] = {}
         if loc_ids:
-            any_tok = next((_get_valid_token_for(conn, cid) for cid, _ in list_characters(conn)
-                            if _get_valid_token_for(conn, cid)), None)
+            any_tok = await _any_valid_token_async([c for c, _ in list_characters(conn)])
             try:
                 loc_names = await resolve_station_names_bulk(list(loc_ids), token=any_tok, conn=conn)
             except Exception:
@@ -7338,17 +7381,62 @@ async def jobs_page(request: Request):
     # failure (e.g. during a background Sync All) isn't shown as "no jobs".
     async def _one(cid: int):
         try:
-            tok = _get_valid_token_for(conn, cid)
+            tok = await _valid_token_async(cid)
             if not tok:
                 return cid, None
             async with esi_client() as client:
-                return cid, await jobs_api.fetch_industry_jobs(client, cid, tok)
+                jl = await jobs_api.fetch_industry_jobs(client, cid, tok)
+            if jl is not None:
+                c2 = get_conn()
+                try:
+                    put_cached(c2, "jobs", cid, jl)
+                finally:
+                    c2.close()
+            return cid, jl
         except Exception:
             return cid, None
 
-    raw_results = await asyncio.gather(*[_one(cid) for cid, _ in chars])
+    # Cache first: twelve characters meant twelve ESI calls before this page
+    # produced any HTML, on every single visit. What is stored is served
+    # straight away; what is stale is served too and refreshed behind the
+    # request, so the wait only ever happens on a character we have never
+    # fetched.
+    force = request.query_params.get("refresh") == "1"
+    if force:
+        drop_cached(conn, "jobs")
+    # "Nothing stored" and "stored but old" are different cases and must stay
+    # separate: keeping them in one list made a first visit fetch each character
+    # twice - once because it was missing, then again as a background refresh.
+    cached: dict[int, list] = {}
+    ages: list[float] = []
+    missing: list[int] = []
+    aged: list[int] = []
+    for cid, _n in chars:
+        hit = get_cached(conn, "jobs", cid) if not force else None
+        if hit is None:
+            missing.append(cid)
+            continue
+        payload, age = hit
+        cached[cid] = payload
+        ages.append(age)
+        if age > _JOBS_CACHE_TTL:
+            aged.append(cid)
+
+    raw_results = await asyncio.gather(*[_one(cid) for cid in missing]) if missing else []
     fetch_failed = any(jl is None for _cid, jl in raw_results)
-    results = [(cid, jl or []) for cid, jl in raw_results]
+    for cid, jl in raw_results:
+        if jl is not None:
+            cached[cid] = jl
+            ages.append(0.0)
+
+    # Only what we could serve from store but that has aged out is refreshed
+    # after the response, not before it.
+    refresh_later = aged
+    if refresh_later:
+        _schedule_refresh(refresh_later, _one)
+
+    results = [(cid, cached.get(cid) or []) for cid, _n in chars]
+    data_age = max(ages) if ages else None
     char_name = {cid: name for cid, name in chars}
 
     # Collect type_ids (product/blueprint) and facility_id for resolution
@@ -7371,8 +7459,7 @@ async def jobs_page(request: Request):
         ).fetchall()}
     loc_names: dict[int, str] = {}
     if all_loc_ids:
-        any_tok = next((_get_valid_token_for(conn, cid) for cid, _ in chars
-                        if _get_valid_token_for(conn, cid)), None)
+        any_tok = await _any_valid_token_async([c for c, _ in chars])
         try:
             loc_names = await resolve_station_names_bulk(list(all_loc_ids), token=any_tok, conn=conn)
         except Exception:
@@ -7461,6 +7548,8 @@ async def jobs_page(request: Request):
     return _tr("jobs.html", request, {
         "groups": groups, "error": None, "total_active": total_active,
         "fetch_failed": fetch_failed,
+        "data_age": age_label(data_age),
+        "refreshing": bool(refresh_later),
     })
 
 
@@ -7481,21 +7570,72 @@ async def planets_page(request: Request):
 
     async def _one(cid: int):
         try:
-            tok = _get_valid_token_for(conn, cid)
+            tok = await _valid_token_async(cid)
             if not tok:
                 return cid, None
             async with esi_client() as client:
                 colonies = await planets_api.fetch_planets(client, cid, tok)
-                if colonies == "forbidden" or colonies is None or not colonies:
+                if colonies == "forbidden" or colonies is None:
+                    return cid, colonies
+                if not colonies:
+                    # "This character has no colonies" is an answer, and storing
+                    # it is what stops five colony-less characters re-asking on
+                    # every single visit. Only "forbidden" stays unstored, so a
+                    # re-login takes effect at once instead of after the TTL.
+                    c0 = get_conn()
+                    try:
+                        put_cached(c0, "planets", cid, {"colonies": [], "details": []})
+                    finally:
+                        c0.close()
                     return cid, colonies
                 details = await asyncio.gather(*[
                     planets_api.fetch_planet_detail(client, cid, c["planet_id"], tok)
                     for c in colonies], return_exceptions=True)
-                return cid, (colonies, details)
+            # Stored so the next visit costs nothing. "forbidden" and empty are
+            # NOT stored: the first means a missing scope, and a re-login has to
+            # take effect at once rather than after a TTL.
+            safe = [d if isinstance(d, dict) else None for d in details]
+            c2 = get_conn()
+            try:
+                put_cached(c2, "planets", cid, {"colonies": colonies, "details": safe})
+            finally:
+                c2.close()
+            return cid, (colonies, details)
         except Exception:
             return cid, None
 
-    results = await asyncio.gather(*[_one(cid) for cid, _ in chars])
+    # Cache first. This page was the worst offender by far: twelve colony lists
+    # plus forty-two colony details, 54 ESI calls before a byte of HTML, on every
+    # visit - and all of it in the char-planet rate-limit group, so clicking
+    # around the app was the fastest way to get throttled. An extractor
+    # programme is set for days, so half an hour of staleness costs nothing.
+    force = request.query_params.get("refresh") == "1"
+    if force:
+        drop_cached(conn, "planets")
+    cached: dict[int, object] = {}
+    ages: list[float] = []
+    missing: list[int] = []
+    aged: list[int] = []
+    for cid, _n in chars:
+        hit = get_cached(conn, "planets", cid) if not force else None
+        if hit is None:
+            missing.append(cid)
+            continue
+        payload, age = hit
+        cached[cid] = (payload.get("colonies") or [], payload.get("details") or [])
+        ages.append(age)
+        if age > _PLANETS_CACHE_TTL:
+            aged.append(cid)
+
+    fetched = await asyncio.gather(*[_one(cid) for cid in missing]) if missing else []
+    for cid, res in fetched:
+        cached[cid] = res
+        ages.append(0.0)
+    if aged:
+        _schedule_refresh(aged, _one)
+
+    results = [(cid, cached.get(cid)) for cid, _n in chars]
+    data_age = max(ages) if ages else None
     char_name = {cid: name for cid, name in chars}
 
     # Ids to resolve: planet names (per-planet endpoint - /universe/names can't do
@@ -7700,6 +7840,8 @@ async def planets_page(request: Request):
         "groups": groups, "error": None,
         "total_extractors": total_extractors, "expiring_soon": expiring_soon,
         "needs_relogin": needs_relogin,
+        "data_age": age_label(data_age),
+        "refreshing": bool(aged),
     })
 
 
@@ -7923,6 +8065,14 @@ async def type_icon(type_id: int, size: int = 32, v: str = "icon"):
 # expiry times in the DB so the count can be shown cheaply on every page (nav
 # badge) without hitting ESI; the dashboard tile refreshes the cache live.
 
+# How long a page's stored copy counts as current. Nothing here is a price:
+# industry jobs finish on the scale of hours and an extractor programme is set
+# for days, so a few minutes of staleness costs the user nothing and saves the
+# whole ESI round trip on every tab switch. Past the TTL the page still renders
+# from the stored copy first and refreshes behind the request.
+_JOBS_CACHE_TTL = 10 * 60
+_PLANETS_CACHE_TTL = 30 * 60
+
 _PI_CACHE_TTL = 900.0   # 15 min - extractor programs run for days, so this is plenty
 
 
@@ -7995,7 +8145,7 @@ async def _pi_fetch_and_cache(conn: sqlite3.Connection, chars) -> None:
     """Fetch every character's colonies + extractor expiry times and refresh the
     PI cache. Lightweight vs the full /planets view (extractors only)."""
     async def _one(cid: int):
-        tok = _get_valid_token_for(conn, cid)
+        tok = await _valid_token_async(cid)
         if not tok:
             return cid, None
         try:

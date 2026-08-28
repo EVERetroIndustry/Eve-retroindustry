@@ -25,6 +25,17 @@
       {% if expiring_soon %}<span class="badge ms-1" style="background:#3d2c00;color:#e6b84a"><i class="bi bi-clock-history me-1"></i>{{ expiring_soon }} expiring &lt;24h</span>{% endif %}
     </h4>
   </div>
+  {# Same contract as Jobs: rendered from the stored copy, so it has to say how
+     old that is and offer a fresh one. #}
+  <div class="col-auto d-flex align-items-center gap-2">
+    {% if data_age %}
+    <span class="text-muted small">
+      {{ data_age }}{% if refreshing %} &middot; <span class="text-muted">refreshing…</span>{% endif %}
+    </span>
+    {% endif %}
+    <a href="/planets?refresh=1" class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-arrow-clockwise me-1"></i>Refresh</a>
+  </div>
 </div>
 
 {% if error %}

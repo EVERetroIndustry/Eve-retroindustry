@@ -8,6 +8,18 @@
       {% if total_active %}<span class="badge bg-secondary ms-2">{{ total_active }} running</span>{% endif %}
     </h4>
   </div>
+  {# The page renders from the last stored copy so switching tabs never waits on
+     ESI. That is only honest if it says how old the copy is, and gives a way to
+     ask for a fresh one. #}
+  <div class="col-auto d-flex align-items-center gap-2">
+    {% if data_age %}
+    <span class="text-muted small">
+      {{ data_age }}{% if refreshing %} &middot; <span class="text-muted">refreshing…</span>{% endif %}
+    </span>
+    {% endif %}
+    <a href="/jobs?refresh=1" class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-arrow-clockwise me-1"></i>Refresh</a>
+  </div>
 </div>
 
 {% if error %}
