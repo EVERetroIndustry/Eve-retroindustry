@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.11.17"
+APP_VERSION = "0.11.18"
 
 import asyncio
 import datetime
@@ -6230,16 +6230,22 @@ async def _finalize_orders(conn, raw_orders: list[dict], type_names_fn, token: s
 CORP_CONTRACT_SCOPE = "esi-contracts.read_corporation_contracts.v1"
 
 
-def _corp_contract_tokens(conn: sqlite3.Connection,
-                          chars: list[tuple[int, str]]) -> dict[int, list[str]]:
+async def _corp_contract_tokens(conn: sqlite3.Connection,
+                                chars: list[tuple[int, str]]) -> dict[int, list[str]]:
     """corporation_id -> usable tokens, the ones that carry CORP_CONTRACT_SCOPE first.
 
     Taking simply the first character of a corporation used to hide that whole
     corporation behind a 403 whenever that character predated the scope.
+
+    Async because it needs a token for EVERY character, and the blocking helper
+    would take them one at a time on the event loop: measured on the alliance
+    contracts page with all twelve tokens expired, 4.94 s of nothing but
+    serialised SSO round trips - with the rest of the app stuck behind them,
+    which is what "it loads something and nothing happens" looked like.
     """
     out: dict[int, list[str]] = {}
-    for cid, _cn in chars:
-        tok = _get_valid_token_for(conn, cid)
+    tokens = await asyncio.gather(*[_valid_token_async(cid) for cid, _cn in chars])
+    for (cid, _cn), tok in zip(chars, tokens):
         if not tok:
             continue
         corp_id = (get_character_row(conn, cid) or {}).get("corporation_id")
@@ -6436,7 +6442,7 @@ async def contracts_page(request: Request, char: str = "", scope: str = "persona
                 # a character used to hide that corporation's contracts entirely
                 # (the error was dropped here), which is exactly how alliance
                 # contracts ended up looking like they belonged to another corp.
-                corp_cands = _corp_contract_tokens(conn, chars)
+                corp_cands = await _corp_contract_tokens(conn, chars)
                 corp_names = await _resolve_party_names(set(corp_cands)) if corp_cands else {}
                 unreadable: list[str] = []
                 async with esi_client() as client:
@@ -6697,7 +6703,7 @@ async def _alliance_sources(conn: sqlite3.Connection) -> tuple[dict[int, list[tu
     corporation we have a capable token for is a window into its alliance.
     """
     chars = list_characters(conn)
-    corp_tokens = _corp_contract_tokens(conn, chars)
+    corp_tokens = await _corp_contract_tokens(conn, chars)
     alliances = await _corp_alliance_ids(conn, list(corp_tokens))
     out: dict[int, list[tuple[int, str]]] = {}
     notes: list[str] = []
@@ -6869,11 +6875,14 @@ _PUBLIC_LIST_TTL = 60 * 60          # re-list everything at most once an hour
 _PUBLIC_ITEM_BUDGET = 12000         # contents per pass (~110 s of fetching)
 
 
-def _any_structure_token(conn: sqlite3.Connection) -> str | None:
+async def _any_structure_token(conn: sqlite3.Connection) -> str | None:
     """Any token that may read player structures - needed to learn which system a
-    Keepstar is in, which is where capitals are actually contracted."""
+    Keepstar is in, which is where capitals are actually contracted.
+
+    Stops at the first usable one, and takes each off the event loop.
+    """
     for cid, _n in list_characters(conn):
-        tok = _get_valid_token_for(conn, cid)
+        tok = await _valid_token_async(cid)
         if tok and token_has_scope(tok, "esi-universe.read_structures.v1"):
             return tok
     return None
@@ -7063,7 +7072,7 @@ async def _public_fill_pass(conn: sqlite3.Connection) -> dict:
                 _set_public(done=done, total=total, contracts=contracts)
 
             res = await contracts_helper.refresh_public_listings(
-                conn, regions, progress=_p, token=_any_structure_token(conn))
+                conn, regions, progress=_p, token=await _any_structure_token(conn))
             _set_public(phase="listed", regions=res["regions"], contracts=res["contracts"])
     status = contracts_helper.public_index_status(conn)
     _set_public(indexed=status["contracts"], with_items=status["with_items"],
@@ -7118,7 +7127,7 @@ async def api_public_refresh():
         contracts_helper.clear_public_absent(conn)
         regions = [rid for rid, _n in await _get_all_regions()]
         res = await contracts_helper.refresh_public_listings(
-            conn, regions, token=_any_structure_token(conn))
+            conn, regions, token=await _any_structure_token(conn))
         items = await contracts_helper.fill_public_items(conn, _PUBLIC_ITEM_BUDGET)
         status = contracts_helper.public_index_status(conn)
         _set_public(phase="idle" if not items["remaining"] else "contents",

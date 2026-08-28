@@ -137,7 +137,11 @@ def test_no_page_route_refreshes_a_token_on_the_event_loop(client, app_module, e
     finally:
         conn.close()
     try:
-        for page in ("/jobs", "/planets", "/assets", "/wallet", "/orders", "/contracts"):
+        # Every page, not a sample: the one left out of the first pass was
+        # /contracts/alliance, and it was still serialising twelve refreshes.
+        for page in ("/jobs", "/planets", "/assets", "/wallet", "/orders",
+                     "/contracts", "/contracts/alliance", "/blueprints", "/plan",
+                     "/prices", "/", "/api/dashboard/live"):
             client.get(page)
         assert esi.on_loop == 0, "a token was refreshed on the event loop"
     finally:
