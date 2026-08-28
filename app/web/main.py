@@ -319,12 +319,31 @@ def _refresh_sde_from_bundle(conn: sqlite3.Connection) -> int:
             for t in _SDE_TABLES_TO_REFRESH
         )
 
+        # ...and when the bundle simply carries a NEWER SDE BUILD. Counting rows
+        # cannot see that: build 3482594 has exactly as many types and groups as
+        # 3470007, no new tables and no new columns, yet it added a whole region
+        # (Exordium, 53 systems and 53 stations), renamed ten items and changed
+        # eleven published flags. Without this an existing install would have
+        # kept the old map for ever, and the tables that grew - stations and
+        # systems - are precisely the ones no count here looks at.
+        def _build_no(c) -> int:
+            try:
+                row = c.execute(
+                    "SELECT value FROM sde_meta WHERE key='sde_build'").fetchone()
+            except sqlite3.OperationalError:
+                return 0
+            return int(row[0]) if row and str(row[0] or "").isdigit() else 0
+
+        user_build, bundled_build = _build_no(conn), _build_no(bsrc)
+        newer_build = bundled_build > user_build
+
         if (bundled_count <= user_count and bundled_groups <= user_groups
-                and not missing and not new_columns):
-            return user_count  # up to date on types, groups, tables and columns
+                and not missing and not new_columns and not newer_build):
+            return user_count  # up to date on types, groups, tables, columns, build
 
         print(f"[sde] refreshing SDE tables: user={user_count}, bundled={bundled_count}, "
-              f"missing_table={missing}, new_columns={new_columns}", flush=True)
+              f"missing_table={missing}, new_columns={new_columns}, "
+              f"build={user_build}->{bundled_build}", flush=True)
         payload = []
         for table in _SDE_TABLES_TO_REFRESH:
             ddl = bsrc.execute(

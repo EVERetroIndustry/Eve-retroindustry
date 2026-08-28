@@ -27,6 +27,12 @@ data/*.zip
 data/fsd/
 data/fsd_backup/
 data/new_sde/
+# The SDE moved from fsd/ to the zip root, so the extracted YAML now lands
+# directly in data/ - 149 MB of types.yaml among it. Ignoring only data/fsd/ left
+# that exposed to `git add -A`, which is how a rebuild nearly committed the raw
+# SDE once already.
+data/*.yaml
+data/*.db
 
 # Android / Gradle (build/ above already covers android-poc/app/build/)
 .gradle/

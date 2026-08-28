@@ -25,10 +25,21 @@ _BONUS_RE = re.compile(
 console = Console()
 
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-# The new SDE layout (build 3417089+) has files in the zip root, not in fsd/. Support
-# both layouts - data/fsd/ (older) and data/ (new).
-SDE_DIR = os.path.join(_DATA_DIR, "fsd") \
-    if os.path.exists(os.path.join(_DATA_DIR, "fsd", "types.yaml")) else _DATA_DIR
+# The SDE layout has moved twice: files used to live in fsd/, then in the zip
+# root. Both are supported - but pick the NEWER types.yaml rather than preferring
+# a directory, because a stale extraction left in data/fsd/ otherwise wins over
+# a freshly unpacked one and the import silently rebuilds from old data. That
+# happened: a rebuild "succeeded" with 52 863 types and none of the new build's
+# changes in it.
+def _pick_sde_dir() -> str:
+    candidates = [d for d in (os.path.join(_DATA_DIR, "fsd"), _DATA_DIR)
+                  if os.path.exists(os.path.join(d, "types.yaml"))]
+    if not candidates:
+        return _DATA_DIR
+    return max(candidates, key=lambda d: os.path.getmtime(os.path.join(d, "types.yaml")))
+
+
+SDE_DIR = _pick_sde_dir()
 DB_PATH = os.path.join(os.path.dirname(__file__), "eve_cache.db")
 
 
@@ -85,15 +96,156 @@ def import_planet_schematics(conn: sqlite3.Connection):
     console.print(f"[green]Imported {len(sch_rows):,} planet schematics ({len(mat_rows):,} inputs)[/]")
 
 
-def _sde_zip() -> str | None:
-    for zip_path in sorted(glob.glob(os.path.join(_DATA_DIR, "*.zip"))):
+_ROMAN = [(1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"),
+          (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")]
+
+
+def _roman(n: int) -> str:
+    out = ""
+    for value, sym in _ROMAN:
+        while n >= value:
+            out += sym
+            n -= value
+    return out
+
+
+def _en(value):
+    """SDE names are per-language dicts; everything else in the app is English."""
+    return value.get("en") if isinstance(value, dict) else value
+
+
+def _sde_zip() -> tuple[str, str] | None:
+    """(path, layout) of the newest usable SDE zip in data/.
+
+    Two layouts exist and both are supported, because which one a given zip has
+    depends on when it was downloaded:
+      "flat"   - everything in the zip root, stations in npcStations.yaml and the
+                 map in mapSolarSystems/mapRegions (build 3482594 onwards)
+      "nested" - fsd/ and bsd/ subdirectories, stations in bsd/staStations.yaml
+                 and the map as a universe/ directory tree
+    """
+    best = None
+    for zip_path in sorted(glob.glob(os.path.join(_DATA_DIR, "*.zip")), reverse=True):
         try:
             with zipfile.ZipFile(zip_path) as z:
-                if "bsd/staStations.yaml" in z.namelist():
-                    return zip_path
+                names = set(z.namelist())
+                if "npcStations.yaml" in names and "mapSolarSystems.yaml" in names:
+                    return zip_path, "flat"
+                if "bsd/staStations.yaml" in names and best is None:
+                    best = (zip_path, "nested")
         except zipfile.BadZipFile:
             continue
-    return None
+    return best
+
+
+_TOP_KEY = re.compile(rb"^(\d+):\s*$")
+
+
+def _unique_celestial_names(z, member: str, wanted: set[int]) -> dict[int, str]:
+    """`uniqueName` for the celestials we care about, read as a stream.
+
+    mapMoons.yaml is 218 MB and only fifteen of its moons have a proper name, so
+    parsing the whole thing as YAML would cost minutes and gigabytes to learn
+    almost nothing. A line scan does it in seconds.
+    """
+    out: dict[int, str] = {}
+    current = None
+    pending = False
+    try:
+        handle = z.open(member)
+    except KeyError:
+        return out
+    with handle as f:
+        for raw in f:
+            m = _TOP_KEY.match(raw)
+            if m:
+                current = int(m.group(1))
+                pending = False
+                continue
+            if raw.strip() == b"uniqueName:":
+                pending = current in wanted
+                continue
+            if pending and raw.startswith(b"    en:"):
+                out[current] = raw.split(b":", 1)[1].strip().decode("utf-8").strip("'\"")
+                pending = False
+    return out
+
+
+def _universe_flat(z) -> tuple[list[tuple], list[tuple]]:
+    """Stations and systems from the flat layout.
+
+    Station NAMES are no longer shipped: npcStations.yaml carries the parts
+    (which celestial it orbits, whose corporation, which operation) and the name
+    is composed the way the client does it -
+
+        <celestial> - <corporation> <operation>
+
+    where <celestial> is the orbited body's `uniqueName` when it has one
+    ("Amarr VIII (Oris)", "Kor-Azor Prime IV (Eclipticum) - Moon Griklaeum") and
+    otherwise "<system> <roman(planet)>" plus " - Moon <n>". Verified against the
+    5 154 names the previous SDE shipped ready-made: 5 154 exact matches, no
+    misses, so this is the rule and not an approximation.
+    """
+    systems = _yaml_load(z.read("mapSolarSystems.yaml")) or {}
+    stations = _yaml_load(z.read("npcStations.yaml")) or {}
+    corps = _yaml_load(z.read("npcCorporations.yaml")) or {}
+    operations = _yaml_load(z.read("stationOperations.yaml")) or {}
+
+    orbits = {rec.get("orbitID") for rec in stations.values() if rec.get("orbitID")}
+    named = _unique_celestial_names(z, "mapPlanets.yaml", orbits)
+    named.update(_unique_celestial_names(z, "mapMoons.yaml", orbits))
+
+    sys_rows = [(int(sid), _en(rec.get("name")) or "", rec.get("regionID"))
+                for sid, rec in systems.items()]
+
+    st_rows = []
+    for sid, rec in stations.items():
+        system_id = rec.get("solarSystemID")
+        head = named.get(rec.get("orbitID"))
+        if not head:
+            system_name = _en((systems.get(system_id) or {}).get("name")) or ""
+            index = rec.get("celestialIndex")
+            head = f"{system_name} {_roman(index)}" if index else system_name
+            moon = rec.get("orbitIndex")
+            if moon:
+                head += f" - Moon {moon}"
+        corp = _en((corps.get(rec.get("ownerID")) or {}).get("name")) or ""
+        operation = _en((operations.get(rec.get("operationID")) or {}).get("operationName")) or ""
+        tail = f"{corp} {operation}".strip() if rec.get("useOperationName") else corp
+        name = f"{head} - {tail}" if tail else head
+        st_rows.append((int(sid), name, system_id,
+                        (systems.get(system_id) or {}).get("regionID")))
+    return st_rows, sys_rows
+
+
+def _universe_nested(z) -> tuple[list[tuple], list[tuple]]:
+    """Stations and systems from the older fsd/bsd layout, where station names
+    were shipped ready-made and the map was a directory tree."""
+    stations = _yaml_load(z.read("bsd/staStations.yaml")) or []
+    st_rows = [(e["stationID"], e.get("stationName") or "",
+                e.get("solarSystemID"), e.get("regionID"))
+               for e in stations if e.get("stationID")]
+
+    entries = z.namelist()
+    region_of: dict[str, int] = {}
+    sys_id_re = re.compile(rb"solarSystemID:\s*(\d+)")
+    reg_id_re = re.compile(rb"regionID:\s*(\d+)")
+    for name in entries:
+        if name.endswith("/region.yaml"):
+            m = reg_id_re.search(z.read(name))
+            if m:
+                region_of["/".join(name.split("/")[:3])] = int(m.group(1))
+    sys_rows = []
+    for name in entries:
+        if not name.endswith("/solarsystem.yaml"):
+            continue
+        m = sys_id_re.search(z.read(name))
+        if not m:
+            continue
+        parts = name.split("/")
+        sys_rows.append((int(m.group(1)), parts[-2],
+                         region_of.get("/".join(parts[:3]))))
+    return st_rows, sys_rows
 
 
 def import_universe(conn: sqlite3.Connection):
@@ -103,26 +255,21 @@ def import_universe(conn: sqlite3.Connection):
     every version), and its documented replacement, POST /universe/ids/, matches
     whole names only. Partial matching - typing "PR-8" and being offered PR-8CA -
     therefore cannot come from ESI at all any more. It can come from here: this
-    is static data that changes with a patch, not with the market, and it is
-    small.
+    is static data that changes with a patch, not with the market.
 
-    Covers all of New Eden, not just k-space: the universe tree carries eve,
-    wormhole, abyssal, hidden and void branches and all of them are imported.
-
-    Systems are read straight out of the zip with a regex rather than parsed as
-    YAML - 8 437 files in 0.4 s against 8.6 s to parse invUniqueNames.yaml, and
-    the directory layout gives the region as well, which invUniqueNames does not.
-    Region matters: it is what a station's prices are fetched against, so having
-    it locally saves two ESI calls per load and works offline.
+    Covers all of New Eden, k-space and wormhole space alike, and the region id
+    is imported with it: that is what a station's prices are fetched against, so
+    having it locally saves two ESI calls per load and works offline.
     """
-    zip_path = _sde_zip()
-    if not zip_path:
-        console.print("[yellow]No SDE zip with bsd/staStations.yaml in data/ - "
-                      "skipping station and system names[/]")
+    found = _sde_zip()
+    if not found:
+        console.print("[yellow]No usable SDE zip in data/ - skipping station and "
+                      "system names[/]")
         return
+    zip_path, layout = found
 
-    # Rebuilt outright rather than merged: this is derived data, and a schema that
-    # gained a column (region_id) would otherwise keep the old shape for ever.
+    # Rebuilt outright rather than merged: this is derived data, and a schema
+    # that gained a column would otherwise keep the old shape for ever.
     conn.execute("DROP TABLE IF EXISTS sde_stations")
     conn.execute("DROP TABLE IF EXISTS sde_systems")
     conn.execute("""
@@ -141,52 +288,24 @@ def import_universe(conn: sqlite3.Connection):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sde_stations_system"
                  " ON sde_stations(system_id)")
 
-    _SYS_ID = re.compile(rb"solarSystemID:\s*(\d+)")
-    _REG_ID = re.compile(rb"regionID:\s*(\d+)")
-
     with zipfile.ZipFile(zip_path) as z, \
             Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
                      BarColumn(), TimeElapsedColumn(), console=console) as prog:
-        entries = z.namelist()
-        task = prog.add_task("Stations and systems", total=3)
-
-        stations = _yaml_load(z.read("bsd/staStations.yaml")) or []
-        conn.executemany(
-            "INSERT OR REPLACE INTO sde_stations VALUES (?,?,?,?)",
-            [(e["stationID"], e.get("stationName") or "",
-              e.get("solarSystemID"), e.get("regionID"))
-             for e in stations if e.get("stationID")])
-        prog.advance(task)
-
-        # universe/<branch>/<region>/region.yaml -> the region id for that subtree
-        region_of: dict[str, int] = {}
-        for name in entries:
-            if name.endswith("/region.yaml"):
-                m = _REG_ID.search(z.read(name))
-                if m:
-                    region_of["/".join(name.split("/")[:3])] = int(m.group(1))
-        prog.advance(task)
-
-        # universe/<branch>/<region>/<constellation>/<SYSTEM NAME>/solarsystem.yaml
-        rows = []
-        for name in entries:
-            if not name.endswith("/solarsystem.yaml"):
-                continue
-            m = _SYS_ID.search(z.read(name))
-            if not m:
-                continue
-            parts = name.split("/")
-            rows.append((int(m.group(1)), parts[-2],
-                         region_of.get("/".join(parts[:3]))))
-        conn.executemany("INSERT OR REPLACE INTO sde_systems VALUES (?,?,?)", rows)
+        task = prog.add_task(f"Stations and systems ({layout} layout)", total=1)
+        st_rows, sys_rows = (_universe_flat(z) if layout == "flat"
+                             else _universe_nested(z))
+        conn.executemany("INSERT OR REPLACE INTO sde_stations VALUES (?,?,?,?)", st_rows)
+        conn.executemany("INSERT OR REPLACE INTO sde_systems VALUES (?,?,?)", sys_rows)
         prog.advance(task)
 
     conn.commit()
     n_st = conn.execute("SELECT COUNT(*) FROM sde_stations").fetchone()[0]
     n_sy = conn.execute("SELECT COUNT(*) FROM sde_systems").fetchone()[0]
     n_nr = conn.execute("SELECT COUNT(*) FROM sde_systems WHERE region_id IS NULL").fetchone()[0]
+    n_nn = conn.execute("SELECT COUNT(*) FROM sde_stations WHERE name = ''").fetchone()[0]
     console.print(f"  [green]{n_st}[/] stations, [green]{n_sy}[/] solar systems"
-                  + (f" ([yellow]{n_nr}[/] without a region)" if n_nr else ""))
+                  + (f" ([yellow]{n_nr}[/] without a region)" if n_nr else "")
+                  + (f" ([red]{n_nn}[/] without a name)" if n_nn else ""))
 
 
 def init_db(conn: sqlite3.Connection):
@@ -465,6 +584,8 @@ def main():
     if not os.path.exists(TYPES_YAML):
         console.print(f"[red]Not found: {TYPES_YAML}[/]")
         return
+
+    console.print(f"[dim]reading YAML from {SDE_DIR}[/]")
 
     conn = sqlite3.connect(DB_PATH)
 
