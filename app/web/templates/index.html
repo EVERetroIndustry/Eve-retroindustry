@@ -319,10 +319,17 @@
 
   // Rate-limit notice above the character cards, plus one automatic retry when
   // the wait is over, so the dashboard fills itself in without being asked.
-  let _throttleTimer = null;
+  // The notice counts itself down and clears itself. The first version printed a
+  // number that never moved and reappeared with the same number after each retry,
+  // so it read as broken even when it was telling the truth.
+  let _throttleTimer = null, _throttleTick = null;
   function showThrottle(waitS) {
     let bar = document.getElementById('dash-throttle');
-    if (waitS === null) { if (bar) bar.remove(); return; }
+    if (waitS === null) {
+      clearInterval(_throttleTick); clearTimeout(_throttleTimer);
+      if (bar) bar.remove();
+      return;
+    }
     if (!bar) {
       bar = document.createElement('div');
       bar.id = 'dash-throttle';
@@ -331,9 +338,18 @@
       if (row && row.parentNode) row.parentNode.insertBefore(bar, row.nextSibling);
       else document.body.prepend(bar);
     }
-    bar.innerHTML = `<i class="bi bi-hourglass-split me-2"></i>ESI is rate-limiting `
-      + `this app${waitS ? ` - retrying in ~${waitS}s` : ''}. Showing the last `
-      + `values it stored; nothing is stuck.`;
+    let left = Math.max(0, waitS | 0);
+    const paint = () => {
+      bar.innerHTML = `<i class="bi bi-hourglass-split me-2"></i>`
+        + `ESI rate limit${left ? ` - retrying in ${left}s` : ' - retrying…'}`;
+    };
+    paint();
+    clearInterval(_throttleTick);
+    _throttleTick = setInterval(() => {
+      left = Math.max(0, left - 1);
+      paint();
+      if (!left) clearInterval(_throttleTick);
+    }, 1000);
     clearTimeout(_throttleTimer);
     _throttleTimer = setTimeout(() => { restoreSpinners(); loadLive(); },
                                 Math.min(Math.max(waitS, 5), 120) * 1000 + 1000);

@@ -111,3 +111,47 @@ def test_a_denied_character_sends_no_request(monkeypatch):
     assert items == []
     assert not any("/assets/" in u for u in asked), \
         "the corporation assets endpoint must not be asked again"
+
+
+def _pause_group(url: str, seconds: float) -> None:
+    import httpx
+    sig = EC._TokenBucketGovernor.signature(httpx.URL(url))
+    EC._TOKEN_LIMIT._group_of[sig] = "grp-" + sig
+    EC._TOKEN_LIMIT._pause_until["grp-" + sig] = time.monotonic() + seconds
+
+
+@pytest.fixture
+def clean_governors():
+    EC._TOKEN_LIMIT._pause_until.clear()
+    EC._ERROR_LIMIT._pause_until = 0.0
+    yield
+    EC._TOKEN_LIMIT._pause_until.clear()
+    EC._ERROR_LIMIT._pause_until = 0.0
+
+
+def test_a_pause_on_an_unrelated_group_does_not_stop_the_dashboard(client,
+                                                                   clean_governors):
+    """Reported as "the notice is there constantly". It was: asking for the worst
+    pause across EVERY rate-limit group meant a 429 on the market group - which a
+    price refresh earns routinely - made the dashboard declare itself
+    rate-limited. Verified while it was happening: the shared error budget was
+    100 of 100, untouched, because a 429 costs nothing."""
+    _pause_group("https://esi.evetech.net/latest/markets/10000002/orders/", 120)
+    d = client.get("/api/dashboard/live").json()
+    assert d.get("throttled") in (False, None)
+
+
+def test_a_pause_on_a_group_the_dashboard_uses_does_stop_it(client, clean_governors):
+    _pause_group("https://esi.evetech.net/latest/characters/1/wallet/", 90)
+    t0 = time.time()
+    d = client.get("/api/dashboard/live").json()
+    assert d["throttled"] is True
+    assert 80 <= d["wait_s"] <= 90
+    assert time.time() - t0 < 5, "read the pause, do not wait it out"
+
+
+def test_the_global_error_limit_still_stops_everything(client, clean_governors):
+    """It is not per-group: a spent error budget pauses every call there is."""
+    EC._ERROR_LIMIT._pause_until = time.monotonic() + 45
+    d = client.get("/api/dashboard/live").json()
+    assert d["throttled"] is True

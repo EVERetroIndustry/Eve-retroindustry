@@ -1849,6 +1849,29 @@ async def dashboard(request: Request):
     return _tr("index.html", request, ctx)
 
 
+# The endpoints the dashboard itself calls. Asking esi_throttle_status() with no
+# URL was wrong: it reports the worst pause across EVERY rate-limit group seen,
+# so a 429 on the market group - which a price refresh earns routinely, and which
+# has nothing to do with wallets or locations - made the dashboard declare itself
+# rate-limited and refuse to load. Verified while it was doing exactly that: the
+# shared error budget was 100 of 100, untouched, because a 429 costs nothing.
+_DASHBOARD_ESI_URLS = (
+    "https://esi.evetech.net/latest/characters/1/wallet/",
+    "https://esi.evetech.net/latest/characters/1/location/",
+    "https://esi.evetech.net/latest/characters/1/skillqueue/",
+)
+
+
+def _dashboard_throttle() -> dict:
+    """The worst pause among the groups this page actually uses."""
+    worst = {"paused": False, "seconds": 0}
+    for url in _DASHBOARD_ESI_URLS:
+        st = esi_throttle_status(url)
+        if st.get("paused") and st.get("seconds", 0) >= worst["seconds"]:
+            worst = st
+    return worst
+
+
 @app.get("/api/dashboard/live")
 async def api_dashboard_live(request: Request):
     """ESI-backed dashboard data (corp names, wallet, location, skill queue,
@@ -1859,7 +1882,7 @@ async def api_dashboard_live(request: Request):
     # "couldn't load live data" and no reason. Measured with the governor paused:
     # this endpoint was still running after 25 s. Reading the pause is free, so
     # the cached view is served at once and the page is told how long to wait.
-    throttle = esi_throttle_status()
+    throttle = _dashboard_throttle()
     conn = get_conn()
     try:
         if throttle["paused"]:
@@ -1872,7 +1895,7 @@ async def api_dashboard_live(request: Request):
                     _compute_dashboard(request, conn, live=True), timeout=25)
             except asyncio.TimeoutError:
                 ctx = await _compute_dashboard(request, conn, live=False)
-                throttle = esi_throttle_status()
+                throttle = _dashboard_throttle()
                 if not throttle["paused"]:
                     throttle = {"paused": True, "seconds": 0}   # slow, not paused
     finally:
