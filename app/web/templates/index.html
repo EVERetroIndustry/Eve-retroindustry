@@ -266,6 +266,11 @@
 
   function apply(d) {
     if (!d || !d.logged_in) { fail(); return; }
+    // ESI is rate-limiting us - usually right after a Sync All, which can spend
+    // the shared error budget. The numbers below are the stored ones. Saying so
+    // (and retrying by itself) beats a spinner that gives up after 45 seconds
+    // without a reason.
+    showThrottle(d.throttled ? (d.wait_s || 0) : null);
     setAgg('agg-wallet', d.agg_wallet_str, 'ISK in wallets (all chars)');
     if (d.agg_value_str) {
       const el = document.getElementById('agg-value');
@@ -310,6 +315,28 @@
     document.querySelectorAll('[id^="loc-"]').forEach(el => el.innerHTML = locHtml(null));
     document.querySelectorAll('[id^="train-"]').forEach(el => el.innerHTML = trainHtml(null));
     document.querySelectorAll('.dash-spin').forEach(s => s.remove());
+  }
+
+  // Rate-limit notice above the character cards, plus one automatic retry when
+  // the wait is over, so the dashboard fills itself in without being asked.
+  let _throttleTimer = null;
+  function showThrottle(waitS) {
+    let bar = document.getElementById('dash-throttle');
+    if (waitS === null) { if (bar) bar.remove(); return; }
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'dash-throttle';
+      bar.className = 'alert alert-warning py-2 mb-3';
+      const row = document.querySelector('.row.g-3.mb-4');
+      if (row && row.parentNode) row.parentNode.insertBefore(bar, row.nextSibling);
+      else document.body.prepend(bar);
+    }
+    bar.innerHTML = `<i class="bi bi-hourglass-split me-2"></i>ESI is rate-limiting `
+      + `this app${waitS ? ` - retrying in ~${waitS}s` : ''}. Showing the last `
+      + `values it stored; nothing is stuck.`;
+    clearTimeout(_throttleTimer);
+    _throttleTimer = setTimeout(() => { restoreSpinners(); loadLive(); },
+                                Math.min(Math.max(waitS, 5), 120) * 1000 + 1000);
   }
 
   let _lastLoad = 0;

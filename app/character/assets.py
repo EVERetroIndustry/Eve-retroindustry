@@ -117,12 +117,15 @@ def ensure_corp_assets_table(conn: sqlite3.Connection):
     conn.commit()
 
 
-def _load_corp_cache(conn: sqlite3.Connection, corporation_id: int) -> list[dict] | None:
+def _load_corp_cache(conn: sqlite3.Connection, corporation_id: int,
+                     any_age: bool = False) -> list[dict] | None:
+    """any_age serves a stale copy rather than nothing: used when a character has
+    been refused access, where the alternative is not fresher data but no data."""
     row = conn.execute(
         "SELECT data_json, cached_at FROM corp_assets_cache WHERE corporation_id=?",
         (corporation_id,)
     ).fetchone()
-    if row and (time.time() - (row[1] or 0)) < CACHE_TTL:
+    if row and (any_age or (time.time() - (row[1] or 0)) < CACHE_TTL):
         return json.loads(row[0])
     return None
 
@@ -134,6 +137,56 @@ def _save_corp_cache(conn: sqlite3.Connection, corporation_id: int, data: list[d
         (corporation_id, json.dumps(data), time.time())
     )
     conn.commit()
+
+
+# How long a "this character may not read that corporation's assets" answer is
+# trusted. Roles do change, so it is not permanent - but a role granted five
+# minutes ago is not worth twelve wasted 403s on every sync in between.
+_CORP_DENIED_TTL = 6 * 3600
+
+
+def _ensure_corp_denied_table(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS corp_assets_denied (
+            corp_id      INTEGER NOT NULL,
+            character_id INTEGER NOT NULL,
+            at           REAL    NOT NULL,
+            PRIMARY KEY (corp_id, character_id)
+        )""")
+    conn.commit()
+
+
+def _mark_corp_denied(conn: sqlite3.Connection, corp_id: int, character_id: int) -> None:
+    try:
+        _ensure_corp_denied_table(conn)
+        conn.execute("INSERT OR REPLACE INTO corp_assets_denied VALUES (?,?,?)",
+                     (corp_id, character_id, time.time()))
+        conn.commit()
+    except Exception:
+        pass          # a cache that cannot be written must not break the fetch
+
+
+def corp_access_denied(conn: sqlite3.Connection, corp_id: int,
+                       character_id: int) -> bool:
+    try:
+        _ensure_corp_denied_table(conn)
+        row = conn.execute(
+            "SELECT at FROM corp_assets_denied WHERE corp_id=? AND character_id=?",
+            (corp_id, character_id)).fetchone()
+    except Exception:
+        return False
+    return bool(row and (time.time() - (row[0] or 0)) < _CORP_DENIED_TTL)
+
+
+def clear_corp_denied(conn: sqlite3.Connection) -> None:
+    """Forget every refusal - what re-adding a character or a manual sync does,
+    so a newly granted role takes effect at once instead of after the TTL."""
+    try:
+        _ensure_corp_denied_table(conn)
+        conn.execute("DELETE FROM corp_assets_denied")
+        conn.commit()
+    except Exception:
+        pass
 
 
 async def fetch_corp_assets(
@@ -158,6 +211,10 @@ async def fetch_corp_assets(
         cached = _load_corp_cache(conn, corp_id)
         if cached is not None:
             return corp_id, _parse_assets(cached)
+    # Asked before and refused: do not spend a 4xx on finding out again.
+    if corp_access_denied(conn, corp_id, character_id):
+        cached = _load_corp_cache(conn, corp_id, any_age=True)
+        return corp_id, _parse_assets(cached or [])
 
     all_items: list[dict] = []
     page = 1
@@ -170,6 +227,13 @@ async def fetch_corp_assets(
             timeout=20,
         )
         if r.status_code in (401, 403):
+            # Remember the refusal. Without this every Sync All asked again for
+            # every character that lacks the role - twelve characters, twelve
+            # 403s, and a 4xx costs five rate-limit tokens plus a slot in the
+            # error budget, which is GLOBAL: spend it and ESI's governor pauses
+            # everything, including the dashboard, which then spins and gives up.
+            # Corp divisions already had this negative cache; corp assets did not.
+            _mark_corp_denied(conn, corp_id, character_id)
             return corp_id, []
         r.raise_for_status()
         items = r.json()

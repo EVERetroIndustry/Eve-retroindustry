@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.11.18"
+APP_VERSION = "0.11.19"
 
 import asyncio
 import datetime
@@ -49,6 +49,7 @@ from app.web import contracts_helper
 from app.character.assets import (
     fetch_assets, ensure_assets_table, assets_at_location,
     fetch_corp_assets, ensure_corp_assets_table,
+    clear_corp_denied,
 )
 from app.db.type_resolver import resolve_names_bulk
 from app.esi.client import search_type_by_name
@@ -1331,6 +1332,9 @@ async def auth_sync(request: Request):
         # esi-corporations.read_divisions.v1 scope - retry those instead of waiting
         # out the negative cache.
         _clear_failed_corp_divisions(conn)
+        # Same reasoning: a role granted since the last sync has to take effect
+        # now, not when the six-hour refusal record ages out.
+        clear_corp_denied(conn)
     finally:
         conn.close()
     if not _sync_state["running"] and not _sync_state["done"]:
@@ -1849,9 +1853,28 @@ async def dashboard(request: Request):
 async def api_dashboard_live(request: Request):
     """ESI-backed dashboard data (corp names, wallet, location, skill queue,
     refined prices), fetched by the dashboard right after the instant render."""
+    # Do not walk into a wall we can already see. When ESI's governor is paused -
+    # which is what a Sync All leaves behind once it has spent the error budget -
+    # every call inside would simply wait, and the browser gave up after 45 s with
+    # "couldn't load live data" and no reason. Measured with the governor paused:
+    # this endpoint was still running after 25 s. Reading the pause is free, so
+    # the cached view is served at once and the page is told how long to wait.
+    throttle = esi_throttle_status()
     conn = get_conn()
     try:
-        ctx = await _compute_dashboard(request, conn, live=True)
+        if throttle["paused"]:
+            ctx = await _compute_dashboard(request, conn, live=False)
+        else:
+            try:
+                # A deadline as well: paused is not the only way ESI gets slow,
+                # and the client's own cap must never be the first thing to fire.
+                ctx = await asyncio.wait_for(
+                    _compute_dashboard(request, conn, live=True), timeout=25)
+            except asyncio.TimeoutError:
+                ctx = await _compute_dashboard(request, conn, live=False)
+                throttle = esi_throttle_status()
+                if not throttle["paused"]:
+                    throttle = {"paused": True, "seconds": 0}   # slow, not paused
     finally:
         conn.close()
     if not ctx["logged_in"]:
@@ -1881,6 +1904,10 @@ async def api_dashboard_live(request: Request):
         "agg_wallet_str": _s(ctx["agg_wallet"]),
         "agg_value_str": _isk0(ctx["agg_value"]) if ctx["agg_value"] else None,
         "chars": chars_out,
+        # So the page can say WHY the numbers are the stored ones, and when to
+        # try again, instead of spinning and then giving up without a reason.
+        "throttled": bool(throttle["paused"]),
+        "wait_s": int(throttle.get("seconds") or 0),
     }
 
 
