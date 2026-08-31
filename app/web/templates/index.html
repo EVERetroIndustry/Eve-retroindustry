@@ -266,11 +266,14 @@
 
   function apply(d) {
     if (!d || !d.logged_in) { fail(); return; }
-    // ESI is rate-limiting us - usually right after a Sync All, which can spend
-    // the shared error budget. The numbers below are the stored ones. Saying so
-    // (and retrying by itself) beats a spinner that gives up after 45 seconds
-    // without a reason.
-    showThrottle(d.throttled ? (d.wait_s || 0) : null);
+    // Three states, and the page says which one it got: fresh numbers, stored
+    // numbers because ESI told us to wait, or stored numbers because the fetch
+    // was too slow. Only the first of those is a rate limit - calling a slow
+    // fetch one is what made the page retry every six seconds and fire another
+    // 38 ESI calls, which is the opposite of what a slow ESI needs.
+    if (d.throttled) showNotice({ kind: 'limit', waitS: d.wait_s || 0, ageS: d.age_s });
+    else if (d.stale || d.slow || d.failed) showNotice({ kind: 'slow', ageS: d.age_s });
+    else showNotice(null);
     setAgg('agg-wallet', d.agg_wallet_str, 'ISK in wallets (all chars)');
     if (d.agg_value_str) {
       const el = document.getElementById('agg-value');
@@ -289,6 +292,9 @@
       const wl = document.getElementById('worth-' + cid);
       if (wl && w) { wl.innerHTML = w; wl.style.display = ''; }
     });
+    // Nothing stored yet AND no fresh answer: neutral fallbacks, not spinners
+    // that turn forever.
+    if (!Object.keys(chars).length) dropSpinners();
   }
 
   function spinRow(icon, text) {
@@ -307,26 +313,44 @@
   // Network/timeout failure: drop the spinners, show neutral fallbacks and a
   // Retry (so a slow/rate-limited ESI is never a dead end). Cache-derived
   // values (asset value, corp id) stay put.
+  function dropSpinners() {
+    document.querySelectorAll('[id^="loc-"]').forEach(el => el.innerHTML = locHtml(null));
+    document.querySelectorAll('[id^="train-"]').forEach(el => el.innerHTML = trainHtml(null));
+    document.querySelectorAll('.dash-spin').forEach(s => s.remove());
+  }
   function fail() {
     const aw = document.getElementById('agg-wallet');
     if (aw) aw.innerHTML = `<div class="fs-6 fw-bold text-muted">-</div>`
       + `<div class="text-muted" style="font-size:.7rem">couldn't load live data · `
       + `<a href="#" onclick="return dashRetry()">retry</a></div>`;
-    document.querySelectorAll('[id^="loc-"]').forEach(el => el.innerHTML = locHtml(null));
-    document.querySelectorAll('[id^="train-"]').forEach(el => el.innerHTML = trainHtml(null));
-    document.querySelectorAll('.dash-spin').forEach(s => s.remove());
+    dropSpinners();
   }
 
-  // Rate-limit notice above the character cards, plus one automatic retry when
-  // the wait is over, so the dashboard fills itself in without being asked.
-  // The notice counts itself down and clears itself. The first version printed a
-  // number that never moved and reappeared with the same number after each retry,
-  // so it read as broken even when it was telling the truth.
-  let _throttleTimer = null, _throttleTick = null;
-  function showThrottle(waitS) {
+  // The notice above the character cards, plus one automatic retry when the
+  // wait is over, so the dashboard fills itself in without being asked.
+  //
+  // Two shapes, because they are two different problems. ESI has told us to wait
+  // (its number, counted down), or the fetch was simply too slow and we are
+  // showing stored values (our number, and it GROWS while it keeps failing).
+  // One dashboard load costs 38 ESI calls on a twelve-character account, so
+  // retrying a slow ESI every few seconds is how a slow dashboard turns itself
+  // into a rate-limited one.
+  let _noticeTimer = null, _noticeTick = null, _failStreak = 0;
+  const _BACKOFF = [30, 60, 120, 300];
+
+  function ageText(s) {
+    if (s === undefined || s === null) return '';
+    if (s < 45) return 'a moment ago';
+    if (s < 3600) return Math.round(s / 60) + ' min ago';
+    if (s < 86400) return Math.round(s / 3600) + ' h ago';
+    return Math.round(s / 86400) + ' d ago';
+  }
+
+  function showNotice(state) {
     let bar = document.getElementById('dash-throttle');
-    if (waitS === null) {
-      clearInterval(_throttleTick); clearTimeout(_throttleTimer);
+    if (!state) {
+      _failStreak = 0;
+      clearInterval(_noticeTick); clearTimeout(_noticeTimer);
       if (bar) bar.remove();
       return;
     }
@@ -338,34 +362,49 @@
       if (row && row.parentNode) row.parentNode.insertBefore(bar, row.nextSibling);
       else document.body.prepend(bar);
     }
-    let left = Math.max(0, waitS | 0);
+    let left;
+    if (state.kind === 'limit') {
+      // ESI itself said how long, so there is nothing to back off from.
+      left = Math.max(0, state.waitS | 0);
+      _failStreak = 0;
+    } else {
+      _failStreak = Math.min(_failStreak + 1, _BACKOFF.length);
+      left = _BACKOFF[_failStreak - 1];
+    }
+    const head = state.kind === 'limit' ? 'ESI rate limit' : 'ESI is slow';
+    const age = ageText(state.ageS);
+    const wait = left;
     const paint = () => {
-      bar.innerHTML = `<i class="bi bi-hourglass-split me-2"></i>`
-        + `ESI rate limit${left ? ` - retrying in ${left}s` : ' - retrying…'}`;
+      bar.innerHTML = `<i class="bi bi-hourglass-split me-2"></i>${head}`
+        + (age ? ` - showing values from ${age}` : '')
+        + (left ? ` - retrying in ${left}s` : ' - retrying…');
     };
     paint();
-    clearInterval(_throttleTick);
-    _throttleTick = setInterval(() => {
+    clearInterval(_noticeTick);
+    _noticeTick = setInterval(() => {
       left = Math.max(0, left - 1);
       paint();
-      if (!left) clearInterval(_throttleTick);
+      if (!left) clearInterval(_noticeTick);
     }, 1000);
-    clearTimeout(_throttleTimer);
-    _throttleTimer = setTimeout(() => { restoreSpinners(); loadLive(); },
-                                Math.min(Math.max(waitS, 5), 120) * 1000 + 1000);
+    clearTimeout(_noticeTimer);
+    _noticeTimer = setTimeout(() => loadLive(),
+                              Math.min(Math.max(wait, 5), 300) * 1000 + 1000);
   }
 
   let _lastLoad = 0;
-  function loadLive() {
+  function loadLive(force) {
     _lastLoad = Date.now();
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 45000);   // last-resort cap
-    fetch('/api/dashboard/live', { signal: ctrl.signal })
+    // force=1 bypasses the server's short cache: the Refresh icon and the
+    // retry link mean "get me the current numbers", so they must not be answered
+    // out of a stored copy.
+    fetch('/api/dashboard/live' + (force ? '?force=1' : ''), { signal: ctrl.signal })
       .then(r => r.json())
       .then(d => { clearTimeout(timer); apply(d); })
       .catch(() => { clearTimeout(timer); fail(); });
   }
-  window.dashRetry = function () { restoreSpinners(); loadLive(); return false; };
+  window.dashRetry = function () { restoreSpinners(); loadLive(true); return false; };
 
   // Keep the dashboard current instead of sitting on stale numbers: re-fetch the
   // live data when the user comes back to it (tab/window regains focus, or a

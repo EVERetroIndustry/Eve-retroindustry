@@ -1872,37 +1872,36 @@ def _dashboard_throttle() -> dict:
     return worst
 
 
-@app.get("/api/dashboard/live")
-async def api_dashboard_live(request: Request):
-    """ESI-backed dashboard data (corp names, wallet, location, skill queue,
-    refined prices), fetched by the dashboard right after the instant render."""
-    # Do not walk into a wall we can already see. When ESI's governor is paused -
-    # which is what a Sync All leaves behind once it has spent the error budget -
-    # every call inside would simply wait, and the browser gave up after 45 s with
-    # "couldn't load live data" and no reason. Measured with the governor paused:
-    # this endpoint was still running after 25 s. Reading the pause is free, so
-    # the cached view is served at once and the page is told how long to wait.
-    throttle = _dashboard_throttle()
-    conn = get_conn()
-    try:
-        if throttle["paused"]:
-            ctx = await _compute_dashboard(request, conn, live=False)
-        else:
-            try:
-                # A deadline as well: paused is not the only way ESI gets slow,
-                # and the client's own cap must never be the first thing to fire.
-                ctx = await asyncio.wait_for(
-                    _compute_dashboard(request, conn, live=True), timeout=25)
-            except asyncio.TimeoutError:
-                ctx = await _compute_dashboard(request, conn, live=False)
-                throttle = _dashboard_throttle()
-                if not throttle["paused"]:
-                    throttle = {"paused": True, "seconds": 0}   # slow, not paused
-    finally:
-        conn.close()
-    if not ctx["logged_in"]:
-        return {"logged_in": False}
+# One dashboard load costs 38 ESI calls on a twelve-character account (measured
+# with the transport intercepted, nothing sent: 12 location + 12 ship + 12
+# skillqueue + universe/names + markets/prices, plus up to 12 wallet balances
+# when their 5-minute cache is cold). Nothing reused any of it, so every click
+# paid the full price again and several clicks ran several full fetches at once.
+#
+# That cannot drain ESI's token buckets by itself - those are per character and
+# would need ~300 loads inside 15 minutes - but the 420 error budget is GLOBAL
+# (100 errors per 60 s), so 38 calls a click is the wrong number to multiply when
+# some of them start failing. Hence a short shared cache and a single flight.
+_DASH_LIVE_TTL = 60.0
+# Paused is not the only way ESI gets slow, and the browser's own cap must
+# never be the first thing to fire. A constant so a test can shrink it.
+_DASH_LIVE_DEADLINE = 25.0
+_DASH_LIVE_KIND = "dashboard_live"
+_DASH_LIVE_KEY = "all"
 
+# The in-flight refresh, shared by every request that arrives while it runs.
+# Concurrent clicks used to start independent computations; now they wait on the
+# same one. Held in a list so the module-level name stays rebindable.
+_DASH_FLIGHT: list = [None]
+
+
+def _dash_live_json(ctx: dict) -> dict:
+    """The live half of the dashboard as the browser consumes it.
+
+    Deliberately free of the active character: nothing in here depends on which
+    card is highlighted, which is what makes one cache entry correct for every
+    request.
+    """
     def _s(v):
         # Whole ISK on the dashboard: at billions the cents are pure noise and
         # they push the numbers wide enough to wrap on a character card.
@@ -1927,11 +1926,102 @@ async def api_dashboard_live(request: Request):
         "agg_wallet_str": _s(ctx["agg_wallet"]),
         "agg_value_str": _isk0(ctx["agg_value"]) if ctx["agg_value"] else None,
         "chars": chars_out,
-        # So the page can say WHY the numbers are the stored ones, and when to
-        # try again, instead of spinning and then giving up without a reason.
-        "throttled": bool(throttle["paused"]),
-        "wait_s": int(throttle.get("seconds") or 0),
     }
+
+
+async def _dash_live_build(request: Request) -> dict:
+    """Fetch the live dashboard once and store it. Runs as its own task, with its
+    own connection, so a client that gives up waiting cannot cancel it or close
+    the database underneath it."""
+    conn = get_conn()
+    try:
+        ctx = await _compute_dashboard(request, conn, live=True)
+        if not ctx["logged_in"]:
+            return {"logged_in": False}
+        payload = _dash_live_json(ctx)
+        put_cached(conn, _DASH_LIVE_KIND, _DASH_LIVE_KEY, payload)
+        return payload
+    finally:
+        conn.close()
+
+
+def _dash_live_flight(request: Request):
+    """The shared refresh task - started if nothing is running, joined if it is.
+
+    force=1 joins it too: it bypasses the stored copy, not a fetch that is
+    already on its way to ESI for the same numbers.
+    """
+    task = _DASH_FLIGHT[0]
+    if task is None or task.done():
+        task = asyncio.create_task(_dash_live_build(request))
+        _DASH_FLIGHT[0] = task
+    return task
+
+
+@app.get("/api/dashboard/live")
+async def api_dashboard_live(request: Request, force: int = 0):
+    """ESI-backed dashboard data (corp names, wallet, location, skill queue,
+    refined prices), fetched by the dashboard right after the instant render.
+
+    Three states, and the page is told which one it got: fresh (just fetched),
+    stored (inside the TTL, or older because a refresh could not happen), and
+    nothing-yet. `force=1` is the Refresh icon on a card - when someone asks for
+    current numbers they get them.
+    """
+    conn = get_conn()
+    try:
+        if not has_any_character(conn):
+            return {"logged_in": False}
+        stored = get_cached(conn, _DASH_LIVE_KIND, _DASH_LIVE_KEY)
+    finally:
+        conn.close()
+
+    if stored and not force:
+        payload, age = stored
+        if age < _DASH_LIVE_TTL and isinstance(payload, dict):
+            return {**payload, "age_s": int(age), "cached": True}
+
+    def _fallback(**flags) -> dict:
+        """Serve the last live values rather than blanks.
+
+        This is the half 0.11.19 got wrong: the cache-only view has no wallet, no
+        location and no training at all - those fields are ESI-only - so falling
+        back to it emptied the cards while the notice claimed the stored values
+        were being shown. Measured: wallet_str, location_name and training all
+        came back None.
+        """
+        if stored and isinstance(stored[0], dict):
+            return {**stored[0], "age_s": int(stored[1]), "stale": True, **flags}
+        return {"logged_in": True, "chars": {}, "agg_wallet_str": None,
+                "agg_value_str": None, "stale": True, **flags}
+
+    # Do not walk into a wall we can already see. When ESI's governor is paused,
+    # every call inside would simply wait; reading the pause is free.
+    throttle = _dashboard_throttle()
+    if throttle["paused"]:
+        return _fallback(throttled=True, wait_s=int(throttle.get("seconds") or 0))
+
+    task = _dash_live_flight(request)
+    try:
+        # Shielded: this task is shared, so one client's deadline must not cancel
+        # the fetch the others are waiting for - and when it lands it still fills
+        # the cache, so the next click is instant.
+        payload = await asyncio.wait_for(asyncio.shield(task),
+                                        timeout=_DASH_LIVE_DEADLINE)
+    except asyncio.TimeoutError:
+        # Slow is NOT rate-limited. Saying "ESI rate limit" here is what made the
+        # page retry every six seconds and fire another 38 calls, which is the
+        # opposite of what a slow ESI needs.
+        throttle = _dashboard_throttle()
+        if throttle["paused"]:
+            return _fallback(throttled=True, wait_s=int(throttle.get("seconds") or 0))
+        return _fallback(slow=True)
+    except Exception:
+        return _fallback(failed=True)
+
+    if not payload.get("logged_in"):
+        return {"logged_in": False}
+    return {**payload, "age_s": 0}
 
 
 # ---------------------------------------------------------------------------

@@ -108,7 +108,9 @@ def test_skill_name_is_resolved_for_the_skill_actually_shown(client, app_module,
     monkeypatch.setattr(app_module, "fetch_skill_queue", _sq)
     monkeypatch.setattr(app_module, "fetch_ship", _ship)
 
-    data = client.get("/api/dashboard/live").json()
+    # force=1: the live payload is cached for a minute, and these stubs are the
+    # point of the test - a stored copy would answer without ever calling them.
+    data = client.get("/api/dashboard/live?force=1").json()
     skills = [(c.get("training") or {}).get("skill") for c in data["chars"].values()]
     assert "Medium Hybrid Turret" in skills, skills
     assert not any(str(s).startswith("#") for s in skills if s), skills
@@ -122,7 +124,9 @@ def test_dashboard_isk_has_no_decimals(client, app_module, monkeypatch):
     monkeypatch.setattr(app_module, "fetch_skill_queue", _sq)
     monkeypatch.setattr(app_module, "fetch_ship", _ship)
 
-    data = client.get("/api/dashboard/live").json()
+    # force=1: the live payload is cached for a minute, and these stubs are the
+    # point of the test - a stored copy would answer without ever calling them.
+    data = client.get("/api/dashboard/live?force=1").json()
     money = [data.get("agg_wallet_str"), data.get("agg_value_str")]
     for c in data["chars"].values():
         money += [c.get("wallet_str"), c.get("asset_value_str"), c.get("net_worth_str")]
