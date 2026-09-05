@@ -5932,6 +5932,7 @@ async def wallet_page(request: Request, char: str = "", scope: str = "personal",
         "error": None, "division_names": dict(_CORP_DIVISION_NAMES),
         "corp_div_note": None, "custom_divisions": set(),
         "row_cap": _WALLET_ROW_CAP,
+        "data_age": None, "stale_note": None,
     }
 
     if not plan_char_id:
@@ -5939,15 +5940,57 @@ async def wallet_page(request: Request, char: str = "", scope: str = "personal",
         conn.close()
         return _tr("wallet.html", request, ctx)
 
-    token = await _valid_token_async(plan_char_id)
-    row = get_character_row(conn, plan_char_id)
-    if not token or not row:
-        ctx["error"] = "The character token expired - sign in again."
+    division = max(1, min(7, division))
+    ctx["division"] = division
+
+    # Cache first, and - the part this page was missing - a copy to fall back on.
+    # Reported during an EVE downtime: the page said "No wallet data", because
+    # every row on it came straight from ESI and nothing was kept. A wallet you
+    # looked at ten minutes ago is still worth showing when ESI is unreachable,
+    # as long as the page says how old it is.
+    #
+    # It is also the tightest rate-limit group we touch: balance, journal (one
+    # call per page, up to the 2500-row cap) and transactions are all char-wallet,
+    # 150 tokens per 15 minutes per character, and a 2xx costs 2.
+    ck = f"c:{plan_char_id}:{division}" if scope == "corp" else f"p:{plan_char_id}"
+    force = request.query_params.get("refresh") == "1"
+    if force:
+        drop_cached(conn, "wallet", ck)
+    stored = None if force else get_cached(conn, "wallet", ck)
+
+    def _apply_stored(payload: dict, age: float) -> None:
+        ctx["balance"] = payload.get("balance")
+        ctx["journal"] = payload.get("journal") or []
+        ctx["transactions"] = payload.get("transactions") or []
+        if payload.get("corp_wallets"):
+            ctx["corp_wallets"] = payload["corp_wallets"]
+        if payload.get("corp_name"):
+            ctx["corp_name"] = payload["corp_name"]
+        if payload.get("division_names"):
+            # JSON has no integer keys and the template looks divisions up by
+            # number, so they are stored as pairs and rebuilt here.
+            ctx["division_names"] = {int(k): v for k, v in payload["division_names"]}
+        if payload.get("custom_divisions"):
+            ctx["custom_divisions"] = {int(d) for d in payload["custom_divisions"]}
+        if payload.get("corp_div_note"):
+            ctx["corp_div_note"] = payload["corp_div_note"]
+        ctx["data_age"] = age_label(age)
+
+    if stored and stored[1] < _WALLET_PAGE_TTL:
+        _apply_stored(stored[0], stored[1])
         conn.close()
         return _tr("wallet.html", request, ctx)
 
-    division = max(1, min(7, division))
-    ctx["division"] = division
+    token = await _valid_token_async(plan_char_id)
+    row = get_character_row(conn, plan_char_id)
+    if not token or not row:
+        if stored:
+            _apply_stored(stored[0], stored[1])
+            ctx["stale_note"] = "ESI could not be reached to refresh this."
+        else:
+            ctx["error"] = "The character token expired - sign in again."
+        conn.close()
+        return _tr("wallet.html", request, ctx)
 
     # Type names from the local SDE (transactions have a type_id)
     def _type_names(type_ids: set[int]) -> dict[int, str]:
@@ -5959,6 +6002,7 @@ async def wallet_page(request: Request, char: str = "", scope: str = "personal",
             f"SELECT type_id, name FROM sde_types WHERE type_id IN ({ph})", list(type_ids)
         ).fetchall()}
 
+    live_error: str | None = None
     try:
         async with esi_client() as client:
             if scope == "corp":
@@ -6004,7 +6048,32 @@ async def wallet_page(request: Request, char: str = "", scope: str = "personal",
                 ctx["journal"], ctx["transactions"] = _decorate(
                     conn, journal, txns, _type_names, names)
     except Exception as exc:
-        ctx["error"] = f"Error loading wallet: {exc}"
+        live_error = str(exc)
+
+    # Did ESI actually answer? A working ESI always returns a balance number for
+    # a personal wallet and at least one wallet row for a corporation, so this
+    # tells a real refusal apart from a genuinely empty wallet - the "an empty
+    # answer is an answer" trap this project has fallen into before.
+    live_ok = (ctx["corp_wallets"] if scope == "corp" else ctx["balance"] is not None)
+    if live_ok and not live_error:
+        put_cached(conn, "wallet", ck, {
+            "balance": ctx["balance"],
+            "journal": ctx["journal"],
+            "transactions": ctx["transactions"],
+            "corp_wallets": ctx["corp_wallets"],
+            "corp_name": ctx["corp_name"],
+            "division_names": [[k, v] for k, v in ctx["division_names"].items()],
+            "custom_divisions": sorted(ctx["custom_divisions"]),
+            "corp_div_note": ctx["corp_div_note"],
+        })
+    elif stored:
+        keep_error = ctx["corp_error"]        # a permission refusal still explains itself
+        _apply_stored(stored[0], stored[1])
+        ctx["corp_error"] = keep_error
+        ctx["stale_note"] = ("ESI did not answer" if not live_error
+                             else f"ESI did not answer ({live_error})")
+    elif live_error:
+        ctx["error"] = f"Error loading wallet: {live_error}"
 
     conn.close()
     return _tr("wallet.html", request, ctx)
@@ -6054,6 +6123,11 @@ async def _wallet_names(conn, journal: list[dict], txns: list[dict], token: str
 # costs a third of what the Prices page does, so that is the trade taken. Raising
 # it further wants virtualised rows, not a bigger number.
 _WALLET_ROW_CAP = 2500
+
+# How long a rendered wallet is reused before asking ESI again. Short, because a
+# balance moves while you play; long enough that clicking between the two tabs
+# and back is free. Refresh always bypasses it.
+_WALLET_PAGE_TTL = 5 * 60
 
 
 def _decorate(conn, journal: list[dict], txns: list[dict],

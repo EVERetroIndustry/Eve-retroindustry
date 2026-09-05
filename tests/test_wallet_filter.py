@@ -21,7 +21,11 @@ def test_ref_types_are_humanized_for_display_and_filtering(app_module):
 
 
 def _wallet_html(client, app_module, journal, txns):
-    """Render /wallet with fixed journal/transaction data, no ESI."""
+    """Render /wallet with fixed journal/transaction data, no ESI.
+
+    refresh=1 because the page keeps a stored copy for five minutes: without it
+    the second test in this file would be handed the first one's rows.
+    """
     async def _bal(*a, **k): return 1_000_000.0
     async def _jr(*a, **k): return journal
     async def _tx(*a, **k): return txns
@@ -33,7 +37,7 @@ def _wallet_html(client, app_module, journal, txns):
     app_module.wallet_api.fetch_transactions = _tx
     app_module._wallet_names = _names
     try:
-        return client.get("/wallet?char=900000001").text
+        return client.get("/wallet?char=900000001&refresh=1").text
     finally:
         (app_module.wallet_api.fetch_balance, app_module.wallet_api.fetch_journal,
          app_module.wallet_api.fetch_transactions, app_module._wallet_names) = orig

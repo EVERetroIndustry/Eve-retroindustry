@@ -29,8 +29,16 @@
 
 
 <div class="row mb-3 align-items-center">
-  <div class="col">
+  <div class="col-auto">
     <h4 class="mb-0"><i class="bi bi-wallet2 me-2 text-primary"></i>Wallet</h4>
+  </div>
+  {# The page can render from the last stored copy, which is only honest if it
+     says how old the copy is and offers a fresh one. #}
+  <div class="col d-flex align-items-center gap-2">
+    {% if data_age %}<span class="text-muted small">{{ data_age }}</span>{% endif %}
+    <a href="/wallet?char={{ wallet_char_id }}&scope={{ scope }}&division={{ division }}&refresh=1"
+       class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-arrow-clockwise me-1"></i>Refresh</a>
   </div>
   {% if all_characters %}
   <div class="col-auto d-flex align-items-center gap-2">
@@ -53,6 +61,13 @@
 
 {% if error %}
 <div class="alert alert-danger"><i class="bi bi-exclamation-circle me-2"></i>{{ error }}</div>
+{% endif %}
+
+{% if stale_note %}
+<div class="alert alert-warning py-2">
+  <i class="bi bi-clock-history me-2"></i>{{ stale_note }} - showing the copy stored
+  {{ data_age }}.
+</div>
 {% endif %}
 
 {# Personal / Corp toggle #}
