@@ -1,0 +1,275 @@
+{# Net worth and ISK over time - floating window. Include once, then call
+   window.openWorthHistory(). The dashboard tile does.
+
+   Two tabs because they are two different kinds of series and the window says
+   so rather than letting one line imply the other's provenance:
+
+     Net worth - SAMPLED hourly from the moment this version runs. Assets have
+                 only ever been stored as the current snapshot, overwritten on
+                 every sync, so there is no honest way to draw it any further
+                 back. Historical prices exist; historical holdings do not.
+     ISK       - RECONSTRUCTED backwards out of the stored wallet journal, so it
+                 reaches as far back as that goes. Measured on a real account:
+                 46 days, which is 16 more than ESI itself will serve. #}
+<style>
+  #nwModal .nw-dialog { max-width: min(1100px, 94vw); width: 100%; }
+  #nwModal .modal-content { background: linear-gradient(180deg,#171e28,#131922);
+                            border: 1px solid var(--eve-border); }
+  #nwModal .modal-body { max-height: calc(100vh - 11rem); overflow-y: auto; }
+  #nwModal .nw-chip.active { background: var(--eve-gold); color: #0d1117;
+                             border-color: var(--eve-gold); }
+  #nwModal #nw-host { position: relative; }
+  #nwModal #nw-cv { display: block; width: 100%; }
+  #nwModal #nw-tip { position: absolute; transform: translate(-50%, -140%);
+                     background: #0b0e13; border: 1px solid var(--eve-border);
+                     border-radius: 6px; padding: .35rem .5rem; font-size: .75rem;
+                     white-space: nowrap; pointer-events: none; opacity: 0;
+                     transition: opacity .08s; }
+  #nwModal #nw-tip .k { color: #8b949e; }
+  #nwModal #nw-tip .g { color: var(--eve-gold); }
+  #nwModal #nw-tip .s { color: #7bb8ec; }
+  #nwModal #nw-empty { min-height: 300px; }
+</style>
+<div class="modal fade" id="nwModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered nw-dialog">
+    <div class="modal-content">
+      <div class="modal-header py-2">
+        <div class="me-auto">
+          <h6 class="modal-title mb-0"><i class="bi bi-graph-up me-1"></i>History</h6>
+          <div class="text-muted" style="font-size:.75rem" id="nw-sub"></div>
+        </div>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+
+        <div class="d-flex flex-wrap gap-3 align-items-center mb-3">
+          <div class="btn-group btn-group-sm" id="nw-tabs">
+            <button type="button" class="btn btn-outline-secondary" data-tab="worth">
+              <i class="bi bi-coin me-1"></i>Net worth</button>
+            <button type="button" class="btn btn-outline-secondary" data-tab="isk">
+              <i class="bi bi-cash-stack me-1"></i>ISK</button>
+          </div>
+          <div class="btn-group btn-group-sm ms-auto" id="nw-ranges">
+            <button type="button" class="btn btn-outline-secondary nw-chip" data-d="7">7d</button>
+            <button type="button" class="btn btn-outline-secondary nw-chip" data-d="30">30d</button>
+            <button type="button" class="btn btn-outline-secondary nw-chip" data-d="90">90d</button>
+            <button type="button" class="btn btn-outline-secondary nw-chip" data-d="3650">All</button>
+          </div>
+        </div>
+
+        <div class="d-flex flex-wrap gap-4 mb-2" id="nw-stats"></div>
+
+        <div id="nw-host">
+          <canvas id="nw-cv"></canvas>
+          <div id="nw-tip"></div>
+        </div>
+        <div id="nw-empty" class="d-none align-items-center justify-content-center
+                                   text-center text-muted px-4"></div>
+
+        <div class="text-muted mt-2" style="font-size:.72rem" id="nw-note"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  const modalEl = document.getElementById('nwModal');
+  if (!modalEl) return;
+  const cv = document.getElementById('nw-cv'), host = document.getElementById('nw-host');
+  const ctx = cv.getContext('2d'), tip = document.getElementById('nw-tip');
+  const emptyEl = document.getElementById('nw-empty'), noteEl = document.getElementById('nw-note');
+  const subEl = document.getElementById('nw-sub'), statsEl = document.getElementById('nw-stats');
+
+  let tab = 'isk', days = 30, data = null, series = [], hover = null, geom = null;
+
+  const iskC = v => { const a = Math.abs(v);
+    return (v < 0 ? '-' : '') + (a >= 1e9 ? (a / 1e9).toFixed(2) + 'B'
+      : a >= 1e6 ? (a / 1e6).toFixed(2) + 'M'
+      : a >= 1e3 ? (a / 1e3).toFixed(1) + 'k' : Math.round(a).toString()); };
+  const iskF = v => Math.round(v).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  const dt = t => new Date(t * 1000).toLocaleDateString('en-GB',
+                    { day: '2-digit', month: 'short', year: '2-digit' });
+  const dtm = t => new Date(t * 1000).toLocaleString('en-GB',
+                    { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+
+  function setEmpty(html) {
+    emptyEl.innerHTML = html;
+    emptyEl.classList.remove('d-none'); emptyEl.classList.add('d-flex');
+    host.style.display = 'none'; statsEl.innerHTML = '';
+  }
+  function clearEmpty() {
+    emptyEl.classList.add('d-none'); emptyEl.classList.remove('d-flex');
+    host.style.display = '';
+  }
+
+  function stat(label, value, colour) {
+    return `<div><div class="text-muted" style="font-size:.7rem;text-transform:uppercase;`
+      + `letter-spacing:.04em">${label}</div>`
+      + `<div class="fw-semibold" style="font-size:1.05rem;color:${colour}">${value}</div></div>`;
+  }
+
+  function render() {
+    if (!data) return;
+    document.querySelectorAll('#nw-tabs button').forEach(b =>
+      b.classList.toggle('active', b.dataset.tab === tab));
+    document.querySelectorAll('#nw-ranges button').forEach(b =>
+      b.classList.toggle('active', +b.dataset.d === days));
+    hover = null; tip.style.opacity = '0';
+
+    if (tab === 'isk') {
+      const d = data.isk || {};
+      series = (d.points || []).map(p => ({ t: p.t, v: p.isk }));
+      subEl.textContent = 'ISK across every character, reconstructed from the stored wallet journal';
+      const flat = d.chars_without_journal || [];
+      noteEl.innerHTML = d.oldest_entry
+        ? `Walked back through ${iskF(d.entries)} stored journal entries to `
+          + `${dt(d.oldest_entry)}. ESI itself only serves the last 30 days, so this `
+          + `reaches further than asking it again would.`
+          + (flat.length ? ` ${flat.length} character${flat.length > 1 ? 's have' : ' has'} `
+             + `no stored journal (${flat.map(escHtml).join(', ')}) and `
+             + `${flat.length > 1 ? 'their balances are' : 'its balance is'} held flat.` : '')
+        : '';
+      if (!series.length) {
+        setEmpty('<div><i class="bi bi-cash-stack fs-3 d-block mb-2"></i>'
+          + 'No wallet journal stored yet. It fills in as the dashboard runs.</div>');
+        return;
+      }
+    } else {
+      const d = data.worth || {};
+      series = (d.points || []).map(p => ({ t: p.t, v: p.net, w: p.wallet, a: p.assets }));
+      subEl.textContent = 'Wallet plus the value of everything owned, sampled hourly';
+      noteEl.innerHTML = d.recording_since
+        ? `Recording since ${dt(d.recording_since)}. It cannot go back further: what `
+          + `you owned in the past was never stored, only what you own now - so unlike `
+          + `ISK there is nothing to reconstruct it from.`
+        : '';
+      if (!series.length) {
+        setEmpty('<div><i class="bi bi-hourglass-split fs-3 d-block mb-2"></i>'
+          + '<div class="mb-2">Nothing recorded yet - this starts now.</div>'
+          + '<div style="max-width:34rem">Net worth is wallet plus the value of what you '
+          + 'own, and only the current holdings have ever been stored, overwritten on '
+          + 'every sync. So there is nothing to reconstruct: a sample is taken every hour '
+          + 'the dashboard runs, and the curve grows from here. The ISK tab already has '
+          + 'history, because the wallet journal is kept.</div></div>');
+        return;
+      }
+    }
+    clearEmpty();
+
+    const first = series[0], last = series[series.length - 1];
+    const delta = last.v - first.v;
+    const col = delta >= 0 ? '#3fb950' : '#f85149';
+    statsEl.innerHTML =
+      stat('now', iskF(last.v) + ' ISK', 'var(--eve-gold)')
+      + stat('change over the period', (delta >= 0 ? '+' : '') + iskC(delta)
+             + (first.v ? ` (${delta >= 0 ? '+' : ''}${(delta / Math.abs(first.v) * 100).toFixed(1)}%)` : ''), col)
+      + stat('from', dt(first.t), '#8b949e');
+    draw();
+  }
+
+  function draw() {
+    if (!series.length) return;
+    const n = series.length;
+    const cssW = host.clientWidth || 640, cssH = 320;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = cssW * dpr; cv.height = cssH * dpr; cv.style.height = cssH + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, cssW, cssH);
+
+    const padL = 72, padR = 14, padT = 12, padB = 24;
+    const px0 = padL, px1 = cssW - padR, py0 = padT, py1 = cssH - padB;
+    const vals = series.map(p => p.v).concat(tab === 'worth' ? series.map(p => p.w || 0) : []);
+    let lo = Math.min(...vals), hi = Math.max(...vals);
+    if (lo === hi) { lo -= 1; hi += 1; }
+    const rg = hi - lo, yMin = Math.min(lo - rg * 0.08, 0) === 0 && lo > 0 ? lo - rg * 0.12 : lo - rg * 0.08;
+    const yMax = hi + rg * 0.08;
+    const X = i => px0 + (px1 - px0) * (n === 1 ? 0.5 : i / (n - 1));
+    const Y = v => py1 - (py1 - py0) * (v - yMin) / (yMax - yMin);
+    const grid = 'rgba(255,255,255,0.06)', axis = '#8b949e', gold = '#e6b84a', steel = '#7bb8ec';
+
+    ctx.font = '11px system-ui,sans-serif'; ctx.textBaseline = 'middle';
+    for (let t = 0; t <= 4; t++) {
+      const val = yMin + (yMax - yMin) * t / 4, y = Y(val);
+      ctx.strokeStyle = grid; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(px0, y); ctx.lineTo(px1, y); ctx.stroke();
+      ctx.fillStyle = axis; ctx.textAlign = 'right'; ctx.fillText(iskC(val), px0 - 8, y);
+    }
+    ctx.textAlign = 'center';
+    const ticks = Math.min(6, n);
+    for (let t = 0; t < ticks; t++) {
+      const i = Math.round((n - 1) * t / Math.max(1, ticks - 1));
+      ctx.fillStyle = axis; ctx.fillText(dt(series[i].t), X(i), cssH - 9);
+    }
+
+    const g = ctx.createLinearGradient(0, py0, 0, py1);
+    g.addColorStop(0, 'rgba(230,184,74,0.22)'); g.addColorStop(1, 'rgba(230,184,74,0.02)');
+    ctx.fillStyle = g; ctx.beginPath();
+    series.forEach((p, i) => { const x = X(i), y = Y(p.v); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    ctx.lineTo(X(n - 1), py1); ctx.lineTo(X(0), py1); ctx.closePath(); ctx.fill();
+
+    if (tab === 'worth') {
+      ctx.strokeStyle = steel; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]); ctx.beginPath();
+      series.forEach((p, i) => { const x = X(i), y = Y(p.w || 0); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = steel; ctx.textAlign = 'left';
+      ctx.fillText('wallet', px0 + 4, Y(series[0].w || 0) - 9);
+    }
+
+    ctx.strokeStyle = gold; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.beginPath();
+    series.forEach((p, i) => { const x = X(i), y = Y(p.v); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    ctx.stroke();
+    if (n < 60) {
+      ctx.fillStyle = gold;
+      series.forEach((p, i) => { ctx.beginPath(); ctx.arc(X(i), Y(p.v), 2.2, 0, 7); ctx.fill(); });
+    }
+
+    geom = { X, Y, n, px0, px1, py0, py1 };
+    if (hover != null) crosshair();
+  }
+
+  function crosshair() {
+    if (hover == null || !geom) return;
+    const p = series[hover], x = geom.X(hover);
+    ctx.strokeStyle = 'rgba(255,255,255,0.28)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, geom.py0); ctx.lineTo(x, geom.py1); ctx.stroke();
+    ctx.fillStyle = '#e6b84a'; ctx.beginPath(); ctx.arc(x, geom.Y(p.v), 3.4, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#0b0e13'; ctx.lineWidth = 1.5; ctx.stroke();
+  }
+
+  host.addEventListener('mousemove', e => {
+    if (!geom || !series.length) return;
+    const r = cv.getBoundingClientRect();
+    let i = Math.round((e.clientX - r.left - geom.px0) / (geom.px1 - geom.px0) * (geom.n - 1));
+    i = Math.max(0, Math.min(geom.n - 1, i)); hover = i; draw();
+    const p = series[i];
+    tip.innerHTML = `<b>${dtm(p.t)}</b><br><span class="k">`
+      + (tab === 'worth' ? 'net worth' : 'ISK') + `</span> <span class="g">${iskF(p.v)}</span>`
+      + (tab === 'worth' && p.w != null
+         ? `<br><span class="k">wallet</span> <span class="s">${iskF(p.w)}</span>`
+           + `<br><span class="k">assets</span> <span class="s">${iskF(p.a || 0)}</span>` : '');
+    tip.style.left = geom.X(i) + 'px'; tip.style.top = geom.Y(p.v) + 'px'; tip.style.opacity = '1';
+  });
+  host.addEventListener('mouseleave', () => { hover = null; tip.style.opacity = '0'; draw(); });
+
+  function load() {
+    subEl.textContent = 'Loading…';
+    fetch('/api/worth/history?days=' + days)
+      .then(r => r.json())
+      .then(d => { data = d; render(); })
+      .catch(() => setEmpty('<div>Could not read the stored history.</div>'));
+  }
+
+  document.querySelectorAll('#nw-tabs button').forEach(b =>
+    b.addEventListener('click', () => { tab = b.dataset.tab; render(); }));
+  document.querySelectorAll('#nw-ranges button').forEach(b =>
+    b.addEventListener('click', () => { days = +b.dataset.d; load(); }));
+  window.addEventListener('resize', () => { if (modalEl.classList.contains('show')) draw(); });
+  modalEl.addEventListener('shown.bs.modal', () => draw());
+
+  window.openWorthHistory = function (which) {
+    tab = which || 'isk';
+    new bootstrap.Modal(modalEl).show();
+    load();
+    return false;
+  };
+})();
+</script>

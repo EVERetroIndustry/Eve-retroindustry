@@ -56,6 +56,11 @@
         <div class="text-muted" style="font-size:.7rem">load prices first</div>
         {% endif %}
       </div>
+      {# Outside #agg-value: loadLive() rewrites that element wholesale. #}
+      <a href="#" class="text-muted mt-1" style="font-size:.7rem;text-decoration:none"
+         onclick="return openWorthHistory('worth')"
+         title="Net worth over time, and ISK across every character">
+        <i class="bi bi-graph-up me-1"></i>History</a>
     </div>
   </div>
   <div class="col">
@@ -539,4 +544,5 @@ function refreshDashboardData(btn) {
 })();
 </script>
 {% include "_income_popup.html" %}
+{% include "_worth_popup.html" %}
 {% endblock %}

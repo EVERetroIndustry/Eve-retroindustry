@@ -57,8 +57,16 @@ def ensure_income_tables(conn: sqlite3.Connection) -> None:
             ref_type     TEXT,
             amount       REAL,
             description  TEXT,
+            balance      REAL,
             PRIMARY KEY (character_id, journal_id)
         )""")
+    # ESI sends the wallet balance after each entry, and it was being thrown
+    # away. It is what lets the ISK chart anchor on a real number instead of
+    # trusting an unbroken walk back through the amounts, so an existing
+    # database gains the column and fills it as the last 30 days are re-read.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(wallet_journal)")}
+    if "balance" not in cols:
+        conn.execute("ALTER TABLE wallet_journal ADD COLUMN balance REAL")
     # The window queries are always "since a timestamp", so that is the index.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_journal_ts"
                  " ON wallet_journal(date_ts)")
@@ -101,15 +109,22 @@ def store_journal(conn: sqlite3.Connection, char_id: int, entries: list[dict]) -
         ts = _parse_ts(e.get("date"))
         if jid is None or ts is None:
             continue
+        bal = e.get("balance")
         rows.append((char_id, int(jid), ts, e.get("ref_type"),
-                     float(e.get("amount") or 0.0), e.get("description")))
+                     float(e.get("amount") or 0.0), e.get("description"),
+                     float(bal) if bal is not None else None))
     before = conn.execute("SELECT COUNT(*) FROM wallet_journal WHERE character_id=?",
                           (char_id,)).fetchone()[0]
     if rows:
+        # Upsert rather than IGNORE: an entry stored before the balance column
+        # existed is re-read within ESI's 30-day window, and that is the only
+        # chance it will ever have to gain its balance.
         conn.executemany(
-            "INSERT OR IGNORE INTO wallet_journal"
-            " (character_id, journal_id, date_ts, ref_type, amount, description)"
-            " VALUES (?,?,?,?,?,?)", rows)
+            "INSERT INTO wallet_journal"
+            " (character_id, journal_id, date_ts, ref_type, amount, description, balance)"
+            " VALUES (?,?,?,?,?,?,?)"
+            " ON CONFLICT(character_id, journal_id) DO UPDATE SET"
+            "   balance = COALESCE(excluded.balance, wallet_journal.balance)", rows)
     after = conn.execute("SELECT COUNT(*) FROM wallet_journal WHERE character_id=?",
                          (char_id,)).fetchone()[0]
     conn.execute("INSERT OR REPLACE INTO wallet_journal_meta"

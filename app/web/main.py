@@ -38,6 +38,7 @@ from app.auth.esi_oauth import start_web_login, cancel_web_login, token_has_scop
 from app.character.blueprints import fetch_blueprints, ensure_bp_table
 from app.character import wallet as wallet_api
 from app.character import income as income_api
+from app.character import worth as worth_api
 from app.web.page_cache import (
     ensure_page_cache, get_cached, put_cached, drop_cached, age_label,
 )
@@ -1940,6 +1941,15 @@ async def _dash_live_build(request: Request) -> dict:
             return {"logged_in": False}
         payload = _dash_live_json(ctx)
         put_cached(conn, _DASH_LIVE_KIND, _DASH_LIVE_KEY, payload)
+        # Net worth has no history anywhere - assets are only ever stored as the
+        # current snapshot - so the only way to have a curve later is to start
+        # keeping one now. This is the moment both halves are already computed,
+        # and the hourly bucket means opening the dashboard often costs nothing.
+        try:
+            worth_api.record_worth(conn, [
+                (c["char_id"], c["wallet"], c["asset_value"]) for c in ctx["char_cards"]])
+        except Exception:
+            pass                      # a missing sample must never break the page
         return payload
     finally:
         conn.close()
@@ -8466,6 +8476,35 @@ def _pi_alert_summary(conn: sqlite3.Connection, limit: int = 8) -> dict:
         "soonest_secs": items[0]["secs"] if items else None,
         "age": cache_age,
     }
+
+
+@app.get("/api/worth/history")
+async def api_worth_history(request: Request, days: float = 30.0):
+    """Net worth and ISK over time, for the two tabs of the history window.
+
+    They come back together because they answer the same glance and neither is
+    large, but they are NOT the same kind of series and the window says so:
+
+      isk   - reconstructed backwards out of the stored wallet journal, so it
+              already reaches as far back as the journal does. Measured on a real
+              account: 46 days, which is 16 more than ESI will serve.
+      worth - sampled hourly from here on. Nothing has ever recorded what was
+              owned in the past, only what is owned now, so there is no honest
+              way to draw it before the recording started.
+    """
+    conn = get_conn()
+    try:
+        if not has_any_character(conn):
+            return {"logged_in": False}
+        days = max(1.0, min(float(days or 30.0), 3650.0))
+        return {
+            "logged_in": True,
+            "days": days,
+            "worth": worth_api.worth_series(conn, days),
+            "isk": worth_api.isk_series(conn, days),
+        }
+    finally:
+        conn.close()
 
 
 @app.get("/api/income")
