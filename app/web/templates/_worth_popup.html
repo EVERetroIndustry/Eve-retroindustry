@@ -80,7 +80,8 @@
   const emptyEl = document.getElementById('nw-empty'), noteEl = document.getElementById('nw-note');
   const subEl = document.getElementById('nw-sub'), statsEl = document.getElementById('nw-stats');
 
-  let tab = 'isk', days = 30, data = null, series = [], hover = null, geom = null;
+  let tab = 'isk', days = 30, data = null, series = [], est = [], plot = [],
+      hover = null, geom = null, _buildPoll = null;
 
   const iskC = v => { const a = Math.abs(v);
     return (v < 0 ? '-' : '') + (a >= 1e9 ? (a / 1e9).toFixed(2) + 'B'
@@ -118,6 +119,7 @@
 
     if (tab === 'isk') {
       const d = data.isk || {};
+      est = [];
       series = (d.points || []).map(p => ({ t: p.t, v: p.isk }));
       subEl.textContent = 'ISK across every character, reconstructed from the stored wallet journal';
       const flat = d.chars_without_journal || [];
@@ -135,28 +137,51 @@
         return;
       }
     } else {
-      const d = data.worth || {};
+      const d = data.worth || {}, e = data.estimate || {};
       series = (d.points || []).map(p => ({ t: p.t, v: p.net, w: p.wallet, a: p.assets }));
-      subEl.textContent = 'Wallet plus the value of everything owned, sampled hourly';
-      noteEl.innerHTML = d.recording_since
-        ? `Recording since ${dt(d.recording_since)}. It cannot go back further: what `
-          + `you owned in the past was never stored, only what you own now - so unlike `
-          + `ISK there is nothing to reconstruct it from.`
-        : '';
-      if (!series.length) {
+      est = (e.status === 'ready' ? (e.points || []) : []).map(p => ({
+        t: p.t, v: (p.net_lo + p.net_hi) / 2, lo: p.net_lo, hi: p.net_hi,
+        w: p.wallet, a: (p.assets_lo + p.assets_hi) / 2 }));
+      subEl.textContent = 'Wallet plus the value of everything owned';
+
+      if (e.status === 'building') {
+        noteEl.innerHTML = `Rebuilding the earlier part: fetching daily prices for `
+          + `${e.types || ''} types. It is cached afterwards.`;
+        if (!_buildPoll) _buildPoll = setTimeout(() => { _buildPoll = null; load(); }, 2500);
+      } else {
+        const bits = [];
+        if (d.recording_since) bits.push(`Sampled hourly since ${dt(d.recording_since)}.`);
+        if (est.length) {
+          bits.push(`Before that it is <b>estimated</b> (dashed): today's holdings with `
+            + `every movement ESI records undone - market trades in kind, industry jobs `
+            + `turned back into their materials, and mined ore removed - then priced at `
+            + `each day's own market average.`);
+          if (e.transactions_from) {
+            bits.push(`The shaded band is where the detailed trade record stops `
+              + `(${dt(e.transactions_from)}) and only the ISK totals remain.`);
+          }
+          bits.push(`It cannot see loot, PI extraction, contracts, reprocessing or ships `
+            + `lost - ESI keeps no record of those.`);
+        }
+        noteEl.innerHTML = bits.join(' ');
+      }
+
+      if (!series.length && !est.length) {
         setEmpty('<div><i class="bi bi-hourglass-split fs-3 d-block mb-2"></i>'
           + '<div class="mb-2">Nothing recorded yet - this starts now.</div>'
           + '<div style="max-width:34rem">Net worth is wallet plus the value of what you '
           + 'own, and only the current holdings have ever been stored, overwritten on '
-          + 'every sync. So there is nothing to reconstruct: a sample is taken every hour '
-          + 'the dashboard runs, and the curve grows from here. The ISK tab already has '
-          + 'history, because the wallet journal is kept.</div></div>');
+          + 'every sync. A sample is taken every hour the dashboard runs, and the earlier '
+          + 'part is rebuilt from what ESI records about items moving.</div></div>');
         return;
       }
     }
     clearEmpty();
 
-    const first = series[0], last = series[series.length - 1];
+    // One array for the chart, estimated stretch first, so the x scale and the
+    // crosshair do not have to know there are two sources.
+    plot = est.map(p => ({ ...p, est: true })).concat(series.map(p => ({ ...p, est: false })));
+    const first = plot[0], last = plot[plot.length - 1];
     const delta = last.v - first.v;
     const col = delta >= 0 ? '#3fb950' : '#f85149';
     statsEl.innerHTML =
@@ -168,8 +193,8 @@
   }
 
   function draw() {
-    if (!series.length) return;
-    const n = series.length;
+    if (!plot.length) return;
+    const n = plot.length;
     const cssW = host.clientWidth || 640, cssH = 320;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     cv.width = cssW * dpr; cv.height = cssH * dpr; cv.style.height = cssH + 'px';
@@ -177,14 +202,17 @@
 
     const padL = 72, padR = 14, padT = 12, padB = 24;
     const px0 = padL, px1 = cssW - padR, py0 = padT, py1 = cssH - padB;
-    const vals = series.map(p => p.v).concat(tab === 'worth' ? series.map(p => p.w || 0) : []);
+    const vals = [];
+    plot.forEach(p => {
+      vals.push(p.v);
+      if (p.lo != null) { vals.push(p.lo); vals.push(p.hi); }
+    });
     let lo = Math.min(...vals), hi = Math.max(...vals);
     if (lo === hi) { lo -= 1; hi += 1; }
-    const rg = hi - lo, yMin = Math.min(lo - rg * 0.08, 0) === 0 && lo > 0 ? lo - rg * 0.12 : lo - rg * 0.08;
-    const yMax = hi + rg * 0.08;
+    const rg = hi - lo, yMin = lo - rg * 0.08, yMax = hi + rg * 0.08;
     const X = i => px0 + (px1 - px0) * (n === 1 ? 0.5 : i / (n - 1));
     const Y = v => py1 - (py1 - py0) * (v - yMin) / (yMax - yMin);
-    const grid = 'rgba(255,255,255,0.06)', axis = '#8b949e', gold = '#e6b84a', steel = '#7bb8ec';
+    const grid = 'rgba(255,255,255,0.06)', axis = '#8b949e', gold = '#e6b84a';
 
     ctx.font = '11px system-ui,sans-serif'; ctx.textBaseline = 'middle';
     for (let t = 0; t <= 4; t++) {
@@ -197,29 +225,63 @@
     const ticks = Math.min(6, n);
     for (let t = 0; t < ticks; t++) {
       const i = Math.round((n - 1) * t / Math.max(1, ticks - 1));
-      ctx.fillStyle = axis; ctx.fillText(dt(series[i].t), X(i), cssH - 9);
+      ctx.fillStyle = axis; ctx.fillText(dt(plot[i].t), X(i), cssH - 9);
     }
 
-    const g = ctx.createLinearGradient(0, py0, 0, py1);
-    g.addColorStop(0, 'rgba(230,184,74,0.22)'); g.addColorStop(1, 'rgba(230,184,74,0.02)');
-    ctx.fillStyle = g; ctx.beginPath();
-    series.forEach((p, i) => { const x = X(i), y = Y(p.v); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-    ctx.lineTo(X(n - 1), py1); ctx.lineTo(X(0), py1); ctx.closePath(); ctx.fill();
+    // Where the reconstruction could not attribute a trade to a type, the answer
+    // is a range rather than a number - drawn as a band, so the chart shows its
+    // own uncertainty instead of implying there is none.
+    const band = plot.map((p, i) => ({ p, i })).filter(x => x.p.lo != null
+                                                           && x.p.hi > x.p.lo + 1);
+    if (band.length) {
+      ctx.fillStyle = 'rgba(230,184,74,0.16)';
+      ctx.beginPath();
+      band.forEach((x, k) => { const px = X(x.i), py = Y(x.p.hi);
+        k ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+      for (let k = band.length - 1; k >= 0; k--) ctx.lineTo(X(band[k].i), Y(band[k].p.lo));
+      ctx.closePath(); ctx.fill();
+    }
 
-    if (tab === 'worth') {
-      ctx.strokeStyle = steel; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]); ctx.beginPath();
-      series.forEach((p, i) => { const x = X(i), y = Y(p.w || 0); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    const firstSolid = plot.findIndex(p => !p.est);
+    if (firstSolid !== 0) {
+      const g = ctx.createLinearGradient(0, py0, 0, py1);
+      g.addColorStop(0, 'rgba(230,184,74,0.10)'); g.addColorStop(1, 'rgba(230,184,74,0.01)');
+      ctx.fillStyle = g; ctx.beginPath();
+      plot.forEach((p, i) => { const x = X(i), y = Y(p.v); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      ctx.lineTo(X(n - 1), py1); ctx.lineTo(X(0), py1); ctx.closePath(); ctx.fill();
+    } else {
+      const g = ctx.createLinearGradient(0, py0, 0, py1);
+      g.addColorStop(0, 'rgba(230,184,74,0.22)'); g.addColorStop(1, 'rgba(230,184,74,0.02)');
+      ctx.fillStyle = g; ctx.beginPath();
+      plot.forEach((p, i) => { const x = X(i), y = Y(p.v); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      ctx.lineTo(X(n - 1), py1); ctx.lineTo(X(0), py1); ctx.closePath(); ctx.fill();
+    }
+
+    // The wallet is deliberately NOT a second line here. It is a tenth of net
+    // worth, so including it in the scale flattened the curve this tab exists to
+    // show - and it has a tab of its own. The split is in the tooltip instead.
+
+    // Estimated stretch dashed, recorded stretch solid, joined at the handover.
+    ctx.strokeStyle = gold; ctx.lineWidth = 2; ctx.lineJoin = 'round';
+    const drawRun = (from, to, dash) => {
+      if (to <= from) return;
+      ctx.setLineDash(dash); ctx.beginPath();
+      for (let i = from; i <= to; i++) {
+        const x = X(i), y = Y(plot[i].v);
+        i === from ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
       ctx.stroke(); ctx.setLineDash([]);
-      ctx.fillStyle = steel; ctx.textAlign = 'left';
-      ctx.fillText('wallet', px0 + 4, Y(series[0].w || 0) - 9);
+    };
+    if (firstSolid === -1) {
+      drawRun(0, n - 1, [6, 4]);
+    } else {
+      drawRun(0, firstSolid, [6, 4]);
+      drawRun(firstSolid, n - 1, []);
     }
-
-    ctx.strokeStyle = gold; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.beginPath();
-    series.forEach((p, i) => { const x = X(i), y = Y(p.v); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-    ctx.stroke();
     if (n < 60) {
       ctx.fillStyle = gold;
-      series.forEach((p, i) => { ctx.beginPath(); ctx.arc(X(i), Y(p.v), 2.2, 0, 7); ctx.fill(); });
+      plot.forEach((p, i) => { if (p.est) return;
+        ctx.beginPath(); ctx.arc(X(i), Y(p.v), 2.2, 0, 7); ctx.fill(); });
     }
 
     geom = { X, Y, n, px0, px1, py0, py1 };
@@ -228,7 +290,7 @@
 
   function crosshair() {
     if (hover == null || !geom) return;
-    const p = series[hover], x = geom.X(hover);
+    const p = plot[hover], x = geom.X(hover);
     ctx.strokeStyle = 'rgba(255,255,255,0.28)'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(x, geom.py0); ctx.lineTo(x, geom.py1); ctx.stroke();
     ctx.fillStyle = '#e6b84a'; ctx.beginPath(); ctx.arc(x, geom.Y(p.v), 3.4, 0, 7); ctx.fill();
@@ -236,18 +298,22 @@
   }
 
   host.addEventListener('mousemove', e => {
-    if (!geom || !series.length) return;
+    if (!geom || !plot.length) return;
     const r = cv.getBoundingClientRect();
     let i = Math.round((e.clientX - r.left - geom.px0) / (geom.px1 - geom.px0) * (geom.n - 1));
     i = Math.max(0, Math.min(geom.n - 1, i)); hover = i; draw();
-    const p = series[i];
-    tip.innerHTML = `<b>${dtm(p.t)}</b><br><span class="k">`
-      + (tab === 'worth' ? 'net worth' : 'ISK') + `</span> <span class="g">${iskF(p.v)}</span>`
+    const p = plot[i];
+    const spread = (p.lo != null && p.hi > p.lo + 1)
+      ? `<br><span class="k">could be</span> <span class="g">${iskC(p.lo)} to ${iskC(p.hi)}</span>` : '';
+    tip.innerHTML = `<b>${dtm(p.t)}</b>${p.est ? ' <span class="k">estimated</span>' : ''}`
+      + `<br><span class="k">` + (tab === 'worth' ? 'net worth' : 'ISK') + `</span> `
+      + `<span class="g">${iskF(p.v)}</span>` + spread
       + (tab === 'worth' && p.w != null
          ? `<br><span class="k">wallet</span> <span class="s">${iskF(p.w)}</span>`
            + `<br><span class="k">assets</span> <span class="s">${iskF(p.a || 0)}</span>` : '');
     tip.style.left = geom.X(i) + 'px'; tip.style.top = geom.Y(p.v) + 'px'; tip.style.opacity = '1';
   });
+
   host.addEventListener('mouseleave', () => { hover = null; tip.style.opacity = '0'; draw(); });
 
   function load() {

@@ -39,6 +39,7 @@ from app.character.blueprints import fetch_blueprints, ensure_bp_table
 from app.character import wallet as wallet_api
 from app.character import income as income_api
 from app.character import worth as worth_api
+from app.character import history_store as hist_api
 from app.web.page_cache import (
     ensure_page_cache, get_cached, put_cached, drop_cached, age_label,
 )
@@ -8479,32 +8480,128 @@ def _pi_alert_summary(conn: sqlite3.Connection, limit: int = 8) -> dict:
 
 
 @app.get("/api/worth/history")
-async def api_worth_history(request: Request, days: float = 30.0):
+async def api_worth_history(request: Request, days: float = 30.0, estimate: int = 1):
     """Net worth and ISK over time, for the two tabs of the history window.
 
-    They come back together because they answer the same glance and neither is
-    large, but they are NOT the same kind of series and the window says so:
+      isk      - reconstructed backwards out of the stored wallet journal, so it
+                 already reaches as far back as the journal does. Measured on a
+                 real account: 46 days, 16 more than ESI will serve.
+      worth    - sampled hourly from here on, because nothing has ever recorded
+                 what was owned in the past.
+      estimate - the dashed extension of `worth` back to where the journal ends,
+                 rebuilt from what ESI does record about items moving.
 
-      isk   - reconstructed backwards out of the stored wallet journal, so it
-              already reaches as far back as the journal does. Measured on a real
-              account: 46 days, which is 16 more than ESI will serve.
-      worth - sampled hourly from here on. Nothing has ever recorded what was
-              owned in the past, only what is owned now, so there is no honest
-              way to draw it before the recording started.
+    The estimate needs daily prices for a few hundred types. They are fetched
+    once and cached, and while that is happening the tab is told to come back
+    rather than being made to wait on several hundred requests.
     """
     conn = get_conn()
     try:
         if not has_any_character(conn):
             return {"logged_in": False}
         days = max(1.0, min(float(days or 30.0), 3650.0))
-        return {
+        out = {
             "logged_in": True,
             "days": days,
             "worth": worth_api.worth_series(conn, days),
             "isk": worth_api.isk_series(conn, days),
         }
+        if estimate:
+            # Transactions, jobs and mining are what make the estimate more than
+            # a price index. Topped up behind the request: twelve characters over
+            # three endpoints is not something to hold a window open for, and the
+            # store's own TTLs make it a no-op most of the time.
+            _start_history_topup([c for c, _n in list_characters(conn)])
+            out["estimate"] = _worth_estimate(conn, days, out["isk"])
+            out["reach"] = hist_api.history_reach(conn)
+        return out
     finally:
         conn.close()
+
+
+# Building the price index is several hundred public requests, so it happens
+# once, behind the request, and is shared by everyone waiting for it.
+_WORTH_INDEX_FLIGHT: list = [None]
+
+
+def _worth_estimate(conn, days: float, isk: dict) -> dict:
+    basket = worth_api.current_basket(conn)
+    if not basket:
+        return {"status": "unavailable", "reason": "no assets stored yet"}
+    since = _time.time() - days * 86400.0
+    events, _used = worth_api.basket_events(conn, since)
+    wanted = worth_api.index_type_ids(conn, basket, events)
+    have = worth_api._cached_histories(conn, wanted)
+    coverage = worth_api.index_coverage(conn, basket, have)
+    if coverage < 0.90:
+        _start_index_build(wanted)
+        return {"status": "building", "coverage": round(coverage, 3),
+                "types": len(wanted)}
+    series = worth_api.estimate_series(conn, days, have)
+    # The assets half is what was reconstructed; the wallet half is already known
+    # exactly, so net worth is assembled here rather than in the browser.
+    wal = sorted((p["t"], p["isk"]) for p in (isk.get("points") or []))
+    for pt in series.get("points") or []:
+        w = wal[0][1] if wal else 0.0
+        for ts, v in wal:
+            if ts <= pt["t"]:
+                w = v
+            else:
+                break
+        pt["wallet"] = w
+        pt["net_lo"] = w + pt["assets_lo"]
+        pt["net_hi"] = w + pt["assets_hi"]
+    series["status"] = "ready" if series.get("points") else "unavailable"
+    series["coverage"] = round(coverage, 3)
+    return series
+
+
+_HISTORY_TOPUP_FLIGHT: list = [None]
+
+
+def _start_history_topup(char_ids: list[int]) -> None:
+    task = _HISTORY_TOPUP_FLIGHT[0]
+    if task is not None and not task.done():
+        return
+
+    async def run():
+        conn = get_conn()
+        try:
+            async with esi_client(timeout=20) as client:
+                for cid in char_ids:
+                    token = await _valid_token_async(cid)
+                    if not token:
+                        continue
+                    await hist_api.refresh_all(client, conn, cid, token)
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+    try:
+        _HISTORY_TOPUP_FLIGHT[0] = asyncio.create_task(run())
+    except RuntimeError:
+        pass
+
+
+def _start_index_build(type_ids: list[int]) -> None:
+    task = _WORTH_INDEX_FLIGHT[0]
+    if task is not None and not task.done():
+        return
+
+    async def build():
+        conn = get_conn()
+        try:
+            await worth_api.fetch_index_histories(conn, type_ids)
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+    try:
+        _WORTH_INDEX_FLIGHT[0] = asyncio.create_task(build())
+    except RuntimeError:
+        pass                      # no loop (a sync caller); the next request retries
 
 
 @app.get("/api/income")
