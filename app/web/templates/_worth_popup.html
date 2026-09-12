@@ -311,7 +311,14 @@
       + (tab === 'worth' && p.w != null
          ? `<br><span class="k">wallet</span> <span class="s">${iskF(p.w)}</span>`
            + `<br><span class="k">assets</span> <span class="s">${iskF(p.a || 0)}</span>` : '');
-    tip.style.left = geom.X(i) + 'px'; tip.style.top = geom.Y(p.v) + 'px'; tip.style.opacity = '1';
+    // Keep the readout inside the chart. It is centred on the point and does not
+    // wrap, so near either edge half of it used to hang outside the window and
+    // the numbers on that side were unreadable - which is the side you look at
+    // most, because it is the newest data.
+    const hw = tip.offsetWidth / 2, hh = tip.offsetHeight;
+    const x = Math.max(hw + 2, Math.min(host.clientWidth - hw - 2, geom.X(i)));
+    const y = Math.max(hh * 1.45, geom.Y(p.v));
+    tip.style.left = x + 'px'; tip.style.top = y + 'px'; tip.style.opacity = '1';
   });
 
   host.addEventListener('mouseleave', () => { hover = null; tip.style.opacity = '0'; draw(); });
