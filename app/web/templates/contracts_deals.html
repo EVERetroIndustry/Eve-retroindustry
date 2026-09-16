@@ -130,9 +130,17 @@
 {{ contract_table_scripts() }}
 <script>
 function dealItems(btn, cid, scope) {
+  // Collapse by HIDING, never by emptying. The first version set innerHTML = ''
+  // to collapse, so the second expand had nothing left to put back and the row
+  // stayed blank from then on.
   const box = btn.nextElementSibling;
-  if (box.dataset.loaded) { box.innerHTML = box.dataset.loaded === '1' ? '' : box.innerHTML;
-                            box.dataset.loaded = box.dataset.loaded === '1' ? '2' : '1'; return; }
+  if (box.dataset.state === 'ready') {
+    box.hidden = !box.hidden;
+    return;
+  }
+  if (box.dataset.state === 'loading') return;
+  box.dataset.state = 'loading';
+  box.hidden = false;
   box.textContent = 'Loading…';
   const url = scope === 'alliance'
     ? '/api/contracts/alliance/items?contract_id=' + cid
@@ -142,8 +150,11 @@ function dealItems(btn, cid, scope) {
     box.innerHTML = items.length
       ? items.map(i => `${escHtml(i.name || ('#' + i.type_id))} &times;${i.quantity}`).join('<br>')
       : 'No contents recorded.';
-    box.dataset.loaded = '1';
-  }).catch(() => { box.textContent = 'Could not read the contents.'; });
+    box.dataset.state = 'ready';
+  }).catch(() => {
+    box.textContent = 'Could not read the contents.';
+    box.dataset.state = '';          // a failed read must stay retryable
+  });
 }
 </script>
 {% endblock %}

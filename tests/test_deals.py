@@ -395,3 +395,25 @@ def test_the_deals_table_renders_rows_to_sort(client, seeded_deal):
     r = client.get("/contracts/deals?discount=5")
     assert r.status_code == 200
     assert "<tr data-search=" in r.text
+
+
+def test_the_items_toggle_collapses_by_hiding_not_by_emptying(client, seeded_deal):
+    """Reported: expand, collapse, and the third click showed nothing. The first
+    version collapsed by setting innerHTML to an empty string, so there was
+    nothing left to put back - the row stayed blank for good.
+
+    Verified in a browser through four clicks (shown/hidden/shown/hidden, content
+    intact, computed display block then none). This pins the rule that made it
+    work, because the failure only appears on the THIRD click and no rendering
+    test would reach it.
+    """
+    import re
+    html = client.get("/contracts/deals?discount=5").text
+    fn = re.search(r"function dealItems\(.*?\n\}", html, re.S)
+    assert fn, "the items toggle is missing"
+    # Strip the comments first: the one explaining the bug quotes the very code
+    # this is looking for.
+    body = re.sub(r"//.*", "", fn.group(0))
+    assert "hidden" in body, "collapsing must hide the box, not destroy it"
+    assert not re.search(r"innerHTML\s*=\s*['\"]{2}", body), \
+        "emptying innerHTML to collapse is the bug being pinned"
