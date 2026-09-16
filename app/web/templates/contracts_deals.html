@@ -38,10 +38,21 @@
         </datalist>
         <input type="text" name="max_price" value="{{ max_price or '' }}"
                class="form-control form-control-sm" style="width:120px" placeholder="max price">
+        {# An NPC station, or a structure whose name we hold - and a name can only
+           have come from an endpoint that answers "Forbidden" unless a character
+           is on that structure's ACL. #}
+        <div class="form-check mb-0">
+          <input class="form-check-input" type="checkbox" name="dockable" value="1"
+                 id="deal-dockable" {% if dockable %}checked{% endif %}
+                 onchange="this.form.submit()">
+          <label class="form-check-label text-muted small" for="deal-dockable"
+                 title="NPC stations, plus every structure one of your characters is admitted to. A structure nobody can see is one nobody can dock at.">
+            Only where I can dock</label>
+        </div>
         <button class="btn btn-sm btn-outline-secondary" type="submit">Apply</button>
       </div>
     </form>
-    <a href="/contracts/deals?discount={{ discount }}&refresh=1"
+    <a href="/contracts/deals?discount={{ discount }}{% if dockable %}&dockable=1{% endif %}&refresh=1"
        class="btn btn-sm btn-outline-secondary" title="Re-run the scan now">
       <i class="bi bi-arrow-clockwise me-1"></i>Rescan</a>
   </div>
@@ -114,6 +125,8 @@
 <div class="text-muted mt-2" style="font-size:.72rem">
   {% if rows | length < meta.matched %}showing {{ rows | length }} of{% endif %}
   {{ meta.matched | plural('contract') }} match ·
+  {% if meta.unreachable and not dockable %}{{ meta.unreachable | count_eu }} of them sit in a
+  structure none of your characters can see, so probably cannot be collected ·{% endif %}
   scanned {{ (meta.found + meta.skipped.unpriced + meta.skipped.copies + meta.skipped.illiquid) | count_eu }}
   contracts in {{ '%.1f' | format(meta.took) }}s, no ESI call.
   Left out: {{ meta.skipped.copies | count_eu }} holding a blueprint whose copy status

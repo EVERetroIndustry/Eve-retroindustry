@@ -6891,7 +6891,8 @@ def _start_deals_history(type_ids: list[int]) -> None:
 
 @app.get("/contracts/deals", response_class=HTMLResponse)
 async def deals_page(request: Request, discount: str = "5", scope: str = "",
-                     region: str = "", max_price: str = "", refresh: str = ""):
+                     region: str = "", max_price: str = "", dockable: str = "",
+                     refresh: str = ""):
     """Contracts asking less than their contents are worth.
 
     Everything here comes out of the index the app already keeps - no ESI call is
@@ -6911,7 +6912,7 @@ async def deals_page(request: Request, discount: str = "5", scope: str = "",
             deals_api.drop_cache()
         rows, meta = deals_api.find_deals(
             conn, min_discount=pct, scope=scope, region_id=region_id,
-            max_price=_f(max_price))
+            max_price=_f(max_price), dockable_only=bool(dockable))
 
         # Names for what is on the page, not for the whole index.
         loc_ids = {r["location_id"] for r in rows if r["location_id"]}
@@ -6936,6 +6937,7 @@ async def deals_page(request: Request, discount: str = "5", scope: str = "",
         return _tr("contracts_deals.html", request, {
             "rows": rows, "meta": meta, "discount": discount, "scope": scope,
             "region_name": region_name, "max_price": max_price,
+            "dockable": bool(dockable),
             "regions": await _get_all_regions(),
             "steps": [int(x * 100) for x in deals_api.DISCOUNT_STEPS],
             "building": len(missing),

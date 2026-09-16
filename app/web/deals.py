@@ -61,6 +61,37 @@ _CACHE_TTL = 15 * 60.0
 _CACHE: dict = {"at": 0.0, "rows": None, "meta": None}
 
 
+def dockable_locations(conn: sqlite3.Connection) -> set[int]:
+    """Locations at least one added character can actually get into.
+
+    Two kinds, and both are things the app already knows rather than a new ESI
+    question:
+
+      NPC stations, from the SDE. Anyone can dock at one - the exception is
+      standing low enough for a faction to refuse you, which ESI does not expose
+      and which almost never bites.
+
+      Structures whose name we hold. That name can only have come from
+      `/universe/structures/{id}/`, and ESI's own words for that endpoint are
+      "returns information on requested structure IF YOU ARE ON THE ACL,
+      otherwise Forbidden" - so a name we have is a structure one of the
+      characters is admitted to, and a name we lack is one nobody is.
+
+    The caveat worth stating rather than hiding: being on the ACL is not exactly
+    the same permission as docking, and ESI exposes no finer detail. It is the
+    same signal the contract appraisal already trusts for deciding which
+    structures may set a price.
+    """
+    out: set[int] = set()
+    for table, col in (("sde_stations", "station_id"),
+                       ("location_name_cache", "location_id")):
+        try:
+            out.update(r[0] for r in conn.execute(f"SELECT {col} FROM {table}"))
+        except sqlite3.OperationalError:
+            continue
+    return out
+
+
 def _cut_day(days: int) -> str:
     return (_dt.date.today() - _dt.timedelta(days=days)).isoformat()
 
@@ -247,8 +278,8 @@ def _scan(conn: sqlite3.Connection) -> tuple[list[dict], dict]:
 
 def find_deals(conn: sqlite3.Connection, min_discount: float = 0.05,
                scope: str = "", region_id: int | None = None,
-               max_price: float | None = None, limit: int = 200,
-               force: bool = False) -> tuple[list[dict], dict]:
+               max_price: float | None = None, dockable_only: bool = False,
+               limit: int = 200, force: bool = False) -> tuple[list[dict], dict]:
     """The Deals list. The scan is cached for a quarter of an hour: it is the same
     answer for every filter, and re-running it per click would be work for nothing.
     """
@@ -266,6 +297,12 @@ def find_deals(conn: sqlite3.Connection, min_discount: float = 0.05,
         out = [r for r in out if r["region_id"] == region_id]
     if max_price is not None:
         out = [r for r in out if r["price"] <= max_price]
+    dockable = dockable_locations(conn)
+    meta["unreachable"] = sum(1 for r in out if r["location_id"] not in dockable)
+    if dockable_only:
+        out = [r for r in out if r["location_id"] in dockable]
+    for r in out:
+        r["dockable"] = r["location_id"] in dockable
     meta["matched"] = len(out)
     meta["age"] = time.time() - _CACHE["at"]
     return out[:limit], meta

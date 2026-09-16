@@ -417,3 +417,62 @@ def test_the_items_toggle_collapses_by_hiding_not_by_emptying(client, seeded_dea
     assert "hidden" in body, "collapsing must hide the box, not destroy it"
     assert not re.search(r"innerHTML\s*=\s*['\"]{2}", body), \
         "emptying innerHTML to collapse is the bug being pinned"
+
+
+# ── can I actually get in? ───────────────────────────────────────────────────
+
+def test_dockable_counts_npc_stations_and_structures_we_can_name():
+    """A structure's name can only have come from /universe/structures/{id}/,
+    and ESI answers that one with "Forbidden" unless you are on the ACL - so a
+    name we hold is a structure a character is admitted to, and a name we lack is
+    one nobody is."""
+    conn = _db()
+    conn.execute("CREATE TABLE sde_stations (station_id INTEGER PRIMARY KEY, name TEXT,"
+                 " system_id INTEGER, region_id INTEGER)")
+    conn.execute("CREATE TABLE location_name_cache (location_id INTEGER PRIMARY KEY,"
+                 " name TEXT, solar_system_id INTEGER, region_id INTEGER, has_market INTEGER)")
+    conn.execute("INSERT INTO sde_stations VALUES (60003760, 'Jita 4-4', 30000142, 10000002)")
+    conn.execute("INSERT INTO location_name_cache VALUES (1022000000001, 'Our Fortizar',"
+                 " 30000142, 10000002, 0)")
+    conn.commit()
+    got = deals.dockable_locations(conn)
+    assert 60003760 in got, "an NPC station is open to everyone"
+    assert 1022000000001 in got, "a structure we could name is one we are admitted to"
+    assert 1022000000002 not in got, "one we have never been able to name is not"
+
+
+def test_the_dockable_filter_hides_what_cannot_be_collected():
+    conn = _db()
+    conn.execute("CREATE TABLE sde_stations (station_id INTEGER PRIMARY KEY, name TEXT,"
+                 " system_id INTEGER, region_id INTEGER)")
+    conn.execute("CREATE TABLE location_name_cache (location_id INTEGER PRIMARY KEY,"
+                 " name TEXT, solar_system_id INTEGER, region_id INTEGER, has_market INTEGER)")
+    conn.execute("INSERT INTO sde_stations VALUES (60003760, 'Jita 4-4', 30000142, 10000002)")
+    conn.commit()
+    # Two different items: the same item twice would make the two contracts each
+    # other's reference and neither would be a deal.
+    _price(conn, ORE, 100.0)
+    _price(conn, HULL, 100.0)
+    _traded(conn, ORE)
+    _traded(conn, HULL)
+    _public(conn, 1, 8_000.0, [(ORE, 100)])                       # Jita, reachable
+    conn.execute("UPDATE public_contracts SET start_location_id = 60003760 WHERE contract_id = 1")
+    _public(conn, 2, 8_000.0, [(HULL, 100)])                      # a structure nobody can see
+    conn.execute("UPDATE public_contracts SET start_location_id = 1099999999999"
+                 " WHERE contract_id = 2")
+    conn.commit()
+    deals.drop_cache()
+
+    everything, meta = deals.find_deals(conn, min_discount=0.05)
+    assert len(everything) == 2
+    assert meta["unreachable"] == 1, "and it says how many are out of reach"
+
+    reachable, _ = deals.find_deals(conn, min_discount=0.05, dockable_only=True)
+    assert [r["contract_id"] for r in reachable] == [1]
+    assert reachable[0]["dockable"] is True
+
+
+def test_the_checkbox_is_on_the_page(client, seeded_deal):
+    html = client.get("/contracts/deals").text
+    assert 'name="dockable"' in html
+    assert client.get("/contracts/deals?dockable=1").status_code == 200
