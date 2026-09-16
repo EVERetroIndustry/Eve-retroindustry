@@ -1383,6 +1383,80 @@ def contract_unit_prices(conn: sqlite3.Connection, type_ids,
     return out
 
 
+def contract_unit_prices_all(conn: sqlite3.Connection
+                             ) -> dict[int, list[tuple[float, str, int]]]:
+    """`contract_unit_prices` for EVERY type at once, for the Deals scan.
+
+    Same rules, same SQL shape, deliberately next to it: the two must not drift,
+    because a deal listed at one reference price and opened at another is the
+    inconsistency that gets reported first. Two differences, both forced:
+
+    There is no `type_id IN (...)` - it could not carry ten thousand ids anyway,
+    SQLite takes 999 host parameters by default.
+
+    And it returns the TWO cheapest offers per type, not one. The appraisal never
+    excludes a contract from its own valuation, on purpose; a search for bargains
+    has to, or the cheapest offer of anything scores exactly zero discount against
+    itself and the list can never contain the very contracts it exists to find.
+    The second entry is what the judged contract is compared with when it is
+    itself the cheapest.
+
+    Originals only. A copy is a different thing sharing a type_id, and the Deals
+    list refuses to value one rather than guess.
+    """
+    ensure_alliance_contract_tables(conn)
+    ensure_public_contract_tables(conn)
+    bps = ",".join(str(t) for t in _all_blueprint_types(conn)) or "-1"
+    # NULL is ambiguous only for a blueprint; nothing else can be a copy.
+    copy_cond = f"(i.is_bpc = 0 OR (i.is_bpc IS NULL AND i.type_id NOT IN ({bps})))"
+    out: dict[int, list[tuple[float, str, int]]] = {}
+    queries = (
+        ("alliance", f"""
+            SELECT i.type_id, c.price * 1.0 / i.quantity AS unit, c.contract_id
+            FROM alliance_contracts c
+            JOIN alliance_contract_items i ON i.contract_id = c.contract_id
+            WHERE c.type = 'item_exchange' AND c.status = 'outstanding' AND c.price > 0
+              AND i.is_included = 1 AND i.quantity > 0 AND {copy_cond}
+              AND (SELECT COUNT(*) FROM alliance_contract_items x
+                    WHERE x.contract_id = c.contract_id AND x.is_included = 1) = 1
+            ORDER BY i.type_id, unit"""),
+        # The sov rule, same as the single-type version: a price inside player sov
+        # says what one group charges its own, not what the thing is worth.
+        ("public", f"""
+            SELECT i.type_id, c.price * 1.0 / i.quantity AS unit, c.contract_id
+            FROM public_contracts c
+            JOIN public_contract_items i ON i.contract_id = c.contract_id
+            LEFT JOIN sov_map_cache s ON s.system_id = c.system_id
+            WHERE c.type = 'item_exchange' AND c.price > 0
+              AND i.is_included = 1 AND i.quantity > 0 AND {copy_cond}
+              AND c.system_id IS NOT NULL AND s.alliance_id IS NULL
+              AND (SELECT COUNT(*) FROM public_contract_items x
+                    WHERE x.contract_id = c.contract_id AND x.is_included = 1) = 1
+            ORDER BY i.type_id, unit"""),
+    )
+    for source, sql in queries:
+        try:
+            rows = conn.execute(sql).fetchall()
+        except sqlite3.OperationalError:
+            continue                      # that index has never been built
+        for tid, price, from_cid in rows:
+            if not price:
+                continue
+            best = out.setdefault(int(tid), [])
+            best.append((float(price), source, int(from_cid)))
+            best.sort(key=lambda e: e[0])
+            del best[2:]                  # the two cheapest are all anyone needs
+    return out
+
+
+def _all_blueprint_types(conn: sqlite3.Connection) -> set[int]:
+    try:
+        return {r[0] for r in conn.execute(
+            "SELECT blueprint_type_id FROM sde_blueprints")}
+    except sqlite3.OperationalError:
+        return set()
+
+
 def _adjusted_prices(conn: sqlite3.Connection, type_ids) -> dict[int, float]:
     """CCP's own adjusted price - the last resort for something with no market and
     no contract. It is an index value, not an offer, so it is always labelled as an

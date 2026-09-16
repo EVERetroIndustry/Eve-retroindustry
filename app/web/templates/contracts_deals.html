@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% from "_contracts_header.html" import contracts_header, contracts_tabs %}
+{% block title %}Contracts - EVE Retroindustry{% endblock %}
+{% block content %}
+
+{{ contracts_header("deals", all_characters, show_chars=False) }}
+{{ contracts_tabs("deals") }}
+
+{# Nothing here costs an ESI call: the public and alliance indexes are already on
+   disk, and the scan is one pass over them. What it does cost is honesty about
+   which contracts it refuses to judge, which is what the footer says. #}
+<div class="card mb-3">
+  <div class="card-body d-flex align-items-center justify-content-between flex-wrap gap-3">
+    <form method="get" class="d-flex align-items-center gap-3 flex-wrap" id="deal-form">
+      <div class="d-flex align-items-center gap-2">
+        <span class="text-muted small">At least</span>
+        <div class="btn-group btn-group-sm" role="group">
+          {% for s in steps %}
+          <button type="submit" name="discount" value="{{ s }}"
+                  class="btn {% if discount|int == s %}btn-eve{% else %}btn-outline-secondary{% endif %}">
+            {{ s }}%</button>
+          {% endfor %}
+        </div>
+        <span class="text-muted small">under the cheapest offer we can see</span>
+      </div>
+      <div class="d-flex align-items-center gap-2">
+        <select name="scope" class="form-select form-select-sm" style="width:130px"
+                onchange="this.form.submit()">
+          <option value="" {% if not scope %}selected{% endif %}>Public + alliance</option>
+          <option value="public" {% if scope == 'public' %}selected{% endif %}>Public only</option>
+          <option value="alliance" {% if scope == 'alliance' %}selected{% endif %}>Alliance only</option>
+        </select>
+        <input type="text" name="region" value="{{ region_name or '' }}" list="deal-regions"
+               class="form-control form-control-sm" style="width:170px" placeholder="all of New Eden">
+        <datalist id="deal-regions">
+          {% for r in regions %}<option value="{{ r[1] }}">{% endfor %}
+        </datalist>
+        <input type="text" name="max_price" value="{{ max_price or '' }}"
+               class="form-control form-control-sm" style="width:120px" placeholder="max price">
+        <button class="btn btn-sm btn-outline-secondary" type="submit">Apply</button>
+      </div>
+    </form>
+    <a href="/contracts/deals?discount={{ discount }}&refresh=1"
+       class="btn btn-sm btn-outline-secondary" title="Re-run the scan now">
+      <i class="bi bi-arrow-clockwise me-1"></i>Rescan</a>
+  </div>
+</div>
+
+{% if building %}
+<div class="alert alert-info py-2">
+  <i class="bi bi-hourglass-split me-2"></i>Reading daily market history for
+  {{ building | count_eu }} more types, so their contracts can be judged too. It is
+  cached afterwards; reload in a moment.
+</div>
+{% endif %}
+
+{% if rows %}
+<div class="card">
+  <div class="table-responsive">
+    <table id="contract-table" class="table table-hover tbl-compact table-sm mb-0 align-middle">
+      {% set ic = '<span class="sort-icon text-muted ms-1" style="font-size:.7rem">&#8645;</span>' | safe %}
+      <thead><tr>
+        <th data-sort="scope:text">Source{{ ic }}</th>
+        <th data-sort="headline:text">Contract{{ ic }}</th>
+        <th data-sort="location:text">Location{{ ic }}</th>
+        <th class="text-end" data-sort="price:num">Asking{{ ic }}</th>
+        <th class="text-end" data-sort="value:num">Worth{{ ic }}</th>
+        <th class="text-end" data-sort="saving:num">You save{{ ic }}</th>
+        <th class="text-end" data-sort="discount:num">Under{{ ic }}</th>
+        <th data-sort="issuer:text">Issuer{{ ic }}</th>
+      </tr></thead>
+      <tbody>
+        {% for c in rows %}
+        <tr data-scope="{{ c.scope }}" data-headline="{{ c.headline }}"
+            data-location="{{ c.location }}" data-price="{{ c.price }}"
+            data-value="{{ c.value }}" data-saving="{{ c.saving }}"
+            data-discount="{{ c.discount }}" data-issuer="{{ c.issuer }}">
+          <td><span class="badge {% if c.scope == 'alliance' %}badge-rxn{% else %}badge-mfg{% endif %}"
+                    style="font-size:.65rem">{{ c.scope }}</span></td>
+          <td style="max-width:300px">
+            <div class="text-truncate" title="{{ c.headline }}">{{ c.headline }}</div>
+            {% if c.title %}<div class="text-muted text-truncate" style="font-size:.7rem"
+                                 title="{{ c.title }}">{{ c.title }}</div>{% endif %}
+            <button class="btn btn-link p-0 text-decoration-none" style="font-size:.72rem"
+                    onclick="dealItems(this, {{ c.contract_id }}, '{{ c.scope }}')">
+              <i class="bi bi-box me-1"></i>{{ c.lines | plural('line') }}</button>
+            <div class="deal-items text-muted" style="font-size:.75rem"></div>
+          </td>
+          <td class="text-muted" style="font-size:.78rem">
+            <div class="text-truncate" style="max-width:190px" title="{{ c.location }}">{{ c.location }}</div>
+            {% if c.region %}<div style="font-size:.7rem">{{ c.region }}</div>{% endif %}
+          </td>
+          <td class="text-end">{{ c.price | isk0 }}</td>
+          <td class="text-end text-muted">{{ c.value | isk0 }}</td>
+          <td class="text-end fw-semibold" style="color:#3fb950">{{ c.saving | isk0 }}</td>
+          <td class="text-end fw-semibold" style="color:#3fb950">{{ (c.discount * 100) | round | int }}%</td>
+          <td class="text-muted" style="font-size:.78rem">{{ c.issuer }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% else %}
+<div class="card"><div class="card-body text-muted">
+  Nothing is {{ discount }}% or more under its contents right now. Try a smaller
+  figure, or widen the region.
+</div></div>
+{% endif %}
+
+{# Saying what was NOT judged is the honest half of a list like this. #}
+<div class="text-muted mt-2" style="font-size:.72rem">
+  {% if rows | length < meta.matched %}showing {{ rows | length }} of{% endif %}
+  {{ meta.matched | plural('contract') }} match ·
+  scanned {{ (meta.found + meta.skipped.unpriced + meta.skipped.copies + meta.skipped.illiquid) | count_eu }}
+  contracts in {{ '%.1f' | format(meta.took) }}s, no ESI call.
+  Left out: {{ meta.skipped.copies | count_eu }} holding a blueprint whose copy status
+  we cannot settle (a copy shares its type id with the original and is worth a
+  fraction of it), {{ meta.skipped.illiquid | count_eu }} holding something that has
+  not traded in {{ liquidity_days }} days (no recent trade, no trustworthy price),
+  and {{ meta.skipped.unpriced | count_eu }} with an item we have no price for at all.
+  {% if not meta.blueprint_flag.alliance %}
+  The alliance index has no copy flags recorded yet, so every blueprint in it is
+  left out until the next Refresh on the Alliance tab.
+  {% endif %}
+</div>
+
+<script>
+function dealItems(btn, cid, scope) {
+  const box = btn.nextElementSibling;
+  if (box.dataset.loaded) { box.innerHTML = box.dataset.loaded === '1' ? '' : box.innerHTML;
+                            box.dataset.loaded = box.dataset.loaded === '1' ? '2' : '1'; return; }
+  box.textContent = 'Loading…';
+  const url = scope === 'alliance'
+    ? '/api/contracts/alliance/items?contract_id=' + cid
+    : '/api/contracts/public/items?contract_id=' + cid;
+  fetch(url).then(r => r.json()).then(d => {
+    const items = d.items || [];
+    box.innerHTML = items.length
+      ? items.map(i => `${escHtml(i.name || ('#' + i.type_id))} &times;${i.quantity}`).join('<br>')
+      : 'No contents recorded.';
+    box.dataset.loaded = '1';
+  }).catch(() => { box.textContent = 'Could not read the contents.'; });
+}
+</script>
+{% endblock %}

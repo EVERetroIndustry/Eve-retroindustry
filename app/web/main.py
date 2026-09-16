@@ -48,6 +48,7 @@ from app.character import jobs as jobs_api
 from app.character import contracts as contracts_api
 from app.character import planets as planets_api
 from app.web import contracts_helper
+from app.web import deals as deals_api
 from app.character.assets import (
     fetch_assets, ensure_assets_table, assets_at_location,
     fetch_corp_assets, ensure_corp_assets_table,
@@ -6858,6 +6859,90 @@ async def _resolve_region_id(name_or_id: str) -> tuple[int | None, str]:
     except Exception:
         pass
     return None, s
+
+
+# Daily history for every contracted type is what makes the liquidity test
+# possible. Measured: 6659 types missing on a real index, fetched in 12.2 s at
+# 544 types/s, and the endpoint is public with no token bucket. Built once behind
+# the request and shared, like the net worth index.
+_DEALS_HISTORY_FLIGHT: list = [None]
+
+
+def _start_deals_history(type_ids: list[int]) -> None:
+    task = _DEALS_HISTORY_FLIGHT[0]
+    if task is not None and not task.done():
+        return
+
+    async def build():
+        conn = get_conn()
+        try:
+            await worth_api.fetch_index_histories(conn, type_ids)
+            deals_api.drop_cache()        # the scan can now trust more types
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+    try:
+        _DEALS_HISTORY_FLIGHT[0] = asyncio.create_task(build())
+    except RuntimeError:
+        pass                              # no loop; the next request tries again
+
+
+@app.get("/contracts/deals", response_class=HTMLResponse)
+async def deals_page(request: Request, discount: str = "5", scope: str = "",
+                     region: str = "", max_price: str = "", refresh: str = ""):
+    """Contracts asking less than their contents are worth.
+
+    Everything here comes out of the index the app already keeps - no ESI call is
+    made to answer the page - so the whole scan is a local query. What it costs
+    instead is care: see app/web/deals.py for the three ways a naive version
+    claims a bargain that is not there.
+    """
+    conn = get_conn()
+    try:
+        ensure_public_filler()
+        try:
+            pct = max(0.0, min(float(discount or 5), 95.0)) / 100.0
+        except ValueError:
+            pct = 0.05
+        region_id, region_name = await _resolve_region_id(region)
+        if refresh:
+            deals_api.drop_cache()
+        rows, meta = deals_api.find_deals(
+            conn, min_discount=pct, scope=scope, region_id=region_id,
+            max_price=_f(max_price))
+
+        # Names for what is on the page, not for the whole index.
+        loc_ids = {r["location_id"] for r in rows if r["location_id"]}
+        names = load_location_names_from_db(conn) if loc_ids else {}
+        parties = await _resolve_party_names(
+            {r["issuer_id"] for r in rows if r["issuer_id"] and not r["issuer_name"]})
+        regions = dict(await _get_all_regions())   # (id, name) tuples
+        for r in rows:
+            r["location"] = names.get(r["location_id"]) or (
+                f"#{r['location_id']}" if r["location_id"] else "")
+            r["issuer"] = r["issuer_name"] or parties.get(r["issuer_id"], "")
+            r["region"] = regions.get(r["region_id"], "")
+            # The line worth the most, picked during the scan - what you are
+            # actually buying, rather than whatever there is most of.
+            top = conn.execute("SELECT name FROM sde_types WHERE type_id = ?",
+                               (r["top_type_id"],)).fetchone() if r["top_type_id"] else None
+            r["headline"] = top[0] if top else ""
+
+        missing = deals_api.types_needing_history(conn)
+        if missing:
+            _start_deals_history(missing)
+        return _tr("contracts_deals.html", request, {
+            "rows": rows, "meta": meta, "discount": discount, "scope": scope,
+            "region_name": region_name, "max_price": max_price,
+            "regions": await _get_all_regions(),
+            "steps": [int(x * 100) for x in deals_api.DISCOUNT_STEPS],
+            "building": len(missing),
+            "liquidity_days": deals_api.LIQUIDITY_DAYS,
+        })
+    finally:
+        conn.close()
 
 
 @app.get("/contracts/public", response_class=HTMLResponse)
