@@ -1,12 +1,11 @@
 {% extends "base.html" %}
 {% from "_contract_filters.html" import contract_filter_bar, contract_table_scripts %}
-{% block title %}Public Contracts - EVE Retroindustry{% endblock %}
+{% from "_contracts_header.html" import contracts_header, contracts_tabs %}
+{% block title %}Contracts - EVE Retroindustry{% endblock %}
 {% block content %}
 
-<div class="d-flex align-items-center justify-content-between mb-3 flex-wrap gap-2">
-  <h4 class="mb-0"><i class="bi bi-globe me-2 text-primary"></i>Public Contracts</h4>
-  <a href="/contracts" class="btn btn-sm btn-outline-secondary"><i class="bi bi-person me-1"></i>My contracts</a>
-</div>
+{{ contracts_header("public", all_characters, show_chars=False) }}
+{{ contracts_tabs("public") }}
 
 {% if error %}
 <div class="alert alert-danger"><i class="bi bi-exclamation-circle me-2"></i>{{ error }}</div>

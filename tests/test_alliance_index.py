@@ -22,6 +22,14 @@ ALLIANCE = 99000001
 CORP_A, CORP_B = 98000001, 98000002
 
 
+def _ago(days: int) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - days * 86400))
+
+
+def _ahead(days: int) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + days * 86400))
+
+
 def _contract(cid, **kw):
     base = {
         "contract_id": cid, "type": "item_exchange", "status": "outstanding",
@@ -30,7 +38,10 @@ def _contract(cid, **kw):
         "acceptor_id": 0, "for_corporation": False,
         "price": 1_000_000.0, "reward": 0.0, "collateral": 0.0, "buyout": 0.0,
         "volume": 100.0, "title": f"contract {cid}",
-        "date_issued": "2026-08-20T10:00:00Z", "date_expired": "2026-09-19T10:00:00Z",
+        # Relative to now, not a fixed date: with 2026-09-19 hard-coded, the
+        # "expires within 3 days" test passed until the calendar reached it and
+        # then failed for everyone, because EVERY fixture contract had become due.
+        "date_issued": _ago(30), "date_expired": _ahead(60),
         "days_to_complete": 0, "start_location_id": 60003760, "end_location_id": 0,
     }
     base.update(kw)

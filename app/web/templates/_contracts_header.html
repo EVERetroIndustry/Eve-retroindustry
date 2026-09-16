@@ -1,6 +1,6 @@
-{# The Contracts screen header, shared by /contracts and /contracts/alliance so the
-   chrome does not change when you switch tabs: same title, same Public browser
-   button, same character strip in the same place.
+{# The Contracts screen header, shared by all four contract views so the chrome
+   does not change when you switch tabs: same title, same tabs, same character
+   strip in the same place.
 
    On Personal and Corporation a portrait selects whose contracts you see. Alliance
    contracts are not per character - but a character still points at exactly one
@@ -15,16 +15,19 @@
    portraits at once, which reads as eight active selections - nonsense.
    Both are passed in rather than read off `request`: an imported macro does not see
    the template context, and relying on that is how this broke the first time. #}
+{# `show_chars` is off on Public: those contracts belong to nobody in particular,
+   so a portrait strip there would offer a choice that changes nothing. The title
+   and the tabs stay identical, which is the part that makes the four views read
+   as one screen. #}
 {% macro contracts_header(scope, all_characters, all_chars=False, contracts_char_id=None,
-                          char_alliance={}, alliance_id=0, explicit=False, via=0) %}
+                          char_alliance={}, alliance_id=0, explicit=False, via=0,
+                          show_chars=True) %}
 {% set ally = (scope == 'alliance') %}
 <div class="row mb-3 align-items-center">
   <div class="col d-flex align-items-center gap-3">
     <h4 class="mb-0"><i class="bi bi-file-earmark-ruled me-2 text-primary"></i>Contracts</h4>
-    <a href="/contracts/public" class="btn btn-sm btn-outline-secondary">
-      <i class="bi bi-globe me-1"></i>Public browser</a>
   </div>
-  {% if all_characters %}
+  {% if all_characters and show_chars %}
   <div class="col-auto d-flex align-items-center gap-2">
     <span class="text-muted small">Character:</span>
     <div class="btn-group btn-group-sm" role="group">
@@ -68,7 +71,10 @@
 {% endmacro %}
 
 
-{# The three tabs, identical on both pages. #}
+{# The four tabs, identical on every contracts page. Public used to be a button
+   that led to a page with no way back to the other three, and with a different
+   title and no tab strip - so it read as a separate screen rather than a fourth
+   view of the same thing. #}
 {% macro contracts_tabs(scope, char_param='') %}
 <ul class="nav nav-pills mb-3" style="gap:.5rem">
   <li class="nav-item">
@@ -82,6 +88,10 @@
   <li class="nav-item">
     <a class="nav-link {% if scope == 'alliance' %}active{% endif %}"
        href="/contracts/alliance"><i class="bi bi-people me-1"></i>Alliance</a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if scope == 'public' %}active{% endif %}"
+       href="/contracts/public"><i class="bi bi-globe me-1"></i>Public</a>
   </li>
 </ul>
 {% endmacro %}
