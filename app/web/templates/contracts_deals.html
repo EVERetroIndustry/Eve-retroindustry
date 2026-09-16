@@ -133,7 +133,9 @@
   we cannot settle (a copy shares its type id with the original and is worth a
   fraction of it), {{ meta.skipped.illiquid | count_eu }} holding something that has
   not traded in {{ liquidity_days }} days (no recent trade, no trustworthy price),
-  and {{ meta.skipped.unpriced | count_eu }} with an item we have no price for at all.
+  {{ meta.skipped.unpriced | count_eu }} with an item we have no price for at all,
+  and {{ meta.skipped.barter | count_eu }} that want goods handed back rather than
+  only ISK, which no percentage off an asking price can describe.
   {% if not meta.blueprint_flag.alliance %}
   The alliance index has no copy flags recorded yet, so every blueprint in it is
   left out until the next Refresh on the Alliance tab.

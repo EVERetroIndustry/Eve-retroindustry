@@ -135,15 +135,26 @@ def test_a_contract_is_judged_against_the_NEXT_cheapest_not_itself():
     assert rows[0]["value"] == pytest.approx(9_500.0), "measured against contract 1"
 
 
-def test_items_the_contract_asks_for_are_subtracted():
-    """Accepting means handing those over, so they are a cost, not a gain."""
+def test_a_contract_wanting_goods_back_is_not_called_a_bargain():
+    """Reported from the screen: "a Mackinaw is not 8m". A contract offered one
+    for 10 ISK and read as 100 % under - and it also demanded two Ladar-FTL
+    Interlink Communicators worth 194M in return. The net was a real 8.6M, but
+    "asking price" and "percent under" cannot describe a barter: the ISK figure
+    is a token, and the true cost is goods the buyer may not own.
+
+    134 contracts in the whole index are like this, 70 of them priced at exactly
+    10 ISK.
+    """
     conn = _db()
-    _price(conn, ORE, 100.0)
+    _price(conn, HULL, 202_600_000.0)
+    _price(conn, ORE, 97_000_000.0)
+    _traded(conn, HULL)
     _traded(conn, ORE)
-    # gives 100 ore, wants 60 back: worth 4 000, asking 3 000
-    _public(conn, 1, 3_000.0, [(ORE, 100, 1), (ORE, 60, 0)])
-    rows, _ = deals.find_deals(conn, min_discount=0.05)
-    assert rows[0]["value"] == pytest.approx(4_000.0)
+    # get a hull worth 202.6M, hand over two items worth 194M, pay 10 ISK
+    _public(conn, 1, 10.0, [(HULL, 1, 1), (ORE, 2, 0)])
+    rows, meta = deals.find_deals(conn, min_discount=0.05)
+    assert rows == [], "a barter must not be presented as a 100 % discount"
+    assert meta["skipped"]["barter"] == 1, "and it must be counted, not silently dropped"
 
 
 # ── the three ways it used to lie ────────────────────────────────────────────

@@ -25,6 +25,14 @@ this was written:
   at 350m against an original worth 23b, so that column carries no information
   there and every blueprint from it is unvaluable until a re-index fills it in.
 
+  A trade that is not a purchase. A contract offering a Mackinaw for 10 ISK
+  looked like a 100 % discount, and it also demanded two Ladar-FTL Interlink
+  Communicators worth 194M in return. The net was a genuine 8.6M, but the table
+  speaks in asking price and percent under, and neither word means anything when
+  the ISK figure is a token 10 and the real cost is goods you may not own. Those
+  134 contracts across the whole index - 70 of them priced at exactly 10 ISK -
+  are barters, and they are left out rather than described wrongly.
+
   A price from a market that is not there. A Rorqual SKIN quoted at 10b had not
   traded once in thirty days; an Abyssal module has no meaningful type price at
   all because every one is a different object. So every item in a contract must
@@ -203,7 +211,7 @@ def _scan(conn: sqlite3.Connection) -> tuple[list[dict], dict]:
     rows: list[dict] = []
     # Not "copy": Jinja resolves `meta.skipped.copy` to dict.copy, the method,
     # and renders a TypeError rather than the number.
-    skipped = {"unpriced": 0, "copies": 0, "illiquid": 0}
+    skipped = {"unpriced": 0, "copies": 0, "illiquid": 0, "barter": 0}
 
     sources = (
         ("public", """
@@ -236,10 +244,15 @@ def _scan(conn: sqlite3.Connection) -> tuple[list[dict], dict]:
             lines = items.get(cid)
             if not lines:
                 continue                   # contents never read: nothing to claim
+            if any(not inc for _t, _q, inc, _b in lines):
+                # Wants goods handed back, so the ISK figure is not the price and
+                # a percentage off it means nothing.
+                skipped["barter"] += 1
+                continue
             value = 0.0
             bad = None
             top_tid, top_worth = None, 0.0
-            for tid, qty, inc, bpc in lines:
+            for tid, qty, inc, bpc in lines:   # every line is included by now
                 if tid in bps and (bpc == 1 or bpc is None or not trust_flag):
                     bad = "copies"         # a copy is not what the price describes
                     break
