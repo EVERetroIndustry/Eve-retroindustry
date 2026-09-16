@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_contracts_header.html" import contracts_header, contracts_tabs %}
+{% from "_contract_filters.html" import contract_table_scripts %}
 {% block title %}Contracts - EVE Retroindustry{% endblock %}
 {% block content %}
 
@@ -71,7 +72,8 @@
       </tr></thead>
       <tbody>
         {% for c in rows %}
-        <tr data-scope="{{ c.scope }}" data-headline="{{ c.headline }}"
+        <tr data-search="{{ (c.headline ~ ' ' ~ c.title ~ ' ' ~ c.issuer ~ ' ' ~ c.location) | lower }}"
+            data-scope="{{ c.scope }}" data-headline="{{ c.headline }}"
             data-location="{{ c.location }}" data-price="{{ c.price }}"
             data-value="{{ c.value }}" data-saving="{{ c.saving }}"
             data-discount="{{ c.discount }}" data-issuer="{{ c.issuer }}">
@@ -125,6 +127,7 @@
   {% endif %}
 </div>
 
+{{ contract_table_scripts() }}
 <script>
 function dealItems(btn, cid, scope) {
   const box = btn.nextElementSibling;

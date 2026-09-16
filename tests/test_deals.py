@@ -323,3 +323,75 @@ def test_every_contracts_page_offers_all_five_tabs(client):
         html = client.get(url).text
         for tab in ("Personal", "Corporation", "Alliance", "Public", "Deals"):
             assert f">{tab}</a>" in html, (url, tab)
+
+
+@pytest.fixture
+def seeded_deal(app_module):
+    """One real deal in the app's own database, so the Deals table actually
+    renders rows. Without it the sort test skipped the page it was written for
+    and passed against both faults it was meant to catch."""
+    from app.web import contracts_helper as ch
+    conn = app_module.get_conn()
+    try:
+        ch.ensure_public_contract_tables(conn)
+        conn.execute("DELETE FROM public_contracts")
+        conn.execute("DELETE FROM public_contract_items")
+        conn.execute("INSERT INTO public_contracts (contract_id, region_id, type, price,"
+                     " volume, title, start_location_id, issuer_id, system_id)"
+                     " VALUES (7001, 10000002, 'item_exchange', 8000, 1, 'probe',"
+                     " 60003760, 90000001, 30000142)")
+        conn.execute("INSERT INTO public_contract_items (contract_id, type_id, quantity,"
+                     " is_included, is_bpc) VALUES (7001, 34, 100, 1, 0)")
+        conn.execute("INSERT OR REPLACE INTO market_price_cache (type_id, sell_price)"
+                     " VALUES (34, 100)")
+        day = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+        conn.execute("INSERT OR REPLACE INTO price_history_cache VALUES (?,?,?,?)",
+                     (deals.JITA_REGION, 34,
+                      json.dumps([{"d": day, "avg": 100.0, "vol": 5000}]), time.time()))
+        conn.commit()
+    finally:
+        conn.close()
+    deals.drop_cache()
+    yield
+    conn = app_module.get_conn()
+    try:
+        conn.execute("DELETE FROM public_contracts WHERE contract_id = 7001")
+        conn.execute("DELETE FROM public_contract_items WHERE contract_id = 7001")
+        conn.commit()
+    finally:
+        conn.close()
+    deals.drop_cache()
+
+
+def test_every_contract_table_can_actually_be_sorted(client, seeded_deal):
+    """Reported: the Deals columns did not sort. Two faults at once - the shared
+    sorter was never included, and its rows lack the attribute it selects on
+    (`tr[data-search]`), so including it alone would still have done nothing.
+
+    That contract between template and script is invisible to the eye and to a
+    page that merely renders, so it is pinned here for every contract table.
+    """
+    import re
+    checked = 0
+    for url in ("/contracts", "/contracts/alliance", "/contracts/public",
+                "/contracts/deals"):
+        html = client.get(url).text
+        if 'id="contract-table"' not in html:
+            continue                      # nothing indexed in this fixture
+        checked += 1
+        assert "th[data-sort]" in html, f"{url}: the sorter script is missing"
+        heads = re.findall(r'<th[^>]*data-sort="([^:]+):', html)
+        assert heads, f"{url}: no sortable columns"
+        body = html[html.index("<tbody"):]
+        assert "<tr data-search=" in body, \
+            f"{url}: rows lack data-search, which is what the sorter selects on"
+        for key in heads:
+            attr = "data-" + re.sub(r"(?<!^)(?=[A-Z])", "-", key).lower()
+            assert attr in body, f"{url}: column {key} sorts on a missing {attr}"
+    assert checked, "no contract table was rendered, so nothing was checked"
+
+
+def test_the_deals_table_renders_rows_to_sort(client, seeded_deal):
+    r = client.get("/contracts/deals?discount=5")
+    assert r.status_code == 200
+    assert "<tr data-search=" in r.text
