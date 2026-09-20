@@ -97,12 +97,19 @@ def test_loading_page_has_a_real_bar_and_no_canned_messages(client):
     assert "d.step" in html and "d.pct" in html
 
 
-def test_dashboard_shows_the_ship_next_to_the_undocked_badge(client):
-    """Reported: undocked shows the system, but not which hull is out there."""
+def test_dashboard_shows_the_ship_whether_docked_or_not(client):
+    """First reported as "undocked shows the system but not which hull", then as
+    "show it when docked too" - the same question is worth asking in a hangar,
+    and the app fetches the ship either way, so it was only a display condition.
+    """
     html = client.get("/").text
     assert "c.ship_label" in html
     # Escaped like every other injected value on that card.
     assert "esc(c.ship_label)" in html
-    # Only while undocked, and left of the badge (the badge loses ms-auto to it).
-    assert "st === 'undocked'" in html
+    # The label must NOT sit inside the undocked branch any more.
+    label = html[html.index("if (c.ship_label)"):]
+    badge = html.index("UNDOCKED</span>")
+    assert html.index("if (c.ship_label)") < badge, "the ship comes before the badge"
+    assert "st === 'undocked'" in html, "the badge itself is still conditional"
+    # The badge still gives up ms-auto to the ship when there is one.
     assert "c.ship_label ? 'ms-2' : 'ms-auto'" in html

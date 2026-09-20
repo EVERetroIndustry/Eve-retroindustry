@@ -889,7 +889,10 @@ def _pub(conn, cid, region=10000002, price=1_000_000, volume=0.0, system=None,
         "INSERT OR REPLACE INTO public_contracts (contract_id, region_id, type, price,"
         " reward, collateral, buyout, volume, date_expired, title, start_location_id,"
         " end_location_id, issuer_id, system_id) VALUES (?,?,?,?,0,0,0,?,?,?,?,0,1,?)",
-        (cid, region, type_, price, volume, "2026-09-19T00:00:00Z", f"c{cid}", 60000000 + cid,
+        # Relative, for the same reason the alliance fixture is: a fixed expiry
+        # turns "expires within N days" from a filter into a calendar bomb, and
+        # this one went off as soon as the date arrived - every contract was due.
+        (cid, region, type_, price, volume, _ahead(60), f"c{cid}", 60000000 + cid,
          system))
     for tid, qty in items:
         conn.execute("INSERT INTO public_contract_items (contract_id, type_id, quantity,"
@@ -1051,8 +1054,8 @@ def test_the_public_browser_has_the_same_filters_as_the_other_views(clean_public
     clean_public.execute("INSERT OR REPLACE INTO public_contracts (contract_id, region_id,"
                          " type, price, reward, collateral, buyout, volume, date_expired,"
                          " title, start_location_id, end_location_id, issuer_id, system_id)"
-                         " VALUES (4,10000002,'item_exchange',9,0,0,0,0,'2026-08-23T00:00:00Z',"
-                         "'Hulk fit cheap',60000004,0,777,30000142)")
+                         " VALUES (4,10000002,'item_exchange',9,0,0,0,0,?,"
+                         "'Hulk fit cheap',60000004,0,777,30000142)", (_ahead(1),))
     clean_public.execute("INSERT OR REPLACE INTO location_name_cache (location_id, name)"
                          " VALUES (60000004,"
                          " 'Jita IV - Moon 4 - Caldari Navy Assembly Plant')")
