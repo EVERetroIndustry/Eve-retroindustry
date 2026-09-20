@@ -654,3 +654,146 @@ def test_volume_is_summed_per_entry_not_per_merged_row(app_module, client, monke
             conn.execute("INSERT INTO char_assets_cache (character_id, data_json,"
                          " cached_at) VALUES (?,?,?)", (CHAR, original[0], original[1]))
         conn.commit(); conn.close()
+
+
+# ── the hull a character is currently sitting in ─────────────────────────────
+#
+# Verified against the live account before this was built: all twelve characters
+# have their active ship in ESI's assets (is_singleton, location_flag=Hangar),
+# and the page did render every one of them - but you could not tell which. A
+# ship with a fit appears as a "name (Type)" container; an EMPTY one merges into
+# the plain stack for its type, and one pilot's active shuttle vanished into a
+# row of 37 identical hulls.
+
+def _remember_ship(app_module, char_id: int, item_id: int, when=None):
+    conn = app_module.get_conn()
+    try:
+        app_module._ensure_active_ship_table(conn)
+        conn.execute("INSERT OR REPLACE INTO char_active_ship"
+                     " (character_id, item_id, type_id, name, cached_at)"
+                     " VALUES (?,?,?,?,?)",
+                     (char_id, item_id, 0, "probe", when or _time.time()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _forget_ships(app_module):
+    conn = app_module.get_conn()
+    try:
+        app_module._ensure_active_ship_table(conn)
+        conn.execute("DELETE FROM char_active_ship")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_the_dashboard_remembers_which_hull_each_character_is_in(app_module):
+    """Assets reads this rather than asking ESI: that page is answered from
+    cache, and a badge is not worth a call per character."""
+    conn = app_module.get_conn()
+    try:
+        app_module._ensure_active_ship_table(conn)
+        conn.execute("DELETE FROM char_active_ship")
+        conn.commit()
+        app_module._store_active_ships(conn, {
+            900000001: {"ship_item_id": 777001, "ship_type_id": 1, "ship_name": "oo"},
+            900000002: {},                       # no ship reported: nothing stored
+        })
+        got = app_module.active_ship_items(conn)
+        assert set(got) == {777001}
+        assert abs(got[777001] - _time.time()) < 5, "a timestamp, for the age filter"
+    finally:
+        conn.execute("DELETE FROM char_active_ship")
+        conn.commit()
+        conn.close()
+
+
+def test_a_stale_reading_stops_being_claimed(app_module):
+    """A day on, the pilot has almost certainly climbed into something else."""
+    _remember_ship(app_module, 900000001, 777002,
+                   when=_time.time() - app_module._ACTIVE_SHIP_TTL - 60)
+    conn = app_module.get_conn()
+    try:
+        assert 777002 not in app_module.active_ship_items(conn)
+    finally:
+        conn.close()
+    _forget_ships(app_module)
+
+
+def test_the_active_ship_is_marked_on_its_container(client, app_module, assembled_ship):
+    """A ship with a fit is rendered as the container, so the mark belongs on
+    its header, not on the folded hull row inside it."""
+    import re
+    char_id, ship_item = assembled_ship
+    _remember_ship(app_module, char_id, ship_item)
+    try:
+        html = _text(client, f"/assets?view={char_id}")
+        marks = [m.start() for m in re.finditer("bi-rocket-takeoff-fill", html)]
+        assert len(marks) == 1, f"exactly one mark, got {len(marks)}"
+        assert "Active ship" in html, "and it says so on hover"
+        # It must sit on the container header - the header carries fw-medium and
+        # the ship's label; a row would put it in a <td> instead.
+        before = html[:marks[0]]
+        assert before.rfind('class="fw-medium"') > before.rfind("<td>"), \
+            "the mark belongs on the ship's header, not on a row inside it"
+        assert "Blue Thunder (Megathron)" in html
+    finally:
+        _forget_ships(app_module)
+
+
+def test_an_empty_active_ship_is_split_out_of_the_stack(client, app_module):
+    """The case that made this worth doing, reproduced: a pilot sitting in a
+    shuttle that is one of many. Packaged hulls of the same type merge into a
+    single row, so without keying on it the mark either lands on a stack of 37 -
+    claiming they are all the active ship - or is lost entirely, depending on
+    which entry happened to build the row.
+    """
+    import re
+    CHAR = 900000002
+    ACTIVE, SPARES = 560001, 560002
+    conn = app_module.get_conn()
+    row = conn.execute("SELECT data_json, cached_at FROM char_assets_cache"
+                       " WHERE character_id=?", (CHAR,)).fetchone()
+    original = (row[0], row[1]) if row else None
+    now = _time.time()
+    assets = [
+        # the one they are flying, empty, and a stack of identical hulls beside it
+        {"item_id": SPARES, "type_id": MEGATHRON, "quantity": 36,
+         "location_id": 60003760, "location_flag": "Hangar", "is_singleton": False},
+        {"item_id": ACTIVE, "type_id": MEGATHRON, "quantity": 1,
+         "location_id": 60003760, "location_flag": "Hangar", "is_singleton": True},
+    ]
+    conn.execute("DELETE FROM char_assets_cache WHERE character_id=?", (CHAR,))
+    conn.execute("INSERT INTO char_assets_cache (character_id, data_json, cached_at)"
+                 " VALUES (?,?,?)", (CHAR, _json.dumps(assets), now))
+    conn.commit()
+    conn.close()
+    _remember_ship(app_module, CHAR, ACTIVE)
+    try:
+        html = _text(client, f"/assets?view={CHAR}")
+        marks = [m.start() for m in re.finditer("bi-rocket-takeoff-fill", html)]
+        assert len(marks) == 1, f"exactly one mark, got {len(marks)}"
+        # The marked row must be the single hull, not the stack of 36.
+        row_start = html.rfind("<tr ", 0, marks[0])
+        row_html = html[row_start:html.index("</tr>", marks[0])]
+        qty = re.search(r'data-qty="(\d+)"', row_html)
+        assert qty and qty.group(1) == "1", \
+            f"the mark must point at one hull, not a stack (qty={qty and qty.group(1)})"
+    finally:
+        _forget_ships(app_module)
+        conn = app_module.get_conn()
+        conn.execute("DELETE FROM char_assets_cache WHERE character_id=?", (CHAR,))
+        if original:
+            conn.execute("INSERT INTO char_assets_cache"
+                         " (character_id, data_json, cached_at) VALUES (?,?,?)",
+                         (CHAR, original[0], original[1]))
+        conn.commit()
+        conn.close()
+
+
+def test_nothing_is_marked_when_no_ship_is_remembered(client, app_module, assembled_ship):
+    char_id, _ = assembled_ship
+    _forget_ships(app_module)
+    html = _text(client, f"/assets?view={char_id}")
+    assert "bi-rocket-takeoff-fill" not in html

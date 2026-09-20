@@ -1511,6 +1511,59 @@ async def _valid_token_async(char_id: int) -> str | None:
     return await asyncio.to_thread(_work)
 
 
+def _ensure_active_ship_table(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS char_active_ship (
+            character_id INTEGER PRIMARY KEY,
+            item_id      INTEGER,
+            type_id      INTEGER,
+            name         TEXT,
+            cached_at    REAL
+        )""")
+    conn.commit()
+
+
+# How long a remembered "this is the hull they are in" is still worth showing.
+# The dashboard refreshes it on every visit and every two minutes while open, so
+# in practice it is minutes old; a day is the point past which the pilot has
+# almost certainly climbed into something else.
+_ACTIVE_SHIP_TTL = 24 * 3600.0
+
+
+def _store_active_ships(conn: sqlite3.Connection, ships: dict) -> None:
+    """Remember which hull each character is sitting in.
+
+    Written here because this is where the app already asks - Assets would
+    otherwise need its own call per character just to draw one badge, and that
+    page is deliberately answered from cache.
+    """
+    _ensure_active_ship_table(conn)
+    rows = [(cid, s.get("ship_item_id"), s.get("ship_type_id"), s.get("ship_name"),
+             _time.time())
+            for cid, s in ships.items() if s and s.get("ship_item_id")]
+    if rows:
+        conn.executemany(
+            "INSERT OR REPLACE INTO char_active_ship"
+            " (character_id, item_id, type_id, name, cached_at) VALUES (?,?,?,?,?)", rows)
+        conn.commit()
+
+
+def active_ship_items(conn: sqlite3.Connection) -> dict[int, float]:
+    """{ship item_id: when it was seen} for hulls a character was last in.
+
+    A timestamp rather than an age, so the template can hand it straight to the
+    same `age_short` filter every other "how old is this" on the screen uses.
+    """
+    _ensure_active_ship_table(conn)
+    now = _time.time()
+    out: dict[int, float] = {}
+    for item_id, at in conn.execute(
+            "SELECT item_id, cached_at FROM char_active_ship WHERE item_id IS NOT NULL"):
+        if at and (now - at) <= _ACTIVE_SHIP_TTL:
+            out[int(item_id)] = float(at)
+    return out
+
+
 async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
     """Build the dashboard context.
 
@@ -1638,6 +1691,12 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
             c: (r if isinstance(r, (list, tuple)) and len(r) == 3 else ({}, [], {}))
             for c, r in zip(_char_ids, _loc_res)
         }
+
+        try:
+            _store_active_ships(conn, {c: loc_sq.get(c, ({}, [], {}))[2]
+                                       for c in _char_ids})
+        except Exception:
+            pass                          # a badge is never worth failing a page for
 
         try:
             _tok_ok = sum(1 for t in tokens.values() if t)
@@ -3138,6 +3197,11 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
     stations: list[dict] = []
     corp_stations: list[dict] = []
 
+    # Which hulls someone is currently sitting in, remembered by the dashboard.
+    # Read, never fetched: this page is answered from cache, and a badge is not
+    # worth an ESI call per character.
+    active_ships = active_ship_items(conn)
+
     # Resolve which characters to load:
     #   view=all       → every char
     #   view=<id>      → that char
@@ -3273,10 +3337,16 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                 # containers). Part of the key so the same module fitted in a slot
                 # never merges with spares in cargo - that distinction IS the fit.
                 slot, slot_order = _slot_info(a.location_flag) if cid is not None else ("", 0)
+                # The hull a character is sitting in is kept apart from otherwise
+                # identical ones. Without it an EMPTY active ship merges into the
+                # stack of packaged hulls of the same type - measured on a real
+                # account, one pilot's shuttle disappeared into a row of 37 - and
+                # there would be nothing left to put the badge on.
+                is_active = a.item_id in active_ships
                 # Key by (type_id, owner, is_copy, slot) so different chars stay
                 # separate AND a BPO never merges with a BPC of the same type
                 # (which would otherwise price the copy at the original's value).
-                key = (a.type_id, owner_id, is_copy, slot)
+                key = (a.type_id, owner_id, is_copy, slot, is_active)
                 # Volume is summed per ENTRY, not recomputed from the merged row:
                 # a packaged hull and an assembled one of the same type land in the
                 # same row, and they do not take the same space.
@@ -3299,6 +3369,8 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                         "character_name": owner_name,
                         "slot": slot,
                         "slot_order": slot_order,
+                        "active_ship": is_active,
+                        "active_ship_at": active_ships.get(a.item_id),
                     }
 
         # Pick a primary char_id for legacy container-name lookups
@@ -3502,7 +3574,8 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
         # then filter - a ship's own label has to exist before it can be matched.
         container_labels = {cid: info[0] for cid, info in container_info.items()}
         for sd in station_data.values():
-            _fold_ship_hulls(sd, container_type_map, container_owner_map, type_facts)
+            _fold_ship_hulls(sd, container_type_map, container_owner_map, type_facts,
+                             active_items=active_ships)
             _prune_by_search(sd, container_labels, search)
 
         for sid, sd in station_data.items():
@@ -3515,6 +3588,10 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                 containers.append({
                     "container_id": cid,
                     "name": cname,
+                    # A ship with a fit is rendered as the container, so the badge
+                    # belongs on its header rather than on the folded hull row.
+                    "active_ship": cid in active_ships,
+                    "active_ship_at": active_ships.get(cid),
                     # Only a fitted ship has slot labels; a plain container has
                     # none, so the Slot column is skipped there rather than
                     # rendering a blank one. The folded hull row does not count -
@@ -3572,7 +3649,8 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
             for sid_data in corp_sd.values():
                 for dv in sid_data.values():
                     # No owner_map: corp rows carry no character.
-                    _fold_ship_hulls(dv, corp_container_type_map, None, type_facts)
+                    _fold_ship_hulls(dv, corp_container_type_map, None, type_facts,
+                                     active_items=active_ships)
                     _prune_by_search(dv, corp_container_labels, search)
 
             def _build_corp_container(cid, items, sid):
@@ -3874,7 +3952,8 @@ def _container_display_name(custom_name: str, type_name: str, container_id: int)
     return f"{custom} ({type_name})"
 
 
-def _find_hangar_ship(hangar: dict, ship_type: int, owner_id: int | None) -> tuple:
+def _find_hangar_ship(hangar: dict, ship_type: int, owner_id: int | None,
+                      prefer_active: bool = False) -> tuple:
     """Find the hangar row holding `ship_type`, whatever the bucket is keyed by.
 
     Deliberately matches on each row's own fields instead of rebuilding the
@@ -3882,7 +3961,14 @@ def _find_hangar_ship(hangar: dict, ship_type: int, owner_id: int | None) -> tup
     below, which reconstructed the old key shape, silently stopped matching. Ships
     were then never folded into their own container and their value excluded the
     hull. Matching on fields cannot break that way again.
+
+    `prefer_active` picks between rows that are otherwise identical. The active
+    hull now sits in a row of its own, so a pilot with an assembled ship and
+    packaged hulls of the same type has two candidates - and taking the wrong one
+    would fold a packaged hull into the fitted ship and leave the ship they are
+    actually flying loose in the hangar.
     """
+    candidates = []
     for key, entry in hangar.items():
         if entry.get("type_id") != ship_type:
             continue
@@ -3892,8 +3978,13 @@ def _find_hangar_ship(hangar: dict, ship_type: int, owner_id: int | None) -> tup
             continue
         if (entry.get("quantity") or 0) <= 0:
             continue
-        return key, entry
-    return None, None
+        candidates.append((key, entry))
+    if not candidates:
+        return None, None
+    for key, entry in candidates:
+        if bool(entry.get("active_ship")) == prefer_active:
+            return key, entry
+    return candidates[0]
 
 
 def _fold_ship_hulls(
@@ -3901,6 +3992,7 @@ def _fold_ship_hulls(
     type_map: dict[int, int],
     owner_map: dict[int, tuple[int, str]] | None = None,
     facts: dict[int, dict] | None = None,
+    active_items: dict | None = None,
 ) -> None:
     """Move a ship's hull row out of the hangar and into its own container row.
 
@@ -3928,7 +4020,8 @@ def _fold_ship_hulls(
             if not owner:
                 continue
             owner_id, owner_name = owner
-        key, entry = _find_hangar_ship(hangar, ship_type, owner_id)
+        key, entry = _find_hangar_ship(hangar, ship_type, owner_id,
+                                       prefer_active=bool(active_items and cid in active_items))
         if entry is None:
             continue
         entry["quantity"] -= 1
