@@ -81,7 +81,7 @@
   const subEl = document.getElementById('nw-sub'), statsEl = document.getElementById('nw-stats');
 
   let tab = 'isk', days = 30, data = null, series = [], est = [], plot = [],
-      hover = null, geom = null, _buildPoll = null;
+      hover = null, geom = null, _buildPoll = null, trend = [];
 
   const iskC = v => { const a = Math.abs(v);
     return (v < 0 ? '-' : '') + (a >= 1e9 ? (a / 1e9).toFixed(2) + 'B'
@@ -107,6 +107,37 @@
     return `<div><div class="text-muted" style="font-size:.7rem;text-transform:uppercase;`
       + `letter-spacing:.04em">${label}</div>`
       + `<div class="fw-semibold" style="font-size:1.05rem;color:${colour}">${value}</div></div>`;
+  }
+
+  // A time-weighted moving average, so the shape of the wealth curve is readable
+  // through the hour-to-hour noise. Weighted by ELAPSED TIME rather than by point
+  // count, because these points are not evenly spaced: the estimated stretch sits
+  // on a regular grid while the recorded one only exists for hours the dashboard
+  // ran, and an N-point average would smooth the two halves by different amounts
+  // and leave a kink at the handover that is an artefact of sampling.
+  //
+  // The half-life scales with the window, so the line reads the same whether you
+  // are looking at a week or a year.
+  function trendOf(points) {
+    if (points.length < 3) return [];
+    // From the span the data actually covers, not the window that was asked for.
+    // "All" requests ten years while the history is six weeks; scaling off the
+    // request gave a half-life of ten months, and the line came out nearly flat -
+    // 1.69b of movement against 42.65b in the data it was supposed to describe.
+    const span = Math.max(3600, points[points.length - 1].t - points[0].t);
+    const halfLife = span / 12;
+    const out = [];
+    let acc = points[0].v, prev = points[0].t;
+    points.forEach((p, i) => {
+      if (i) {
+        const gap = Math.max(0, p.t - prev);
+        const w = 1 - Math.pow(0.5, gap / halfLife);   // 0 = no time passed, 1 = forget
+        acc += (p.v - acc) * w;
+        prev = p.t;
+      }
+      out.push(acc);
+    });
+    return out;
   }
 
   function render() {
@@ -284,6 +315,18 @@
         ctx.beginPath(); ctx.arc(X(i), Y(p.v), 2.2, 0, 7); ctx.fill(); });
     }
 
+    // The trend over the top, in a cooler colour so it never reads as the data.
+    trend = trendOf(plot);
+    if (trend.length) {
+      ctx.strokeStyle = '#7bb8ec'; ctx.lineWidth = 2; ctx.globalAlpha = 0.9;
+      ctx.beginPath();
+      trend.forEach((v, i) => { const x = X(i), y = Y(v); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      ctx.stroke(); ctx.globalAlpha = 1;
+      ctx.fillStyle = '#7bb8ec'; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+      ctx.fillText('trend', px0 + 4, Y(trend[0]) - 6);
+      ctx.textBaseline = 'middle';
+    }
+
     geom = { X, Y, n, px0, px1, py0, py1 };
     if (hover != null) crosshair();
   }
@@ -305,9 +348,11 @@
     const p = plot[i];
     const spread = (p.lo != null && p.hi > p.lo + 1)
       ? `<br><span class="k">could be</span> <span class="g">${iskC(p.lo)} to ${iskC(p.hi)}</span>` : '';
+    const tr = trend.length === plot.length ? trend[i] : null;
     tip.innerHTML = `<b>${dtm(p.t)}</b>${p.est ? ' <span class="k">estimated</span>' : ''}`
       + `<br><span class="k">` + (tab === 'worth' ? 'net worth' : 'ISK') + `</span> `
       + `<span class="g">${iskF(p.v)}</span>` + spread
+      + (tr != null ? `<br><span class="k">trend</span> <span class="s">${iskF(tr)}</span>` : '')
       + (tab === 'worth' && p.w != null
          ? `<br><span class="k">wallet</span> <span class="s">${iskF(p.w)}</span>`
            + `<br><span class="k">assets</span> <span class="s">${iskF(p.a || 0)}</span>` : '');

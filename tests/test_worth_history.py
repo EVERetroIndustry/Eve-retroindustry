@@ -422,3 +422,24 @@ def test_the_endpoint_reports_the_estimate(client):
     assert "estimate" in d and "status" in d["estimate"]
     assert d["estimate"]["status"] in ("ready", "building", "unavailable")
     assert "reach" in d
+
+
+def test_the_net_worth_chart_carries_a_trend_line(client):
+    """Reported: the curve is jagged enough that the shape is hard to read. A
+    time-weighted moving average now runs through it.
+
+    Weighted by elapsed time rather than by point count, because the points are
+    not evenly spaced - the estimated stretch sits on a regular grid while the
+    recorded one exists only for hours the dashboard ran, and an N-point average
+    would smooth the two halves differently and leave a kink at the handover that
+    is an artefact of sampling.
+    """
+    html = client.get("/").text
+    assert "function trendOf(" in html, "no trend"
+    assert "Math.pow(0.5, gap / halfLife)" in html, "must decay with elapsed time"
+    # From the span the data covers, not the window that was asked for: "All"
+    # requests ten years against six weeks of history, and scaling off the request
+    # gave a half-life of ten months - measured, the line moved 1.69b against
+    # 42.65b in the data it was meant to describe.
+    assert "points[points.length - 1].t - points[0].t" in html
+    assert "trendOf(plot)" in html and "trendOf(plot, days)" not in html
