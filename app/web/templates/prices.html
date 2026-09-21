@@ -274,6 +274,16 @@
   #hist-host .tip .k { color:#8b949e; }
   #hist-host .tip .g { color:var(--eve-gold); }
   #hist-host .tip .v { color:#8fc3ff; }
+  #hist-c-host canvas { display:block; width:100%; }
+  #hist-c-host .tip {
+    position:absolute; pointer-events:none; background:#0d1117ee; border:1px solid var(--eve-border);
+    border-radius:8px; padding:.4rem .55rem; font-size:.74rem; line-height:1.5; white-space:nowrap;
+    transform:translate(-50%,-115%); opacity:0; transition:opacity .08s; z-index:5;
+  }
+  #hist-c-host .tip b { color:#e6edf3; }
+  #hist-c-host .tip .k { color:#8b949e; }
+  #hist-c-host .tip .g { color:var(--eve-gold); }
+  #hist-c-host .tip .v { color:#8fc3ff; }
 </style>
 <div class="modal fade" id="histModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered hist-dialog">
@@ -331,6 +341,7 @@
           </div>
           <div class="position-relative" id="hist-c-host" style="min-height:240px">
             <canvas id="hist-c-cv"></canvas>
+            <div class="tip" id="hist-c-tip"></div>
             <div id="hist-c-empty" class="text-muted small"
                  style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:0 2rem"></div>
           </div>
@@ -1149,6 +1160,13 @@
         loadContracts();
       }
     }
+    // Delegated so a new tab button needs no new wiring. This line was lost in an
+    // edit and took the whole tab strip with it - Market and Contracts both
+    // stopped switching, and the page still rendered perfectly, which is exactly
+    // why there is a test for it now.
+    document.getElementById('hist-tabs').addEventListener('click', e => {
+      const b = e.target.closest('button'); if (b) setTab(b.dataset.tab);
+    });
 
     // Prices actually paid on completed alliance contracts. Deliberately its own
     // tab: the market tabs answer "what is the market doing", this one answers
@@ -1249,7 +1267,12 @@
         { day: '2-digit', month: 'short', year: '2-digit' });
     }
 
+    // Geometry of the contracts chart, kept so the pointer can find the nearest
+    // sale without recomputing it.
+    let cGeom = null, cHover = null, cSeries = [];
+
     function drawContracts(ser) {
+      cSeries = ser;
       const host = document.getElementById('hist-c-host');
       const cv = document.getElementById('hist-c-cv');
       const cx = cv.getContext('2d');
@@ -1286,10 +1309,58 @@
       }
       cx.fillStyle = '#e6b84a';
       ser.forEach(p => { cx.beginPath(); cx.arc(X(p.t), Y(p.unit), 3.4, 0, 7); cx.fill(); });
+      cGeom = { X, Y, x0, x1, y0, y1 };
+      if (cHover != null) cCrosshair();
     }
-    document.getElementById('hist-tabs').addEventListener('click', e => {
-      const b = e.target.closest('button'); if (b) setTab(b.dataset.tab);
-    });
+
+    function cCrosshair() {
+      if (cHover == null || !cGeom || !cSeries.length) return;
+      const cx = document.getElementById('hist-c-cv').getContext('2d');
+      const p = cSeries[cHover], x = cGeom.X(p.t);
+      cx.strokeStyle = 'rgba(255,255,255,0.28)'; cx.lineWidth = 1;
+      cx.beginPath(); cx.moveTo(x, cGeom.y0); cx.lineTo(x, cGeom.y1); cx.stroke();
+      cx.fillStyle = '#e6b84a';
+      cx.beginPath(); cx.arc(x, cGeom.Y(p.unit), 4.6, 0, 7); cx.fill();
+      cx.strokeStyle = '#0b0e13'; cx.lineWidth = 1.5; cx.stroke();
+    }
+
+    // Nearest sale to the pointer, not nearest index: contract sales are spaced
+    // by when somebody bought, not evenly like daily market history, so stepping
+    // by index would put the readout on the wrong one.
+    (function () {
+      const host = document.getElementById('hist-c-host');
+      const cv = document.getElementById('hist-c-cv');
+      const tip = document.getElementById('hist-c-tip');
+      if (!host) return;
+      host.addEventListener('mousemove', e => {
+        if (!cGeom || !cSeries.length) return;
+        const r = cv.getBoundingClientRect();
+        const mx = e.clientX - r.left;
+        let best = 0, bestD = Infinity;
+        cSeries.forEach((p, i) => {
+          const d = Math.abs(cGeom.X(p.t) - mx);
+          if (d < bestD) { bestD = d; best = i; }
+        });
+        cHover = best; drawContracts(cSeries);
+        const p = cSeries[best];
+        tip.innerHTML = `<b>${dtLabel(p.t)}</b><br>`
+          + `<span class="k">per unit</span> <span class="g">${fmtNum(p.unit, true, false)}</span><br>`
+          + `<span class="k">contract</span> <span class="v">${fmtNum(p.price, true, false)}</span>`
+          + (p.qty > 1 ? ` <span class="k">for ${intS(p.qty)}</span>` : '')
+          + (p.location ? `<br><span class="k">${escHtml(p.location)}</span>` : '');
+        // Clamped, like the net worth chart: centred and unwrapped, half of it
+        // used to hang outside the box at either edge.
+        const hw = tip.offsetWidth / 2, hh = tip.offsetHeight;
+        tip.style.left = Math.max(hw + 2,
+          Math.min(host.clientWidth - hw - 2, cGeom.X(p.t))) + 'px';
+        tip.style.top = Math.max(hh * 1.2, cGeom.Y(p.unit)) + 'px';
+        tip.style.opacity = '1';
+      });
+      host.addEventListener('mouseleave', () => {
+        cHover = null; tip.style.opacity = '0';
+        if (cSeries.length) drawContracts(cSeries);
+      });
+    })();
 
     function mktRows(list) {
       if (!list || !list.length) return '<tr><td colspan="3" class="text-muted text-center py-3">No orders</td></tr>';

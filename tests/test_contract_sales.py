@@ -276,3 +276,31 @@ def test_the_contracts_tab_offers_its_own_windows_and_shows_every_sale(client):
     assert 'id="hist-c-count"' in html, "the row count has to be visible"
     assert "overflow-y:auto" in html
     assert "<th>Location</th>" in html
+
+
+def test_the_item_popup_still_wires_its_tab_strip(client):
+    """Found only because the hover was reported missing: an edit had deleted the
+    delegated click handler on #hist-tabs, so NEITHER Market nor Contracts
+    switched any more. The page rendered perfectly the whole time, which is
+    exactly why a rendering test could not see it.
+    """
+    html = client.get("/prices").text
+    assert "getElementById('hist-tabs').addEventListener" in html, \
+        "without this, clicking a tab does nothing"
+    assert "function setTab(" in html
+    for view in ("hist-chart-view", "hist-market-view", "hist-contracts-view"):
+        assert f'id="{view}"' in html, view
+
+
+def test_the_contracts_chart_has_a_hover_readout_like_the_others(client):
+    """Reported: the other charts show a floating price under the cursor and this
+    one did not. Verified in a browser afterwards at three cursor positions, and
+    clamped inside the box at both edges - the same trap the net worth chart hit.
+    """
+    html = client.get("/prices").text
+    assert 'id="hist-c-tip"' in html, "no tooltip element"
+    assert "#hist-c-host .tip" in html, "no tooltip styling"
+    assert "hist-c-host" in html and "mousemove" in html
+    # Nearest sale by pixel distance, not by index: contract sales are spaced by
+    # when somebody bought, not evenly like daily market history.
+    assert "bestD" in html
