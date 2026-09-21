@@ -2763,6 +2763,19 @@ async def plan_result(
                 station_sell_price = entry[1]
     selling_station_name = loc_names.get(sell_loc, str(sell_loc)) if sell_loc else ""
 
+    # Region of the selling station, so the item popup opens on the market the
+    # plan is actually selling into. Read straight from the cache: a plan render
+    # must not turn into an ESI round trip, and Jita is a fine default.
+    sell_region_id = None
+    if sell_loc:
+        try:
+            _r = conn.execute(
+                "SELECT region_id FROM location_name_cache WHERE location_id=?",
+                (sell_loc,)).fetchone()
+            sell_region_id = _r[0] if _r and _r[0] else None
+        except sqlite3.Error:
+            sell_region_id = None
+
     conn.close()
 
     return _tr("plan.html", request, {
@@ -2791,6 +2804,8 @@ async def plan_result(
         "station_sell_price": station_sell_price,
         "station_name": station_name,
         "selling_station_name": selling_station_name,
+        "market_hubs": _market_hubs_list(),
+        "sell_region_id": sell_region_id,
         "form_selling_station": selling_station or "",
         "form_selling_station_name": selling_station_name if selling_station else "",
         "form_industry":     form_industry,

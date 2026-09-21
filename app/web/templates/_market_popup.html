@@ -35,6 +35,7 @@
             <div class="btn-group btn-group-sm" id="mp-tabs">
               <button type="button" class="btn btn-outline-secondary" data-tab="market"><i class="bi bi-bar-chart-steps me-1"></i>Market</button>
               <button type="button" class="btn btn-outline-secondary" data-tab="chart"><i class="bi bi-graph-up me-1"></i>Chart</button>
+              <button type="button" class="btn btn-outline-secondary" data-tab="contracts"><i class="bi bi-file-earmark-ruled me-1"></i>Contracts</button>
             </div>
             <select id="mp-market" class="form-select form-select-sm" style="width:auto;min-width:150px"></select>
           </div>
@@ -53,6 +54,8 @@
             <div id="mp-loading" class="text-muted small" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center">Loading…</div>
           </div>
         </div>
+
+        {% include '_contract_sales_tab.html' %}
 
         <div id="mp-market-view">
           <div id="mp-market-loading" class="text-muted small py-5 text-center">Loading…</div>
@@ -104,6 +107,8 @@
 
   let series = [], days = 90, hover = null, geom = null, curType = null;
   let markets = [], activeTab = 'market', marketKey = null, refSell = null, highlight = null;
+  let curName = '';
+  const subEl = document.getElementById('mp-sub');
 
   const intS = v => Math.round(v).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
   const iskC = v => v >= 1e9 ? (v / 1e9).toFixed(2) + 'B' : v >= 1e6 ? (v / 1e6).toFixed(2) + 'M'
@@ -157,12 +162,12 @@
     const rid = +marketSel.value;
     const loc = (marketSel.selectedOptions[0] || {}).dataset ? marketSel.selectedOptions[0].dataset.loc : '';
     const key = curType + '|' + rid + '|' + (loc || '');
+    subEl.textContent = marketName(rid)
+      + (loc ? ' · orders at this location only' : ' · live regional market orders');
     if (key === marketKey) return;
     marketKey = key;
     mktTables.style.display = 'none';
     mktLoading.textContent = 'Loading market orders…'; mktLoading.style.display = '';
-    document.getElementById('mp-sub').textContent = marketName(rid)
-      + (loc ? ' · orders at this structure' : ' · live regional market orders');
     let url = '/api/prices/orders?type_id=' + encodeURIComponent(curType) + '&region_id=' + rid;
     if (loc) url += '&location_id=' + encodeURIComponent(loc);
     fetch(url)
@@ -248,11 +253,19 @@
   function setTab(tab) {
     activeTab = tab;
     document.querySelectorAll('#mp-tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-    const isChart = tab === 'chart';
-    chartView.style.display = isChart ? '' : 'none';
-    marketView.style.display = isChart ? 'none' : '';
-    rangesEl.style.visibility = isChart ? '' : 'hidden';
-    if (isChart) loadSeries(); else loadMarket();
+    chartView.style.display = tab === 'chart' ? '' : 'none';
+    marketView.style.display = tab === 'market' ? '' : 'none';
+    // Ranges and the market picker belong to the market tabs; contract sales are
+    // not region-scoped and carry their own window.
+    rangesEl.style.visibility = tab === 'chart' ? '' : 'hidden';
+    marketSel.style.display = tab === 'contracts' ? 'none' : '';
+    if (tab === 'contracts') {
+      subEl.textContent = window.contractSales.subtitle;
+      window.contractSales.show(curType, curName);
+    } else {
+      window.contractSales.hide();
+      if (tab === 'chart') loadSeries(); else loadMarket();
+    }
   }
   document.getElementById('mp-tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setTab(b.dataset.tab); });
   marketSel.addEventListener('change', () => { if (activeTab === 'chart') loadSeries(); else { marketKey = null; loadMarket(); } });
@@ -275,8 +288,10 @@
     if (opts.regionId) { markets.push({ id: +opts.regionId, name: opts.regionName || 'Order region', loc: opts.locationId || null }); seen.add(+opts.regionId); }
     (opts.markets || []).forEach(m => { if (!seen.has(+m.id)) { markets.push({ id: +m.id, name: m.name }); seen.add(+m.id); } });
     if (!markets.length) markets = [{ id: 10000002, name: 'Jita' }];
-    document.getElementById('mp-title').textContent = name || ('Type #' + typeId);
+    curName = name || ('Type #' + typeId);
+    document.getElementById('mp-title').textContent = curName;
     days = 90; marketKey = null;
+    window.contractSales.reset();
     document.querySelectorAll('#mp-ranges button').forEach(x => x.classList.toggle('active', x.dataset.days === '90'));
     populateMarkets();
     marketSel.selectedIndex = 0;

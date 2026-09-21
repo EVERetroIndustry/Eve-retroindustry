@@ -225,9 +225,7 @@ def test_the_item_popup_keeps_the_three_quantities_apart(client):
     html = client.get("/prices").text
     for tab in ("chart", "market", "contracts"):
         assert f'data-tab="{tab}"' in html, tab
-    assert 'id="hist-contracts-view"' in html
-    # ...and the contract tab must not be wired into the market subtitle again
-    assert "hist-contracts\"" not in html.replace('id="hist-contracts-view"', "")
+    assert 'id="cs-view"' in html
 
 
 # ── where it happened, and how far back ──────────────────────────────────────
@@ -270,10 +268,10 @@ def test_the_contracts_tab_offers_its_own_windows_and_shows_every_sale(client):
     than a handful of sales could show. They all do - the box scrolls. Measured
     on real data: 87 Large Skill Injector sales rendered in one window."""
     html = client.get("/prices").text
-    assert 'id="hist-c-ranges"' in html
+    assert 'id="cs-ranges"' in html
     for d in ("7", "30", "90", "365"):
         assert f'data-days="{d}"' in html, d
-    assert 'id="hist-c-count"' in html, "the row count has to be visible"
+    assert 'id="cs-count"' in html, "the row count has to be visible"
     assert "overflow-y:auto" in html
     assert "<th>Location</th>" in html
 
@@ -288,7 +286,7 @@ def test_the_item_popup_still_wires_its_tab_strip(client):
     assert "getElementById('hist-tabs').addEventListener" in html, \
         "without this, clicking a tab does nothing"
     assert "function setTab(" in html
-    for view in ("hist-chart-view", "hist-market-view", "hist-contracts-view"):
+    for view in ("hist-chart-view", "hist-market-view", "cs-view"):
         assert f'id="{view}"' in html, view
 
 
@@ -298,9 +296,9 @@ def test_the_contracts_chart_has_a_hover_readout_like_the_others(client):
     clamped inside the box at both edges - the same trap the net worth chart hit.
     """
     html = client.get("/prices").text
-    assert 'id="hist-c-tip"' in html, "no tooltip element"
-    assert "#hist-c-host .tip" in html, "no tooltip styling"
-    assert "hist-c-host" in html and "mousemove" in html
+    assert 'id="cs-tip"' in html, "no tooltip element"
+    assert "#cs-host .tip" in html, "no tooltip styling"
+    assert "cs-host" in html and "mousemove" in html
     # Nearest point by pixel distance, not by index: contract days are spaced by
     # when somebody bought, not evenly like daily market history.
     assert "bestD" in html
@@ -320,3 +318,38 @@ def test_the_readout_is_per_day_not_per_sale(client):
     # Volume-weighted, so a day that moved 40 units at one price is not averaged
     # flat against one unit at another.
     assert "b.isk / b.vol" in html
+
+
+# ── one copy of the tab, mounted by both item popups ─────────────────────────
+
+def test_the_planner_opens_the_same_item_popup(client):
+    """Asked for: a button by the Planner's price loading that opens what the
+    Prices screen opens from an item name. Same popup, so the contract sales are
+    there too - not a third rendering of the same chart."""
+    html = client.get("/plan").text
+    assert 'id="mpModal"' in html, "the Planner has to carry the item popup"
+    assert "window.openItemMarket" in html
+    assert 'id="cs-view"' in html, "and with it the contract sales tab"
+    assert 'data-tab="contracts"' in html
+
+
+def test_both_popups_mount_the_same_contract_sales_tab(client):
+    """There is one file behind the tab. If either page stops including it the
+    tab is silently gone from that page while the other still has it."""
+    for url in ("/prices", "/plan", "/orders"):
+        html = client.get(url).text
+        assert html.count('id="cs-view"') == 1, f"{url}: expected exactly one tab body"
+        assert "window.contractSales" in html, url
+        assert 'data-tab="contracts"' in html, url
+
+
+def test_the_planner_button_names_the_product(client):
+    """The button only exists once a plan has been computed, and it has to carry
+    that product - the popup opens on nothing otherwise."""
+    r = client.post("/plan", data={"product": "Warrior II", "qty": "1",
+                                   "station": "60003760", "mode": "optimal"})
+    html = r.text
+    assert "Manufacturing steps" in html or "Materials" in html, "the plan did not compute"
+    assert "openPlanItemMarket(this)" in html
+    assert "Prices &amp; contracts" in html
+    assert 'data-name="Warrior II"' in html

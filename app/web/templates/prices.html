@@ -274,16 +274,6 @@
   #hist-host .tip .k { color:#8b949e; }
   #hist-host .tip .g { color:var(--eve-gold); }
   #hist-host .tip .v { color:#8fc3ff; }
-  #hist-c-host canvas { display:block; width:100%; }
-  #hist-c-host .tip {
-    position:absolute; pointer-events:none; background:#0d1117ee; border:1px solid var(--eve-border);
-    border-radius:8px; padding:.4rem .55rem; font-size:.74rem; line-height:1.5; white-space:nowrap;
-    transform:translate(-50%,-115%); opacity:0; transition:opacity .08s; z-index:5;
-  }
-  #hist-c-host .tip b { color:#e6edf3; }
-  #hist-c-host .tip .k { color:#8b949e; }
-  #hist-c-host .tip .g { color:var(--eve-gold); }
-  #hist-c-host .tip .v { color:#8fc3ff; }
 </style>
 <div class="modal fade" id="histModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered hist-dialog">
@@ -321,44 +311,7 @@
           </div>
         </div>
 
-        {# One tab, one quantity. The market tabs show what the MARKET is doing;
-           this one shows what people actually paid on contracts - the only price
-           a capital has, since it is never on a Jita sell order. Alliance only:
-           ESI lists just the public contracts still on offer, so a public sale is
-           a row that vanished and nothing separates it from one the issuer pulled. #}
-        <div id="hist-contracts-view" style="display:none">
-          <div class="d-flex flex-wrap gap-3 align-items-end justify-content-between mb-2">
-            <div class="d-flex flex-wrap gap-4 align-items-end" id="hist-c-stats"></div>
-            {# The chart's own window. It cannot reach back further than the app has
-               been storing sales, which is why the range that has no data says so
-               instead of drawing an empty box. #}
-            <div class="btn-group btn-group-sm" id="hist-c-ranges">
-              <button class="btn btn-outline-secondary" data-days="7">7d</button>
-              <button class="btn btn-outline-secondary" data-days="30">30d</button>
-              <button class="btn btn-outline-secondary active" data-days="90">90d</button>
-              <button class="btn btn-outline-secondary" data-days="365">1y</button>
-            </div>
-          </div>
-          <div class="position-relative" id="hist-c-host" style="min-height:240px">
-            <canvas id="hist-c-cv"></canvas>
-            <div class="tip" id="hist-c-tip"></div>
-            <div id="hist-c-empty" class="text-muted small"
-                 style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:0 2rem"></div>
-          </div>
-          <div class="d-flex justify-content-between align-items-baseline mt-2 mb-1">
-            <span class="text-muted" style="font-size:.72rem" id="hist-c-count"></span>
-          </div>
-          {# Every sale in the window, not a sample - the box scrolls. #}
-          <div class="table-responsive" style="max-height:15rem;overflow-y:auto">
-            <table class="table tbl-compact table-sm mb-0 align-middle">
-              <thead style="position:sticky;top:0;z-index:1;background:#131922">
-                <tr><th>Sold</th><th>Location</th><th class="text-end">Price</th>
-                <th class="text-end">Qty</th><th class="text-end">Per unit</th></tr></thead>
-              <tbody id="hist-c-rows"></tbody>
-            </table>
-          </div>
-          <div class="text-muted mt-2" style="font-size:.72rem" id="hist-c-note"></div>
-        </div>
+        {% include '_contract_sales_tab.html' %}
 
         <div id="hist-market-view" style="display:none">
           <div id="hist-market-loading" class="text-muted small py-5 text-center">Loading…</div>
@@ -1124,7 +1077,6 @@
     // ── Chart / Market tabs ─────────────────────────────────────────────
     const chartView  = document.getElementById('hist-chart-view');
     const marketView = document.getElementById('hist-market-view');
-    const contractsView = document.getElementById('hist-contracts-view');
     const rangesEl   = document.getElementById('hist-ranges');
     const mktLoading = document.getElementById('hist-market-loading');
     const mktTables  = document.getElementById('hist-market-tables');
@@ -1145,7 +1097,6 @@
       document.querySelectorAll('#hist-tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
       chartView.style.display     = tab === 'chart' ? '' : 'none';
       marketView.style.display    = tab === 'market' ? '' : 'none';
-      contractsView.style.display = tab === 'contracts' ? '' : 'none';
       // Ranges and the market picker belong to the market tabs; contract sales
       // are not region-scoped and carry their own window.
       rangesEl.style.display = tab === 'chart' ? '' : 'none';
@@ -1157,8 +1108,10 @@
       } else if (tab === 'market') {
         loadMarket();
       } else {
-        loadContracts();
+        document.getElementById('hist-sub').textContent = window.contractSales.subtitle;
+        window.contractSales.show(curType, document.getElementById('hist-title').textContent);
       }
+      if (tab !== 'contracts') window.contractSales.hide();
     }
     // Delegated so a new tab button needs no new wiring. This line was lost in an
     // edit and took the whole tab strip with it - Market and Contracts both
@@ -1167,253 +1120,6 @@
     document.getElementById('hist-tabs').addEventListener('click', e => {
       const b = e.target.closest('button'); if (b) setTab(b.dataset.tab);
     });
-
-    // Prices actually paid on completed alliance contracts. Deliberately its own
-    // tab: the market tabs answer "what is the market doing", this one answers
-    // "what did people pay", and putting a line of one into the header of the
-    // other made neither readable.
-    let contractsKey = null, contractDays = 90, contractData = null;
-    function loadContracts() {
-      document.getElementById('hist-sub').textContent =
-        'completed alliance contracts \u00b7 single-item only, so the price is the item\'s';
-      if (contractsKey === curType) { renderContracts(); return; }
-      const empty = document.getElementById('hist-c-empty');
-      document.getElementById('hist-c-stats').innerHTML = '';
-      document.getElementById('hist-c-rows').innerHTML = '';
-      document.getElementById('hist-c-note').textContent = '';
-      document.getElementById('hist-c-count').textContent = '';
-      empty.style.display = 'flex'; empty.textContent = 'Loading\u2026';
-      fetch('/api/contracts/sold?type_id=' + encodeURIComponent(curType))
-        .then(r => r.json())
-        .then(d => { contractsKey = curType; contractData = d; renderContracts(); })
-        .catch(() => { empty.style.display = 'flex';
-                       empty.textContent = 'Could not read the sales history.'; });
-    }
-
-    function renderContracts() {
-      const d = contractData;
-      if (!d) return;
-      const stats = document.getElementById('hist-c-stats');
-      const rows = document.getElementById('hist-c-rows');
-      const empty = document.getElementById('hist-c-empty');
-      const note = document.getElementById('hist-c-note');
-      const count = document.getElementById('hist-c-count');
-      document.querySelectorAll('#hist-c-ranges button').forEach(b =>
-        b.classList.toggle('active', +b.dataset.days === contractDays));
-
-      const all = d.series || [], w = d.windows || [];
-      const cut = Date.now() / 1000 - contractDays * 86400;
-      const ser = all.filter(p => p.t >= cut);
-
-      const stat = (l, v) => `<div><div class="text-muted" style="font-size:.68rem;`
-        + `text-transform:uppercase;letter-spacing:.04em">${l}</div>`
-        + `<div class="fw-semibold" style="font-size:1rem">${v}</div></div>`;
-      stats.innerHTML = w.map(x => stat(`sold in ${x.days}d`,
-        x.quantity ? `${intS(x.quantity)} <span class="text-muted"
-          style="font-size:.75rem">in ${x.contracts} contract${x.contracts === 1 ? '' : 's'}</span>`
-        : '<span class="text-muted">none</span>')).join('');
-      if (all.length)
-        stats.innerHTML += stat('last price paid', fmtNum(all[all.length - 1].unit, true, false));
-
-      rows.innerHTML = ser.slice().reverse().map(p => `<tr>
-          <td class="text-muted" style="font-size:.78rem;white-space:nowrap">${dtLabel(p.t)}</td>
-          <td class="text-muted text-truncate" style="font-size:.78rem;max-width:260px"
-              title="${escHtml(p.location || '')}">${escHtml(p.location || '-')}</td>
-          <td class="text-end">${fmtNum(p.price, true, false)}</td>
-          <td class="text-end text-muted">${intS(p.qty)}</td>
-          <td class="text-end fw-semibold">${fmtNum(p.unit, true, false)}</td></tr>`).join('');
-      count.textContent = ser.length
-        ? `${ser.length} sale${ser.length === 1 ? '' : 's'} in the last ${contractDays} days`
-          + (all.length > ser.length ? ` \u00b7 ${all.length} stored in total` : '')
-        : '';
-
-      if (!ser.length) {
-        empty.style.display = 'flex';
-        empty.textContent = all.length
-          ? `Nothing sold singly in the last ${contractDays} days. `
-            + `The oldest sale stored is ${dtLabel(all[0].t)}.`
-          : (w.some(x => x.quantity)
-             ? 'This item only sold inside bundles, where one price covers everything, '
-               + 'so there is no honest per-unit figure to draw.'
-             : 'No completed alliance contract held this item in the last 30 days.');
-      } else {
-        empty.style.display = 'none';
-        drawContracts(ser);
-      }
-
-      const bits = [];
-      if (d.sales_30d)
-        bits.push(`${intS(d.with_items_30d)} of ${intS(d.sales_30d)} sales in the last 30 `
-          + `days have had their contents read.`);
-      if (d.oldest)
-        bits.push(`History starts ${dtLabel(d.oldest)}: ESI serves 30 days, and everything `
-          + `before that is what this app has been keeping since.`);
-      bits.push('Alliance contracts only: ESI lists just the public contracts still on '
-        + 'offer, so a public sale is a row that vanished and nothing tells it apart from '
-        + 'one the issuer withdrew.');
-      note.innerHTML = bits.join(' ')
-        + ` <a href="/contracts/alliance?status=finished&item=`
-        + `${encodeURIComponent(document.getElementById('hist-title').textContent)}`
-        + `&exact=1&sort=sold">See every completed contract of this item</a>.`;
-    }
-
-    document.getElementById('hist-c-ranges').addEventListener('click', e => {
-      const b = e.target.closest('button');
-      if (b) { contractDays = +b.dataset.days; renderContracts(); }
-    });
-
-    function dtLabel(t) {
-      return new Date(t * 1000).toLocaleDateString('en-GB',
-        { day: '2-digit', month: 'short', year: '2-digit' });
-    }
-
-    // Geometry of the contracts chart, and the DAYS it is drawn from.
-    // cSource keeps the raw sales so a redraw (crosshair, resize) does not have
-    // to re-derive them from the buckets it just built.
-    let cGeom = null, cHover = null, cDays = [], cSource = [];
-
-    // Sales grouped by the day they completed. A day can hold several sales at
-    // different prices, and showing one of them answered the wrong question:
-    // what was asked for is the range that changed hands and how much of it.
-    function byDay(ser) {
-      const map = new Map();
-      ser.forEach(p => {
-        const d = new Date(p.t * 1000).toISOString().slice(0, 10);
-        let b = map.get(d);
-        if (!b) { b = { d, t: p.t, low: p.unit, high: p.unit, vol: 0, isk: 0,
-                        contracts: 0, locations: new Set() }; map.set(d, b); }
-        b.low = Math.min(b.low, p.unit);
-        b.high = Math.max(b.high, p.unit);
-        b.vol += p.qty;
-        b.isk += p.price;
-        b.contracts += 1;
-        if (p.location) b.locations.add(p.location);
-        b.t = Math.min(b.t, p.t);
-      });
-      const out = Array.from(map.values()).sort((a, b) => a.t - b.t);
-      // Volume-weighted, so a day that moved 40 units at one price is not
-      // averaged flat against one unit at another.
-      out.forEach(b => { b.avg = b.vol ? b.isk / b.vol : b.low; });
-      return out;
-    }
-
-    function drawContracts(ser) {
-      cSource = ser;
-      cDays = byDay(ser);
-      const days = cDays;
-      const host = document.getElementById('hist-c-host');
-      const cv = document.getElementById('hist-c-cv');
-      const cx = cv.getContext('2d');
-      const w = host.clientWidth || 640, h = 260;
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      cv.width = w * dpr; cv.height = h * dpr; cv.style.width = '100%'; cv.style.height = h + 'px';
-      cx.setTransform(dpr, 0, 0, dpr, 0, 0); cx.clearRect(0, 0, w, h);
-      const padL = 72, padR = 14, padT = 12, padB = 24, gap = 14;
-      const x0 = padL, x1 = w - padR;
-      // Same split as the market chart: price on top, what moved underneath.
-      const priceH = (h - padT - padB - gap) * 0.7, volH = (h - padT - padB - gap) * 0.3;
-      const y0 = padT, y1 = padT + priceH, v0 = y1 + gap, v1 = y1 + gap + volH;
-      let lo = Math.min(...days.map(b => b.low)), hi = Math.max(...days.map(b => b.high));
-      if (lo === hi) { lo *= 0.98; hi *= 1.02; }
-      const rg = hi - lo, yMin = lo - rg * 0.15, yMax = hi + rg * 0.15;
-      const vMax = Math.max(...days.map(b => b.vol)) * 1.15 || 1;
-      const t0 = days[0].t, t1 = days[days.length - 1].t;
-      const X = t => days.length === 1 ? (x0 + x1) / 2
-                   : x0 + (x1 - x0) * (t - t0) / Math.max(1, t1 - t0);
-      const Y = v => y1 - (y1 - y0) * (v - yMin) / (yMax - yMin);
-      const VY = v => v1 - (v1 - v0) * (v / vMax);
-      cx.font = '11px system-ui,sans-serif'; cx.textBaseline = 'middle';
-      for (let i = 0; i <= 4; i++) {
-        const val = yMin + (yMax - yMin) * i / 4, y = Y(val);
-        cx.strokeStyle = 'rgba(255,255,255,0.06)'; cx.beginPath();
-        cx.moveTo(x0, y); cx.lineTo(x1, y); cx.stroke();
-        cx.fillStyle = '#8b949e'; cx.textAlign = 'right';
-        cx.fillText(fmtNum(val, true, true), x0 - 8, y);
-      }
-      cx.strokeStyle = 'rgba(255,255,255,0.06)'; cx.beginPath();
-      cx.moveTo(x0, v1); cx.lineTo(x1, v1); cx.stroke();
-      cx.fillStyle = '#8b949e'; cx.textAlign = 'right';
-      cx.fillText(intS(Math.round(vMax)), x0 - 8, v0 + 6);
-      cx.textAlign = 'center'; cx.fillStyle = '#8b949e';
-      cx.fillText(dtLabel(t0), x0 + 24, h - 8);
-      if (days.length > 1) cx.fillText(dtLabel(t1), x1 - 24, h - 8);
-
-      // Units that moved that day.
-      cx.fillStyle = 'rgba(88,140,196,0.75)';
-      const bw = Math.max(2, Math.min(14, (x1 - x0) / Math.max(1, days.length) * 0.5));
-      days.forEach(b => { const y = VY(b.vol); cx.fillRect(X(b.t) - bw / 2, y, bw, v1 - y); });
-
-      // The spread of prices paid that day, drawn as a bar rather than a band:
-      // contract days are sparse, and joining them into a ribbon would suggest
-      // trading on days when nothing sold.
-      cx.strokeStyle = 'rgba(230,184,74,0.45)'; cx.lineWidth = Math.max(2, bw * 0.55);
-      days.forEach(b => {
-        if (b.high <= b.low) return;
-        const x = X(b.t);
-        cx.beginPath(); cx.moveTo(x, Y(b.low)); cx.lineTo(x, Y(b.high)); cx.stroke();
-      });
-      if (days.length > 1) {
-        cx.strokeStyle = '#e6b84a'; cx.lineWidth = 1.5; cx.beginPath();
-        days.forEach((b, i) => { const x = X(b.t), y = Y(b.avg);
-          i ? cx.lineTo(x, y) : cx.moveTo(x, y); });
-        cx.stroke();
-      }
-      cx.fillStyle = '#e6b84a';
-      days.forEach(b => { cx.beginPath(); cx.arc(X(b.t), Y(b.avg), 3.2, 0, 7); cx.fill(); });
-      cGeom = { X, Y, VY, x0, x1, y0, y1, v1 };
-      if (cHover != null) cCrosshair();
-    }
-
-    function cCrosshair() {
-      if (cHover == null || !cGeom || !cDays.length) return;
-      const cx = document.getElementById('hist-c-cv').getContext('2d');
-      const b = cDays[cHover], x = cGeom.X(b.t);
-      cx.strokeStyle = 'rgba(255,255,255,0.28)'; cx.lineWidth = 1;
-      cx.beginPath(); cx.moveTo(x, cGeom.y0); cx.lineTo(x, cGeom.v1); cx.stroke();
-      cx.fillStyle = '#e6b84a';
-      cx.beginPath(); cx.arc(x, cGeom.Y(b.avg), 4.6, 0, 7); cx.fill();
-      cx.strokeStyle = '#0b0e13'; cx.lineWidth = 1.5; cx.stroke();
-    }
-
-    // Nearest DAY to the pointer by pixel distance, not by index: contract days
-    // are spaced by when somebody bought, not evenly like daily market history.
-    (function () {
-      const host = document.getElementById('hist-c-host');
-      const cv = document.getElementById('hist-c-cv');
-      const tip = document.getElementById('hist-c-tip');
-      if (!host) return;
-      host.addEventListener('mousemove', e => {
-        if (!cGeom || !cDays.length) return;
-        const r = cv.getBoundingClientRect();
-        const mx = e.clientX - r.left;
-        let best = 0, bestD = Infinity;
-        cDays.forEach((b, i) => {
-          const d = Math.abs(cGeom.X(b.t) - mx);
-          if (d < bestD) { bestD = d; best = i; }
-        });
-        cHover = best; drawContracts(cSource);
-        const b = cDays[best];
-        const range = b.high > b.low
-          ? `${fmtNum(b.low, true, false)} - ${fmtNum(b.high, true, false)}`
-          : fmtNum(b.low, true, false);
-        const where = Array.from(b.locations);
-        tip.innerHTML = `<b>${dtLabel(b.t)}</b><br>`
-          + `<span class="k">price paid</span> <span class="g">${range}</span><br>`
-          + `<span class="k">volume</span> <span class="v">${intS(b.vol)}</span>`
-          + ` <span class="k">in ${b.contracts} contract${b.contracts === 1 ? '' : 's'}</span>`
-          + (where.length === 1 ? `<br><span class="k">${escHtml(where[0])}</span>`
-             : where.length ? `<br><span class="k">${where.length} locations</span>` : '');
-        const hw = tip.offsetWidth / 2, hh = tip.offsetHeight;
-        tip.style.left = Math.max(hw + 2,
-          Math.min(host.clientWidth - hw - 2, cGeom.X(b.t))) + 'px';
-        tip.style.top = Math.max(hh * 1.2, cGeom.Y(b.avg)) + 'px';
-        tip.style.opacity = '1';
-      });
-      host.addEventListener('mouseleave', () => {
-        cHover = null; tip.style.opacity = '0';
-        if (cSource.length) drawContracts(cSource);
-      });
-    })();
 
     function mktRows(list) {
       if (!list || !list.length) return '<tr><td colspan="3" class="text-muted text-center py-3">No orders</td></tr>';
@@ -1428,12 +1134,14 @@
       const opt = marketSel.selectedOptions[0];
       const loc = (opt && opt.dataset.station === '1' && opt.dataset.loc) ? opt.dataset.loc : '';
       const key = curType + '|' + rid + '|' + loc;
+      // Set before the cache short-circuit: coming back from the Contracts tab
+      // reuses the rendered order book, and the subtitle still has to say so.
+      document.getElementById('hist-sub').textContent = marketName(rid)
+        + (loc ? ' · orders at this station' : ' · live regional market orders');
       if (key === marketKey) return;   // already rendered for this type+market
       marketKey = key;
       mktTables.style.display = 'none';
       mktLoading.textContent = 'Loading market orders…'; mktLoading.style.display = '';
-      document.getElementById('hist-sub').textContent = marketName(rid)
-        + (loc ? ' · orders at this station' : ' · live regional market orders');
       let url = '/api/prices/orders?type_id=' + encodeURIComponent(curType) + '&region_id=' + rid;
       if (loc) url += '&location_id=' + encodeURIComponent(loc);
       fetch(url)
@@ -1562,11 +1270,11 @@
       selectMarket();   // default to the last market the user picked
       // Always open on the Chart tab; force a fresh Market fetch next time it's opened.
       marketKey = null;
-      contractsKey = null; contractData = null; contractDays = 90;
+      window.contractSales.reset();
       activeTab = 'chart';
       document.querySelectorAll('#hist-tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === 'chart'));
       chartView.style.display = ''; marketView.style.display = 'none';
-      contractsView.style.display = 'none'; rangesEl.style.display = '';
+      window.contractSales.hide(); rangesEl.style.display = '';
       marketSel.style.display = '';
       bootstrap.Modal.getOrCreateInstance(modalEl).show();
       loadSeries();

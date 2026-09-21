@@ -531,6 +531,18 @@ function switchPlanChar(charId) {
              title="Manually enter a contract price/unit you see in-game (e.g. an alliance contract ESI can't read). Accepts 2.85b / 2850m / 2 850 000 000.">
     </span>
 
+    {# Same popup the Prices screen opens from an item name: the order book, the
+       daily market history and what the item actually sold for on contracts.
+       The numbers above are single figures; this is where they come from. #}
+    <span class="text-muted" style="opacity:.4">|</span>
+    <button type="button" class="btn btn-sm btn-ghost" style="font-size:.75rem;padding:1px 7px"
+            data-type-id="{{ result.product_type_id }}"
+            data-name="{{ result.product_name }}"
+            onclick="openPlanItemMarket(this)"
+            title="Order book, price history and completed contract sales for this item">
+      <i class="bi bi-bar-chart-steps me-1"></i>Prices &amp; contracts
+    </button>
+
     {# Contract-region indexing progress - inside this header row, wraps full-width directly under it. #}
     <div id="contract-index-progress" class="d-none" style="width:100%;margin-top:.15rem">
       <div class="d-flex justify-content-between mb-1 text-muted" style="font-size:.7rem">
@@ -1196,6 +1208,7 @@ function switchPlanChar(charId) {
 </div>
 
 {% endif %} {# end if result #}
+{% include '_market_popup.html' %}
 {% endblock %}
 
 {% block scripts %}
@@ -2197,6 +2210,22 @@ function _parseIsk(s) {
   const v = parseFloat(s);
   return isNaN(v) ? NaN : v * mult;
 }
+// Open the shared item popup (order book / chart / contract sales) for the
+// planned product. Defaults to the region the plan sells into, so the Market tab
+// shows the orders the profit row was computed against.
+function openPlanItemMarket(btn) {
+  // The selling station first (that is the price the profit row used), then
+  // Jita and the hubs. Without a cached region for it the popup opens on Jita.
+  const rid = {{ sell_region_id or 'null' }};
+  window.openItemMarket(btn.dataset.typeId, btn.dataset.name, {
+    regionId: rid,
+    regionName: {{ (selling_station_name or '') | tojson }},
+    locationId: rid ? {{ (form_selling_station or form_station or '') | tojson }} : null,
+    markets: {{ (market_hubs or []) | tojson }},
+    startTab: 'market',
+  });
+}
+
 function _contractManualKey(typeId) { return 'contractManualPrice:' + typeId; }
 
 // Manual contract price - ESI can't read alliance/private contracts, so the user
