@@ -981,8 +981,9 @@ def _store_alliance(conn: sqlite3.Connection, alliance_id: int, contracts: list[
     # survive: the rows above are replaced on every re-listing and ESI's window is
     # 29 days, so without copying it out the history could never grow past that.
     from app.web import contract_sales
-    contract_sales.record_sales(conn, alliance_id, keep)
+    contract_sales.record_sales(conn, alliance_id, keep, loc_names)
     contract_sales.harvest_items(conn)
+    contract_sales.backfill_locations(conn)
 
 
 def _mark_items_absent(conn: sqlite3.Connection, contract_ids) -> None:

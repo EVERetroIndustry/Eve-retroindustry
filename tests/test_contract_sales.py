@@ -228,3 +228,51 @@ def test_the_item_popup_keeps_the_three_quantities_apart(client):
     assert 'id="hist-contracts-view"' in html
     # ...and the contract tab must not be wired into the market subtitle again
     assert "hist-contracts\"" not in html.replace('id="hist-contracts-view"', "")
+
+
+# ── where it happened, and how far back ──────────────────────────────────────
+
+def test_a_sale_remembers_where_it_happened():
+    """Kept on the sale rather than looked up later: alliance_contracts is
+    replaced on every re-listing, so the name would vanish with it."""
+    conn = _db()
+    cs.record_sales(conn, ALLY, [_contract(1, start_location_id=60003760)],
+                    {60003760: "Jita IV - Moon 4 - Caldari Navy Assembly Plant"})
+    _items(conn, 1, [(HULL, 1, 1)])
+    cs.harvest_items(conn)
+    ser = cs.price_series(conn, HULL, 90)
+    assert ser[0]["location"] == "Jita IV - Moon 4 - Caldari Navy Assembly Plant"
+
+
+def test_an_unnamed_location_shows_its_id_rather_than_a_blank():
+    conn = _db()
+    cs.record_sales(conn, ALLY, [_contract(1, start_location_id=1022000000001)])
+    _items(conn, 1, [(HULL, 1, 1)])
+    cs.harvest_items(conn)
+    assert cs.price_series(conn, HULL, 90)[0]["location"] == "#1022000000001"
+
+
+def test_locations_are_backfilled_for_sales_recorded_before_the_column():
+    conn = _db()
+    cs.record_sales(conn, ALLY, [_contract(1, start_location_id=60003760)])
+    conn.execute("UPDATE contract_sales SET location_id=NULL, location=NULL")
+    ch._store_alliance(conn, ALLY, [_contract(1, start_location_id=60003760)],
+                       {}, {60003760: "Jita IV - Moon 4"})
+    conn.commit()
+    _items(conn, 1, [(HULL, 1, 1)])
+    cs.harvest_items(conn)
+    assert cs.backfill_locations(conn) >= 0       # already done by _store_alliance
+    assert cs.price_series(conn, HULL, 90)[0]["location"] == "Jita IV - Moon 4"
+
+
+def test_the_contracts_tab_offers_its_own_windows_and_shows_every_sale(client):
+    """Reported: no way to pick 7/30/90/365, and it was not clear whether more
+    than a handful of sales could show. They all do - the box scrolls. Measured
+    on real data: 87 Large Skill Injector sales rendered in one window."""
+    html = client.get("/prices").text
+    assert 'id="hist-c-ranges"' in html
+    for d in ("7", "30", "90", "365"):
+        assert f'data-days="{d}"' in html, d
+    assert 'id="hist-c-count"' in html, "the row count has to be visible"
+    assert "overflow-y:auto" in html
+    assert "<th>Location</th>" in html

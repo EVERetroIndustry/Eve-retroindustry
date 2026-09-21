@@ -7763,7 +7763,7 @@ async def api_contracts_sold(request: Request, type_id: int, days: str = "7,30")
         summary = contract_sales.sales_summary(conn, 30)
         return {"type_id": type_id, "windows": windows,
                 # What was actually paid, per unit, on single-item contracts.
-                "series": contract_sales.price_series(conn, type_id, 365),
+                "series": contract_sales.price_series(conn, type_id, 3650),
                 # What the number can speak for: a sale whose contents were never
                 # read counts as a sale but contributes no units.
                 "sales_30d": summary["contracts"],

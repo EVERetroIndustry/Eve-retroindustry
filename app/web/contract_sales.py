@@ -40,7 +40,9 @@ def ensure_sales_tables(conn: sqlite3.Connection) -> None:
             volume       REAL,
             issuer_id    INTEGER,
             acceptor_id  INTEGER,
-            items_read   INTEGER DEFAULT 0
+            items_read   INTEGER DEFAULT 0,
+            location_id  INTEGER,
+            location     TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_cs_ts ON contract_sales(completed_ts);
         CREATE TABLE IF NOT EXISTS contract_sale_items (
@@ -52,10 +54,27 @@ def ensure_sales_tables(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_csi_type ON contract_sale_items(type_id);
     """)
+    # price_series falls back to the location name cache for a sale recorded
+    # before the name was known, and on a fresh install that table may not exist
+    # yet - so make sure of it here rather than letting the query raise.
+    try:
+        from app.web.location_resolver import ensure_location_name_table
+        ensure_location_name_table(conn)
+    except Exception:
+        pass
+
+    # Where the trade happened. Added to an existing database rather than only to
+    # new ones, and kept here rather than looked up later: alliance_contracts is
+    # replaced on every re-listing, so the name would vanish with it.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(contract_sales)")}
+    for col, decl in (("location_id", "INTEGER"), ("location", "TEXT")):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE contract_sales ADD COLUMN {col} {decl}")
     conn.commit()
 
 
-def record_sales(conn: sqlite3.Connection, alliance_id: int, contracts: list[dict]) -> int:
+def record_sales(conn: sqlite3.Connection, alliance_id: int, contracts: list[dict],
+                 loc_names: dict | None = None) -> int:
     """Note every contract that has completed. Returns how many were new.
 
     IGNORE, not REPLACE: a completed contract never changes again, and re-reading
@@ -69,15 +88,18 @@ def record_sales(conn: sqlite3.Connection, alliance_id: int, contracts: list[dic
         ts = _parse_ts(c.get("date_completed")) or _parse_ts(c.get("date_accepted"))
         if not ts or not c.get("contract_id"):
             continue
+        loc = c.get("start_location_id") or 0
         rows.append((int(c["contract_id"]), alliance_id, ts, c.get("type") or "",
                      float(c.get("price") or 0.0), float(c.get("volume") or 0.0),
-                     c.get("issuer_id") or 0, c.get("acceptor_id") or 0))
+                     c.get("issuer_id") or 0, c.get("acceptor_id") or 0,
+                     loc, (loc_names or {}).get(loc, "")))
     if not rows:
         return 0
     before = conn.execute("SELECT COUNT(*) FROM contract_sales").fetchone()[0]
     conn.executemany(
         "INSERT OR IGNORE INTO contract_sales (contract_id, alliance_id, completed_ts,"
-        " type, price, volume, issuer_id, acceptor_id) VALUES (?,?,?,?,?,?,?,?)", rows)
+        " type, price, volume, issuer_id, acceptor_id, location_id, location)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
     conn.commit()
     return conn.execute("SELECT COUNT(*) FROM contract_sales").fetchone()[0] - before
 
@@ -109,6 +131,29 @@ def harvest_items(conn: sqlite3.Connection) -> int:
                      [(cid,) for cid in done])
     conn.commit()
     return len(done)
+
+
+def backfill_locations(conn: sqlite3.Connection) -> int:
+    """Fill in where a sale happened for rows recorded before the column existed.
+
+    Only works while the contract is still in ESI's window and therefore still in
+    `alliance_contracts`; older ones keep an empty location rather than a guess.
+    """
+    ensure_sales_tables(conn)
+    try:
+        cur = conn.execute("""
+            UPDATE contract_sales SET
+                location_id = (SELECT c.start_location_id FROM alliance_contracts c
+                                WHERE c.contract_id = contract_sales.contract_id),
+                location    = (SELECT c.start_name FROM alliance_contracts c
+                                WHERE c.contract_id = contract_sales.contract_id)
+            WHERE COALESCE(location_id, 0) = 0
+              AND EXISTS (SELECT 1 FROM alliance_contracts c
+                           WHERE c.contract_id = contract_sales.contract_id)""")
+    except sqlite3.OperationalError:
+        return 0
+    conn.commit()
+    return cur.rowcount or 0
 
 
 def sold_by_type(conn: sqlite3.Connection, days: float, type_ids=None,
@@ -149,14 +194,20 @@ def price_series(conn: sqlite3.Connection, type_id: int, days: float = 90.0) -> 
     ensure_sales_tables(conn)
     since = time.time() - days * 86400.0
     rows = conn.execute("""
-        SELECT s.completed_ts, s.price, i.quantity, s.contract_id
+        SELECT s.completed_ts, s.price, i.quantity, s.contract_id,
+               COALESCE(NULLIF(s.location, ''), l.name, ''), s.location_id
         FROM contract_sales s JOIN contract_sale_items i ON i.contract_id = s.contract_id
+        LEFT JOIN location_name_cache l ON l.location_id = s.location_id
         WHERE i.type_id = ? AND s.completed_ts >= ? AND s.price > 0 AND i.quantity > 0
           AND 1 = (SELECT COUNT(*) FROM contract_sale_items x
                     WHERE x.contract_id = s.contract_id)
         ORDER BY s.completed_ts""", (int(type_id), since)).fetchall()
     return [{"t": int(ts), "unit": price / qty, "qty": qty, "price": price,
-             "contract_id": cid} for ts, price, qty, cid in rows]
+             "contract_id": cid,
+             # A name if we have one anywhere, the id if not - never a blank cell
+             # pretending the trade happened nowhere.
+             "location": loc or (f"#{lid}" if lid else "")}
+            for ts, price, qty, cid, loc, lid in rows]
 
 
 def sales_summary(conn: sqlite3.Connection, days: float) -> dict:
