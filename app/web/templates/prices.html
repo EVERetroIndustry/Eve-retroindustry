@@ -1267,29 +1267,61 @@
         { day: '2-digit', month: 'short', year: '2-digit' });
     }
 
-    // Geometry of the contracts chart, kept so the pointer can find the nearest
-    // sale without recomputing it.
-    let cGeom = null, cHover = null, cSeries = [];
+    // Geometry of the contracts chart, and the DAYS it is drawn from.
+    // cSource keeps the raw sales so a redraw (crosshair, resize) does not have
+    // to re-derive them from the buckets it just built.
+    let cGeom = null, cHover = null, cDays = [], cSource = [];
+
+    // Sales grouped by the day they completed. A day can hold several sales at
+    // different prices, and showing one of them answered the wrong question:
+    // what was asked for is the range that changed hands and how much of it.
+    function byDay(ser) {
+      const map = new Map();
+      ser.forEach(p => {
+        const d = new Date(p.t * 1000).toISOString().slice(0, 10);
+        let b = map.get(d);
+        if (!b) { b = { d, t: p.t, low: p.unit, high: p.unit, vol: 0, isk: 0,
+                        contracts: 0, locations: new Set() }; map.set(d, b); }
+        b.low = Math.min(b.low, p.unit);
+        b.high = Math.max(b.high, p.unit);
+        b.vol += p.qty;
+        b.isk += p.price;
+        b.contracts += 1;
+        if (p.location) b.locations.add(p.location);
+        b.t = Math.min(b.t, p.t);
+      });
+      const out = Array.from(map.values()).sort((a, b) => a.t - b.t);
+      // Volume-weighted, so a day that moved 40 units at one price is not
+      // averaged flat against one unit at another.
+      out.forEach(b => { b.avg = b.vol ? b.isk / b.vol : b.low; });
+      return out;
+    }
 
     function drawContracts(ser) {
-      cSeries = ser;
+      cSource = ser;
+      cDays = byDay(ser);
+      const days = cDays;
       const host = document.getElementById('hist-c-host');
       const cv = document.getElementById('hist-c-cv');
       const cx = cv.getContext('2d');
-      const w = host.clientWidth || 640, h = 240;
+      const w = host.clientWidth || 640, h = 260;
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       cv.width = w * dpr; cv.height = h * dpr; cv.style.width = '100%'; cv.style.height = h + 'px';
       cx.setTransform(dpr, 0, 0, dpr, 0, 0); cx.clearRect(0, 0, w, h);
-      const padL = 72, padR = 14, padT = 12, padB = 24;
-      const x0 = padL, x1 = w - padR, y0 = padT, y1 = h - padB;
-      const vals = ser.map(p => p.unit);
-      let lo = Math.min(...vals), hi = Math.max(...vals);
+      const padL = 72, padR = 14, padT = 12, padB = 24, gap = 14;
+      const x0 = padL, x1 = w - padR;
+      // Same split as the market chart: price on top, what moved underneath.
+      const priceH = (h - padT - padB - gap) * 0.7, volH = (h - padT - padB - gap) * 0.3;
+      const y0 = padT, y1 = padT + priceH, v0 = y1 + gap, v1 = y1 + gap + volH;
+      let lo = Math.min(...days.map(b => b.low)), hi = Math.max(...days.map(b => b.high));
       if (lo === hi) { lo *= 0.98; hi *= 1.02; }
       const rg = hi - lo, yMin = lo - rg * 0.15, yMax = hi + rg * 0.15;
-      const t0 = ser[0].t, t1 = ser[ser.length - 1].t;
-      const X = t => ser.length === 1 ? (x0 + x1) / 2
+      const vMax = Math.max(...days.map(b => b.vol)) * 1.15 || 1;
+      const t0 = days[0].t, t1 = days[days.length - 1].t;
+      const X = t => days.length === 1 ? (x0 + x1) / 2
                    : x0 + (x1 - x0) * (t - t0) / Math.max(1, t1 - t0);
       const Y = v => y1 - (y1 - y0) * (v - yMin) / (yMax - yMin);
+      const VY = v => v1 - (v1 - v0) * (v / vMax);
       cx.font = '11px system-ui,sans-serif'; cx.textBaseline = 'middle';
       for (let i = 0; i <= 4; i++) {
         const val = yMin + (yMax - yMin) * i / 4, y = Y(val);
@@ -1298,67 +1330,88 @@
         cx.fillStyle = '#8b949e'; cx.textAlign = 'right';
         cx.fillText(fmtNum(val, true, true), x0 - 8, y);
       }
+      cx.strokeStyle = 'rgba(255,255,255,0.06)'; cx.beginPath();
+      cx.moveTo(x0, v1); cx.lineTo(x1, v1); cx.stroke();
+      cx.fillStyle = '#8b949e'; cx.textAlign = 'right';
+      cx.fillText(intS(Math.round(vMax)), x0 - 8, v0 + 6);
       cx.textAlign = 'center'; cx.fillStyle = '#8b949e';
       cx.fillText(dtLabel(t0), x0 + 24, h - 8);
-      if (ser.length > 1) cx.fillText(dtLabel(t1), x1 - 24, h - 8);
-      if (ser.length > 1) {
+      if (days.length > 1) cx.fillText(dtLabel(t1), x1 - 24, h - 8);
+
+      // Units that moved that day.
+      cx.fillStyle = 'rgba(88,140,196,0.75)';
+      const bw = Math.max(2, Math.min(14, (x1 - x0) / Math.max(1, days.length) * 0.5));
+      days.forEach(b => { const y = VY(b.vol); cx.fillRect(X(b.t) - bw / 2, y, bw, v1 - y); });
+
+      // The spread of prices paid that day, drawn as a bar rather than a band:
+      // contract days are sparse, and joining them into a ribbon would suggest
+      // trading on days when nothing sold.
+      cx.strokeStyle = 'rgba(230,184,74,0.45)'; cx.lineWidth = Math.max(2, bw * 0.55);
+      days.forEach(b => {
+        if (b.high <= b.low) return;
+        const x = X(b.t);
+        cx.beginPath(); cx.moveTo(x, Y(b.low)); cx.lineTo(x, Y(b.high)); cx.stroke();
+      });
+      if (days.length > 1) {
         cx.strokeStyle = '#e6b84a'; cx.lineWidth = 1.5; cx.beginPath();
-        ser.forEach((p, i) => { const x = X(p.t), y = Y(p.unit);
+        days.forEach((b, i) => { const x = X(b.t), y = Y(b.avg);
           i ? cx.lineTo(x, y) : cx.moveTo(x, y); });
         cx.stroke();
       }
       cx.fillStyle = '#e6b84a';
-      ser.forEach(p => { cx.beginPath(); cx.arc(X(p.t), Y(p.unit), 3.4, 0, 7); cx.fill(); });
-      cGeom = { X, Y, x0, x1, y0, y1 };
+      days.forEach(b => { cx.beginPath(); cx.arc(X(b.t), Y(b.avg), 3.2, 0, 7); cx.fill(); });
+      cGeom = { X, Y, VY, x0, x1, y0, y1, v1 };
       if (cHover != null) cCrosshair();
     }
 
     function cCrosshair() {
-      if (cHover == null || !cGeom || !cSeries.length) return;
+      if (cHover == null || !cGeom || !cDays.length) return;
       const cx = document.getElementById('hist-c-cv').getContext('2d');
-      const p = cSeries[cHover], x = cGeom.X(p.t);
+      const b = cDays[cHover], x = cGeom.X(b.t);
       cx.strokeStyle = 'rgba(255,255,255,0.28)'; cx.lineWidth = 1;
-      cx.beginPath(); cx.moveTo(x, cGeom.y0); cx.lineTo(x, cGeom.y1); cx.stroke();
+      cx.beginPath(); cx.moveTo(x, cGeom.y0); cx.lineTo(x, cGeom.v1); cx.stroke();
       cx.fillStyle = '#e6b84a';
-      cx.beginPath(); cx.arc(x, cGeom.Y(p.unit), 4.6, 0, 7); cx.fill();
+      cx.beginPath(); cx.arc(x, cGeom.Y(b.avg), 4.6, 0, 7); cx.fill();
       cx.strokeStyle = '#0b0e13'; cx.lineWidth = 1.5; cx.stroke();
     }
 
-    // Nearest sale to the pointer, not nearest index: contract sales are spaced
-    // by when somebody bought, not evenly like daily market history, so stepping
-    // by index would put the readout on the wrong one.
+    // Nearest DAY to the pointer by pixel distance, not by index: contract days
+    // are spaced by when somebody bought, not evenly like daily market history.
     (function () {
       const host = document.getElementById('hist-c-host');
       const cv = document.getElementById('hist-c-cv');
       const tip = document.getElementById('hist-c-tip');
       if (!host) return;
       host.addEventListener('mousemove', e => {
-        if (!cGeom || !cSeries.length) return;
+        if (!cGeom || !cDays.length) return;
         const r = cv.getBoundingClientRect();
         const mx = e.clientX - r.left;
         let best = 0, bestD = Infinity;
-        cSeries.forEach((p, i) => {
-          const d = Math.abs(cGeom.X(p.t) - mx);
+        cDays.forEach((b, i) => {
+          const d = Math.abs(cGeom.X(b.t) - mx);
           if (d < bestD) { bestD = d; best = i; }
         });
-        cHover = best; drawContracts(cSeries);
-        const p = cSeries[best];
-        tip.innerHTML = `<b>${dtLabel(p.t)}</b><br>`
-          + `<span class="k">per unit</span> <span class="g">${fmtNum(p.unit, true, false)}</span><br>`
-          + `<span class="k">contract</span> <span class="v">${fmtNum(p.price, true, false)}</span>`
-          + (p.qty > 1 ? ` <span class="k">for ${intS(p.qty)}</span>` : '')
-          + (p.location ? `<br><span class="k">${escHtml(p.location)}</span>` : '');
-        // Clamped, like the net worth chart: centred and unwrapped, half of it
-        // used to hang outside the box at either edge.
+        cHover = best; drawContracts(cSource);
+        const b = cDays[best];
+        const range = b.high > b.low
+          ? `${fmtNum(b.low, true, false)} - ${fmtNum(b.high, true, false)}`
+          : fmtNum(b.low, true, false);
+        const where = Array.from(b.locations);
+        tip.innerHTML = `<b>${dtLabel(b.t)}</b><br>`
+          + `<span class="k">price paid</span> <span class="g">${range}</span><br>`
+          + `<span class="k">volume</span> <span class="v">${intS(b.vol)}</span>`
+          + ` <span class="k">in ${b.contracts} contract${b.contracts === 1 ? '' : 's'}</span>`
+          + (where.length === 1 ? `<br><span class="k">${escHtml(where[0])}</span>`
+             : where.length ? `<br><span class="k">${where.length} locations</span>` : '');
         const hw = tip.offsetWidth / 2, hh = tip.offsetHeight;
         tip.style.left = Math.max(hw + 2,
-          Math.min(host.clientWidth - hw - 2, cGeom.X(p.t))) + 'px';
-        tip.style.top = Math.max(hh * 1.2, cGeom.Y(p.unit)) + 'px';
+          Math.min(host.clientWidth - hw - 2, cGeom.X(b.t))) + 'px';
+        tip.style.top = Math.max(hh * 1.2, cGeom.Y(b.avg)) + 'px';
         tip.style.opacity = '1';
       });
       host.addEventListener('mouseleave', () => {
         cHover = null; tip.style.opacity = '0';
-        if (cSeries.length) drawContracts(cSeries);
+        if (cSource.length) drawContracts(cSource);
       });
     })();
 

@@ -301,6 +301,22 @@ def test_the_contracts_chart_has_a_hover_readout_like_the_others(client):
     assert 'id="hist-c-tip"' in html, "no tooltip element"
     assert "#hist-c-host .tip" in html, "no tooltip styling"
     assert "hist-c-host" in html and "mousemove" in html
-    # Nearest sale by pixel distance, not by index: contract sales are spaced by
+    # Nearest point by pixel distance, not by index: contract days are spaced by
     # when somebody bought, not evenly like daily market history.
     assert "bestD" in html
+
+
+def test_the_readout_is_per_day_not_per_sale(client):
+    """Reported next: a day can hold several sales and showing one of them
+    answered the wrong question. It now reports the RANGE of prices paid that day
+    and the units that moved - verified in a browser: a Large Skill Injector day
+    read "715 000 000 - 720 000 000, volume 8 in 5 contracts", and a day where
+    every sale went at one price shows a single figure rather than a fake range.
+    """
+    html = client.get("/prices").text
+    assert "function byDay(" in html, "sales must be grouped by day"
+    for bit in ("price paid", "volume", "b.low", "b.high", "b.vol", "b.contracts"):
+        assert bit in html, bit
+    # Volume-weighted, so a day that moved 40 units at one price is not averaged
+    # flat against one unit at another.
+    assert "b.isk / b.vol" in html
