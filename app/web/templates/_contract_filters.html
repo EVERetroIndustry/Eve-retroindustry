@@ -150,7 +150,7 @@
         <select id="cf-sort" {% if srv %}name="sort"{% endif %} class="form-select form-select-sm">
           {% for v, label in [('expires', 'Expires soonest'), ('issued', 'Newest first'),
                               ('price', 'Price, lowest'), ('price_hi', 'Price, highest'),
-                              ('reward', 'Reward, highest')] %}
+                              ('reward', 'Reward, highest'), ('sold', 'Sold, most recent')] %}
           <option value="{{ v }}" {% if f.get('sort', 'expires') == v %}selected{% endif %}>{{ label }}</option>
           {% endfor %}
         </select>

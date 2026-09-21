@@ -163,3 +163,68 @@ def test_the_endpoint_answers_for_an_item(client):
     assert d["type_id"] == 34
     assert [w["days"] for w in d["windows"]] == [7, 30]
     assert "with_items_30d" in d and "sales_30d" in d
+
+
+# ── prices actually paid ─────────────────────────────────────────────────────
+
+def test_only_single_item_contracts_give_a_unit_price():
+    """A bundle sells for one price covering everything in it, so dividing that
+    by one line's quantity would invent a number. Same rule the appraisal uses."""
+    conn = _db()
+    cs.record_sales(conn, ALLY, [
+        _contract(1, price=2e9),                     # one Rorqual
+        _contract(2, price=3e9)])                    # a Rorqual AND ore
+    _items(conn, 1, [(HULL, 1, 1)])
+    _items(conn, 2, [(HULL, 1, 1), (ORE, 5000, 1)])
+    cs.harvest_items(conn)
+    ser = cs.price_series(conn, HULL, 90)
+    assert [p["contract_id"] for p in ser] == [1]
+    assert ser[0]["unit"] == pytest.approx(2e9)
+
+
+def test_the_unit_price_divides_by_the_quantity():
+    conn = _db()
+    cs.record_sales(conn, ALLY, [_contract(1, price=1e9)])
+    _items(conn, 1, [(ORE, 4, 1)])
+    cs.harvest_items(conn)
+    ser = cs.price_series(conn, ORE, 90)
+    assert ser[0]["unit"] == pytest.approx(2.5e8)
+    assert ser[0]["price"] == pytest.approx(1e9) and ser[0]["qty"] == 4
+
+
+def test_the_series_runs_oldest_first_and_respects_the_window():
+    conn = _db()
+    cs.record_sales(conn, ALLY, [
+        _contract(1, done_days_ago=40, price=1e9),
+        _contract(2, done_days_ago=5, price=2e9),
+        _contract(3, done_days_ago=1, price=3e9)])
+    for cid in (1, 2, 3):
+        _items(conn, cid, [(HULL, 1, 1)])
+    cs.harvest_items(conn)
+    assert [p["contract_id"] for p in cs.price_series(conn, HULL, 30)] == [2, 3]
+    assert [p["contract_id"] for p in cs.price_series(conn, HULL, 90)] == [1, 2, 3]
+
+
+def test_a_free_contract_is_not_a_price():
+    """price 0 is a handover, not a sale at zero."""
+    conn = _db()
+    cs.record_sales(conn, ALLY, [_contract(1, price=0)])
+    _items(conn, 1, [(HULL, 1, 1)])
+    cs.harvest_items(conn)
+    assert cs.price_series(conn, HULL, 90) == []
+
+
+def test_the_endpoint_carries_the_price_series(client):
+    d = client.get("/api/contracts/sold?type_id=34").json()
+    assert "series" in d and isinstance(d["series"], list)
+
+
+def test_the_item_popup_keeps_the_three_quantities_apart(client):
+    """The first attempt put a contract figure into the market chart's subtitle,
+    which made neither readable. One tab, one quantity."""
+    html = client.get("/prices").text
+    for tab in ("chart", "market", "contracts"):
+        assert f'data-tab="{tab}"' in html, tab
+    assert 'id="hist-contracts-view"' in html
+    # ...and the contract tab must not be wired into the market subtitle again
+    assert "hist-contracts\"" not in html.replace('id="hist-contracts-view"', "")

@@ -135,6 +135,30 @@ def sold_quantities(conn: sqlite3.Connection, type_ids, days: float) -> dict[int
     return {r["type_id"]: r for r in sold_by_type(conn, days, type_ids, limit=10000)}
 
 
+def price_series(conn: sqlite3.Connection, type_id: int, days: float = 90.0) -> list[dict]:
+    """Prices actually paid for this item on completed contracts, newest last.
+
+    SINGLE-item contracts only, and that is not a shortcut: a bundle sells for one
+    price covering everything in it, so dividing it by the quantity of one line
+    would invent a number. It is the same rule the contract appraisal uses to
+    decide what a contract says about a type.
+
+    This is the figure the market cannot give for a capital. Measured: Jita sell
+    quoted a Thanatos at 2.70b while five contracts sold one for 1.80b to 2.16b.
+    """
+    ensure_sales_tables(conn)
+    since = time.time() - days * 86400.0
+    rows = conn.execute("""
+        SELECT s.completed_ts, s.price, i.quantity, s.contract_id
+        FROM contract_sales s JOIN contract_sale_items i ON i.contract_id = s.contract_id
+        WHERE i.type_id = ? AND s.completed_ts >= ? AND s.price > 0 AND i.quantity > 0
+          AND 1 = (SELECT COUNT(*) FROM contract_sale_items x
+                    WHERE x.contract_id = s.contract_id)
+        ORDER BY s.completed_ts""", (int(type_id), since)).fetchall()
+    return [{"t": int(ts), "unit": price / qty, "qty": qty, "price": price,
+             "contract_id": cid} for ts, price, qty, cid in rows]
+
+
 def sales_summary(conn: sqlite3.Connection, days: float) -> dict:
     """Totals plus, honestly, how much of the window we can actually speak for.
 

@@ -1215,6 +1215,9 @@ _ALLIANCE_SORTS = {
     "price":    "c.price ASC",
     "price_hi": "c.price DESC",
     "reward":   "c.reward DESC",
+    # For a finished contract the date that means anything is when it sold, not
+    # when the listing would have run out.
+    "sold":     "c.date_completed DESC",
 }
 
 
@@ -1297,7 +1300,7 @@ def search_alliance_contracts(conn: sqlite3.Connection, alliance_id: int, *,
     cols = ["contract_id", "type", "status", "price", "reward", "collateral", "buyout",
             "volume", "date_issued", "date_expired", "days_to_complete", "title",
             "start_name", "end_name", "issuer_name", "issuer_corp_name", "for_corp",
-            "source_corp_id"]
+            "source_corp_id", "date_completed"]
     sel = ", ".join(f"c.{c}" for c in cols)
     rows = conn.execute(
         f"SELECT DISTINCT {sel} FROM alliance_contracts c{joins} WHERE {cond}"

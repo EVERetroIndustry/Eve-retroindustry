@@ -91,7 +91,13 @@
         <th class="text-end" data-sort="collateral:num">Collateral{{ ic }}</th>
         <th class="text-end" data-sort="volume:num">Volume{{ ic }}</th>
         <th data-sort="issuer:text">Issuer{{ ic }}</th>
+        {# A finished contract's meaningful date is when it sold. The column swaps
+           rather than being added, so the table does not grow a mostly-empty one. #}
+        {% if f.get('status') == 'finished' %}
+        <th class="text-end" data-sort="sold:text">Sold{{ ic }}</th>
+        {% else %}
         <th class="text-end" data-sort="expires:text">Expires{{ ic }}</th>
+        {% endif %}
         <th data-sort="statuslabel:text">Status{{ ic }}</th>
       </tr></thead>
       <tbody>
@@ -103,7 +109,8 @@
             data-price="{{ c.price }}" data-reward="{{ c.reward }}"
             data-collateral="{{ c.collateral }}" data-volume="{{ c.volume }}"
             data-issuer="{{ c.issuer_name }}" data-location="{{ c.start_name }}"
-            data-title="{{ c.title }}" data-expires="{{ c.date_expired }}">
+            data-title="{{ c.title }}" data-expires="{{ c.date_expired }}"
+            data-sold="{{ c.date_completed or '' }}">
           <td><span class="badge {% if c.type == 'courier' %}badge-courier{% elif c.type == 'auction' %}badge-rxn{% elif c.type == 'loan' %}badge-neutral{% else %}badge-mfg{% endif %}" style="font-size:.65rem">{{ c.type_label }}</span></td>
           <td style="max-width:280px">
             {% if c.title %}<div class="text-truncate" title="{{ c.title }}">{{ c.title }}</div>{% endif %}
@@ -124,7 +131,12 @@
           <td class="text-muted text-truncate" style="max-width:140px;font-size:.78rem"
               title="{{ c.issuer_name }}{% if c.issuer_corp_name %} ({{ c.issuer_corp_name }}){% endif %}">
             {% if c.for_corp and c.issuer_corp_name %}{{ c.issuer_corp_name }}{% else %}{{ c.issuer_name }}{% endif %}</td>
-          <td class="text-end text-muted" style="white-space:nowrap;font-size:.75rem">{{ c.date_expired | replace('T',' ') | replace('Z','') | truncate(10,true,'') }}</td>
+          <td class="text-end text-muted" style="white-space:nowrap;font-size:.75rem">
+            {%- if f.get('status') == 'finished' -%}
+            {{ (c.date_completed or '-') | replace('T',' ') | replace('Z','') | truncate(16,true,'') }}
+            {%- else -%}
+            {{ c.date_expired | replace('T',' ') | replace('Z','') | truncate(10,true,'') }}
+            {%- endif -%}</td>
           <td><span class="text-muted" style="font-size:.72rem">{{ c.status_label }}</span></td>
         </tr>
         {% endfor %}

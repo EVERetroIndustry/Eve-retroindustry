@@ -282,11 +282,6 @@
         <div class="me-auto">
           <h6 class="modal-title mb-0" id="hist-title">Price history</h6>
           <div class="text-muted" style="font-size:.75rem" id="hist-sub">daily market history · region-wide</div>
-          {# The contract counterpart to vol/7d. Alliance only, and it says so:
-             ESI lists just the public contracts still on offer, so a public sale
-             is a row that vanished and nothing separates it from one the issuer
-             pulled. #}
-          <div class="text-muted" style="font-size:.72rem" id="hist-contracts"></div>
         </div>
         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
@@ -296,6 +291,7 @@
             <div class="btn-group btn-group-sm" id="hist-tabs">
               <button type="button" class="btn btn-outline-secondary active" data-tab="chart"><i class="bi bi-graph-up me-1"></i>Chart</button>
               <button type="button" class="btn btn-outline-secondary" data-tab="market"><i class="bi bi-bar-chart-steps me-1"></i>Market</button>
+              <button type="button" class="btn btn-outline-secondary" data-tab="contracts"><i class="bi bi-file-earmark-ruled me-1"></i>Contracts</button>
             </div>
             <select id="hist-market" class="form-select form-select-sm" style="width:auto;min-width:150px"></select>
           </div>
@@ -313,6 +309,28 @@
             <div class="tip" id="hist-tip"></div>
             <div id="hist-loading" class="text-muted small" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center">Loading…</div>
           </div>
+        </div>
+
+        {# One tab, one quantity. The market tabs show what the MARKET is doing;
+           this one shows what people actually paid on contracts - the only price
+           a capital has, since it is never on a Jita sell order. Alliance only:
+           ESI lists just the public contracts still on offer, so a public sale is
+           a row that vanished and nothing separates it from one the issuer pulled. #}
+        <div id="hist-contracts-view" style="display:none">
+          <div class="d-flex flex-wrap gap-4 align-items-end mb-2" id="hist-c-stats"></div>
+          <div class="position-relative" id="hist-c-host" style="min-height:240px">
+            <canvas id="hist-c-cv"></canvas>
+            <div id="hist-c-empty" class="text-muted small"
+                 style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:0 2rem"></div>
+          </div>
+          <div class="table-responsive mt-2" style="max-height:13rem;overflow-y:auto">
+            <table class="table tbl-compact table-sm mb-0 align-middle">
+              <thead><tr><th>Sold</th><th class="text-end">Price</th>
+                <th class="text-end">Qty</th><th class="text-end">Per unit</th></tr></thead>
+              <tbody id="hist-c-rows"></tbody>
+            </table>
+          </div>
+          <div class="text-muted mt-2" style="font-size:.72rem" id="hist-c-note"></div>
         </div>
 
         <div id="hist-market-view" style="display:none">
@@ -1079,6 +1097,7 @@
     // ── Chart / Market tabs ─────────────────────────────────────────────
     const chartView  = document.getElementById('hist-chart-view');
     const marketView = document.getElementById('hist-market-view');
+    const contractsView = document.getElementById('hist-contracts-view');
     const rangesEl   = document.getElementById('hist-ranges');
     const mktLoading = document.getElementById('hist-market-loading');
     const mktTables  = document.getElementById('hist-market-tables');
@@ -1097,12 +1116,129 @@
     function setTab(tab) {
       activeTab = tab;
       document.querySelectorAll('#hist-tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-      const isChart = tab === 'chart';
-      chartView.style.display  = isChart ? '' : 'none';
-      marketView.style.display = isChart ? 'none' : '';
-      rangesEl.style.display   = isChart ? '' : 'none';   // ranges only apply to the chart
-      if (isChart) { document.getElementById('hist-sub').textContent = marketName(+marketSel.value) + ' · region-wide daily history'; draw(); }
-      else loadMarket();
+      chartView.style.display     = tab === 'chart' ? '' : 'none';
+      marketView.style.display    = tab === 'market' ? '' : 'none';
+      contractsView.style.display = tab === 'contracts' ? '' : 'none';
+      // Ranges and the market picker belong to the market tabs; contract sales
+      // are not region-scoped and carry their own window.
+      rangesEl.style.display = tab === 'chart' ? '' : 'none';
+      marketSel.style.display = tab === 'contracts' ? 'none' : '';
+      if (tab === 'chart') {
+        document.getElementById('hist-sub').textContent =
+          marketName(+marketSel.value) + ' · region-wide daily history';
+        draw();
+      } else if (tab === 'market') {
+        loadMarket();
+      } else {
+        loadContracts();
+      }
+    }
+
+    // Prices actually paid on completed alliance contracts. Deliberately its own
+    // tab: the market tabs answer "what is the market doing", this one answers
+    // "what did people pay", and putting a line of one into the header of the
+    // other made neither readable.
+    let contractsKey = null;
+    function loadContracts() {
+      document.getElementById('hist-sub').textContent =
+        'completed alliance contracts · single-item only, so the price is the item\'s';
+      if (contractsKey === curType) return;
+      const stats = document.getElementById('hist-c-stats');
+      const rows = document.getElementById('hist-c-rows');
+      const empty = document.getElementById('hist-c-empty');
+      const note = document.getElementById('hist-c-note');
+      stats.innerHTML = ''; rows.innerHTML = ''; note.textContent = '';
+      empty.style.display = 'flex'; empty.textContent = 'Loading…';
+      fetch('/api/contracts/sold?type_id=' + encodeURIComponent(curType))
+        .then(r => r.json())
+        .then(d => {
+          contractsKey = curType;
+          const ser = d.series || [], w = d.windows || [];
+          const stat = (l, v) => `<div><div class="text-muted" style="font-size:.68rem;`
+            + `text-transform:uppercase;letter-spacing:.04em">${l}</div>`
+            + `<div class="fw-semibold" style="font-size:1rem">${v}</div></div>`;
+          stats.innerHTML = w.map(x => stat(`sold in ${x.days}d`,
+            x.quantity ? `${intS(x.quantity)} <span class="text-muted"
+              style="font-size:.75rem">in ${x.contracts} contract${x.contracts === 1 ? '' : 's'}</span>`
+            : '<span class="text-muted">none</span>')).join('');
+          if (ser.length) {
+            const last = ser[ser.length - 1].unit;
+            stats.innerHTML += stat('last price paid', fmtNum(last, true, false));
+          }
+          rows.innerHTML = ser.length
+            ? ser.slice().reverse().map(p => `<tr>
+                <td class="text-muted" style="font-size:.78rem">${dtLabel(p.t)}</td>
+                <td class="text-end">${fmtNum(p.price, true, false)}</td>
+                <td class="text-end text-muted">${intS(p.qty)}</td>
+                <td class="text-end fw-semibold">${fmtNum(p.unit, true, false)}</td></tr>`).join('')
+            : '';
+          if (!ser.length) {
+            empty.style.display = 'flex';
+            empty.textContent = w.some(x => x.quantity)
+              ? 'This item only sold inside bundles, where one price covers everything, '
+                + 'so there is no honest per-unit figure to draw.'
+              : 'No completed alliance contract held this item in the last 30 days.';
+          } else {
+            empty.style.display = 'none';
+            drawContracts(ser);
+          }
+          const bits = [];
+          if (d.sales_30d)
+            bits.push(`${intS(d.with_items_30d)} of ${intS(d.sales_30d)} sales in the `
+              + `last 30 days have had their contents read.`);
+          bits.push('Alliance contracts only: ESI lists just the public contracts still '
+            + 'on offer, so a public sale is a row that vanished and nothing tells it '
+            + 'apart from one the issuer withdrew.');
+          note.innerHTML = bits.join(' ')
+            + ` <a href="/contracts/alliance?status=finished&item=`
+            + `${encodeURIComponent(document.getElementById('hist-title').textContent)}`
+            + `&exact=1&sort=sold">See every completed contract of this item</a>.`;
+        })
+        .catch(() => { empty.style.display = 'flex'; empty.textContent = 'Could not read the sales history.'; });
+    }
+
+    function dtLabel(t) {
+      return new Date(t * 1000).toLocaleDateString('en-GB',
+        { day: '2-digit', month: 'short', year: '2-digit' });
+    }
+
+    function drawContracts(ser) {
+      const host = document.getElementById('hist-c-host');
+      const cv = document.getElementById('hist-c-cv');
+      const cx = cv.getContext('2d');
+      const w = host.clientWidth || 640, h = 240;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      cv.width = w * dpr; cv.height = h * dpr; cv.style.width = '100%'; cv.style.height = h + 'px';
+      cx.setTransform(dpr, 0, 0, dpr, 0, 0); cx.clearRect(0, 0, w, h);
+      const padL = 72, padR = 14, padT = 12, padB = 24;
+      const x0 = padL, x1 = w - padR, y0 = padT, y1 = h - padB;
+      const vals = ser.map(p => p.unit);
+      let lo = Math.min(...vals), hi = Math.max(...vals);
+      if (lo === hi) { lo *= 0.98; hi *= 1.02; }
+      const rg = hi - lo, yMin = lo - rg * 0.15, yMax = hi + rg * 0.15;
+      const t0 = ser[0].t, t1 = ser[ser.length - 1].t;
+      const X = t => ser.length === 1 ? (x0 + x1) / 2
+                   : x0 + (x1 - x0) * (t - t0) / Math.max(1, t1 - t0);
+      const Y = v => y1 - (y1 - y0) * (v - yMin) / (yMax - yMin);
+      cx.font = '11px system-ui,sans-serif'; cx.textBaseline = 'middle';
+      for (let i = 0; i <= 4; i++) {
+        const val = yMin + (yMax - yMin) * i / 4, y = Y(val);
+        cx.strokeStyle = 'rgba(255,255,255,0.06)'; cx.beginPath();
+        cx.moveTo(x0, y); cx.lineTo(x1, y); cx.stroke();
+        cx.fillStyle = '#8b949e'; cx.textAlign = 'right';
+        cx.fillText(fmtNum(val, true, true), x0 - 8, y);
+      }
+      cx.textAlign = 'center'; cx.fillStyle = '#8b949e';
+      cx.fillText(dtLabel(t0), x0 + 24, h - 8);
+      if (ser.length > 1) cx.fillText(dtLabel(t1), x1 - 24, h - 8);
+      if (ser.length > 1) {
+        cx.strokeStyle = '#e6b84a'; cx.lineWidth = 1.5; cx.beginPath();
+        ser.forEach((p, i) => { const x = X(p.t), y = Y(p.unit);
+          i ? cx.lineTo(x, y) : cx.moveTo(x, y); });
+        cx.stroke();
+      }
+      cx.fillStyle = '#e6b84a';
+      ser.forEach(p => { cx.beginPath(); cx.arc(X(p.t), Y(p.unit), 3.4, 0, 7); cx.fill(); });
     }
     document.getElementById('hist-tabs').addEventListener('click', e => {
       const b = e.target.closest('button'); if (b) setTab(b.dataset.tab);
@@ -1249,47 +1385,22 @@
         if (st && st.dataset.v) histRefSell['station'] = parseFloat(st.dataset.v);
       }
       document.getElementById('hist-title').textContent = name || ('Type #' + typeId);
-      loadContractSales(typeId);
       days = 90;
       document.querySelectorAll('#hist-ranges button').forEach(x => x.classList.toggle('active', x.dataset.days === '90'));
       populateMarkets();
       selectMarket();   // default to the last market the user picked
       // Always open on the Chart tab; force a fresh Market fetch next time it's opened.
       marketKey = null;
+      contractsKey = null;
       activeTab = 'chart';
       document.querySelectorAll('#hist-tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === 'chart'));
-      chartView.style.display = ''; marketView.style.display = 'none'; rangesEl.style.display = '';
+      chartView.style.display = ''; marketView.style.display = 'none';
+      contractsView.style.display = 'none'; rangesEl.style.display = '';
+      marketSel.style.display = '';
       bootstrap.Modal.getOrCreateInstance(modalEl).show();
       loadSeries();
     };
   })();
-
-  // Units that changed hands on completed alliance contracts, beside the market
-  // figure the chart already shows.
-  function loadContractSales(typeId) {
-    const el = document.getElementById('hist-contracts');
-    if (!el) return;
-    el.textContent = '';
-    fetch('/api/contracts/sold?type_id=' + encodeURIComponent(typeId))
-      .then(r => r.json())
-      .then(d => {
-        const w = (d.windows || []).filter(x => x.quantity > 0);
-        if (!w.length) {
-          el.textContent = d.sales_30d
-            ? 'alliance contracts: none of this item in the last 30 days'
-            : '';
-          return;
-        }
-        const parts = w.map(x => `${fmtNum(x.quantity)} in ${x.contracts} `
-          + `contract${x.contracts === 1 ? '' : 's'} (${x.days}d)`);
-        let note = 'alliance contracts: ' + parts.join(' · ');
-        // Only as complete as the contents we have actually read.
-        if (d.sales_30d && d.with_items_30d < d.sales_30d)
-          note += ` · contents read for ${d.with_items_30d} of ${d.sales_30d} sales`;
-        el.textContent = note;
-      })
-      .catch(() => { el.textContent = ''; });
-  }
 
   // Open the history chart when an item name is clicked or activated.
   function _openHistFromEl(el) {
