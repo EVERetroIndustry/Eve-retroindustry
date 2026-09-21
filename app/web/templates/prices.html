@@ -282,6 +282,11 @@
         <div class="me-auto">
           <h6 class="modal-title mb-0" id="hist-title">Price history</h6>
           <div class="text-muted" style="font-size:.75rem" id="hist-sub">daily market history · region-wide</div>
+          {# The contract counterpart to vol/7d. Alliance only, and it says so:
+             ESI lists just the public contracts still on offer, so a public sale
+             is a row that vanished and nothing separates it from one the issuer
+             pulled. #}
+          <div class="text-muted" style="font-size:.72rem" id="hist-contracts"></div>
         </div>
         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
@@ -1244,6 +1249,7 @@
         if (st && st.dataset.v) histRefSell['station'] = parseFloat(st.dataset.v);
       }
       document.getElementById('hist-title').textContent = name || ('Type #' + typeId);
+      loadContractSales(typeId);
       days = 90;
       document.querySelectorAll('#hist-ranges button').forEach(x => x.classList.toggle('active', x.dataset.days === '90'));
       populateMarkets();
@@ -1257,6 +1263,33 @@
       loadSeries();
     };
   })();
+
+  // Units that changed hands on completed alliance contracts, beside the market
+  // figure the chart already shows.
+  function loadContractSales(typeId) {
+    const el = document.getElementById('hist-contracts');
+    if (!el) return;
+    el.textContent = '';
+    fetch('/api/contracts/sold?type_id=' + encodeURIComponent(typeId))
+      .then(r => r.json())
+      .then(d => {
+        const w = (d.windows || []).filter(x => x.quantity > 0);
+        if (!w.length) {
+          el.textContent = d.sales_30d
+            ? 'alliance contracts: none of this item in the last 30 days'
+            : '';
+          return;
+        }
+        const parts = w.map(x => `${fmtNum(x.quantity)} in ${x.contracts} `
+          + `contract${x.contracts === 1 ? '' : 's'} (${x.days}d)`);
+        let note = 'alliance contracts: ' + parts.join(' · ');
+        // Only as complete as the contents we have actually read.
+        if (d.sales_30d && d.with_items_30d < d.sales_30d)
+          note += ` · contents read for ${d.with_items_30d} of ${d.sales_30d} sales`;
+        el.textContent = note;
+      })
+      .catch(() => { el.textContent = ''; });
+  }
 
   // Open the history chart when an item name is clicked or activated.
   function _openHistFromEl(el) {

@@ -552,7 +552,7 @@ def test_searching_for_something_that_is_not_there_is_an_empty_result_not_an_err
 
 # ── keeping the index filled without anyone clicking ──────────────────────────
 
-def test_contents_are_only_fetched_for_contracts_you_could_still_accept(conn):
+def test_contents_are_fetched_for_what_is_on_offer_and_what_sold(conn):
     """This is what makes it one run instead of three: on a real alliance the
     finished and deleted contracts outnumber the open ones five to one, and their
     contents answer no question anybody asks."""
@@ -564,7 +564,10 @@ def test_contents_are_only_fetched_for_contracts_you_could_still_accept(conn):
     _run_index(conn, [(CORP_A, "t1")], listings,
                items={i: [{"type_id": 34, "quantity": 1}] for i in range(1, 5)},
                item_calls=calls)
-    assert [c[1] for c in calls] == [1]
+    # Outstanding is what you can still accept; finished is what actually sold,
+    # which is what the contract sales history counts. Deleted and in_progress
+    # are neither, and asking for them only spends the rate-limit bucket.
+    assert sorted(c[1] for c in calls) == [1, 2]
     # And the same rule decides what is still considered missing.
     assert ch.contracts_missing_items(conn, ALLIANCE) == []
 

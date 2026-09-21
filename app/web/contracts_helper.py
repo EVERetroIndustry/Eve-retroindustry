@@ -799,7 +799,9 @@ _ITEM_FAIL_LIMIT = 25
 # deleted ones cannot be taken, so their contents answer no question anyone asks -
 # and skipping them is what turns "three runs over 45 minutes" into a single run:
 # on a real alliance that is 574 contracts instead of 2875.
-_ITEM_STATUSES = ("outstanding",)
+# Outstanding tells you what is FOR SALE; finished tells you what actually SOLD,
+# which is the question the sales history answers. Both need their contents read.
+_ITEM_STATUSES = ("outstanding", "finished")
 # The game server (not ESI) answers 520 ConStopSpamming when it has had enough for
 # the moment and says for how long - seconds, measured at ~64. Sleep it off and keep
 # going; only an exhausted ESI token bucket deserves waiting out a 15 minute window.
@@ -836,7 +838,10 @@ def ensure_alliance_contract_tables(conn: sqlite3.Connection) -> None:
             issuer_corp_id    INTEGER,
             issuer_name       TEXT,
             issuer_corp_name  TEXT,
-            for_corp          INTEGER
+            for_corp          INTEGER,
+            date_accepted     TEXT,
+            date_completed    TEXT,
+            acceptor_id       INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_ac_alliance ON alliance_contracts(alliance_id);
         CREATE INDEX IF NOT EXISTS idx_ac_status ON alliance_contracts(status);
@@ -857,6 +862,15 @@ def ensure_alliance_contract_tables(conn: sqlite3.Connection) -> None:
             at          REAL
         );
     """)
+    # ESI reports date_accepted, date_completed and acceptor_id on every finished
+    # contract (measured: 487 of 487) and the app was throwing all three away, so
+    # it could say a contract had sold but never when. Added to an existing
+    # database rather than only to new ones.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(alliance_contracts)")}
+    for col, decl in (("date_accepted", "TEXT"), ("date_completed", "TEXT"),
+                      ("acceptor_id", "INTEGER")):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE alliance_contracts ADD COLUMN {col} {decl}")
     conn.commit()
 
 
@@ -919,7 +933,12 @@ def contracts_missing_items(conn: sqlite3.Connection, alliance_id: int) -> list[
         f"   AND NOT EXISTS (SELECT 1 FROM alliance_contract_items i"
         f"                    WHERE i.contract_id = c.contract_id)"
         f"   AND NOT EXISTS (SELECT 1 FROM alliance_contract_items_absent a"
-        f"                    WHERE a.contract_id = c.contract_id)",
+        f"                    WHERE a.contract_id = c.contract_id)"
+        # Outstanding first: that is what the browser filters over and what a
+        # buyer can still act on. Finished ones only feed the sales history, so
+        # they can wait for whatever budget is left.
+        f" ORDER BY CASE WHEN c.status = 'outstanding' THEN 0 ELSE 1 END,"
+        f"          c.contract_id",
         (alliance_id, *_ITEM_STATUSES)).fetchall()]
 
 
@@ -932,8 +951,9 @@ def _store_alliance(conn: sqlite3.Connection, alliance_id: int, contracts: list[
         "INSERT OR REPLACE INTO alliance_contracts (contract_id, alliance_id, source_corp_id,"
         " type, status, price, reward, collateral, buyout, volume, date_issued, date_expired,"
         " days_to_complete, title, start_location_id, end_location_id, start_name, end_name,"
-        " issuer_id, issuer_corp_id, issuer_name, issuer_corp_name, for_corp)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " issuer_id, issuer_corp_id, issuer_name, issuer_corp_name, for_corp,"
+        " date_accepted, date_completed, acceptor_id)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         [(c.get("contract_id"), alliance_id, c.get("_corp_id") or 0,
           c.get("type") or "", c.get("status") or "",
           c.get("price") or 0.0, c.get("reward") or 0.0, c.get("collateral") or 0.0,
@@ -946,7 +966,9 @@ def _store_alliance(conn: sqlite3.Connection, alliance_id: int, contracts: list[
           c.get("issuer_id") or 0, c.get("issuer_corporation_id") or 0,
           names.get(c.get("issuer_id"), ""),
           names.get(c.get("issuer_corporation_id"), ""),
-          1 if c.get("for_corporation") else 0) for c in keep])
+          1 if c.get("for_corporation") else 0,
+          c.get("date_accepted") or "", c.get("date_completed") or "",
+          c.get("acceptor_id") or 0) for c in keep])
     # Drop items of contracts that fell out of the 30-day window, so the item table
     # stays bounded. Everything still listed keeps its items (they are immutable).
     conn.execute("DELETE FROM alliance_contract_items WHERE contract_id NOT IN"
@@ -955,6 +977,12 @@ def _store_alliance(conn: sqlite3.Connection, alliance_id: int, contracts: list[
         "INSERT OR REPLACE INTO alliance_contract_meta (alliance_id, indexed_at, contract_count)"
         " VALUES (?,?,?)", (alliance_id, time.time(), len(keep)))
     conn.commit()
+    # A completed contract is a sale, and this table is the only place it will
+    # survive: the rows above are replaced on every re-listing and ESI's window is
+    # 29 days, so without copying it out the history could never grow past that.
+    from app.web import contract_sales
+    contract_sales.record_sales(conn, alliance_id, keep)
+    contract_sales.harvest_items(conn)
 
 
 def _mark_items_absent(conn: sqlite3.Connection, contract_ids) -> None:
@@ -989,6 +1017,8 @@ def _store_alliance_items(conn: sqlite3.Connection, items_by_cid: dict[int, list
         "INSERT INTO alliance_contract_items (contract_id, type_id, quantity, is_included, is_bpc)"
         " VALUES (?,?,?,?,?)", rows)
     conn.commit()
+    from app.web import contract_sales
+    contract_sales.harvest_items(conn)
 
 
 async def list_and_store_alliance(conn: sqlite3.Connection, alliance_id: int,

@@ -48,6 +48,7 @@ from app.character import jobs as jobs_api
 from app.character import contracts as contracts_api
 from app.character import planets as planets_api
 from app.web import contracts_helper
+from app.web import contract_sales
 from app.web import deals as deals_api
 from app.character.assets import (
     fetch_assets, ensure_assets_table, assets_at_location,
@@ -7732,6 +7733,42 @@ async def api_public_index(request: Request, region_id: int):
         finally:
             conn.close()
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.get("/api/contracts/sold")
+async def api_contracts_sold(request: Request, type_id: int, days: str = "7,30"):
+    """How many units of a type changed hands on completed alliance contracts.
+
+    The contract counterpart to the vol/7d column on Prices, and the reason it is
+    alliance-only: ESI lists just the public contracts that are still on offer, so
+    a public sale is a row that quietly vanished and nothing tells it apart from
+    one the issuer withdrew. Alliance contracts arrive with `date_completed` on
+    every finished one, which is a fact rather than an inference.
+
+    Quantities, not ISK: a bundle sells for a single price covering everything in
+    it, so the money cannot honestly be split across the types, and the units can.
+    """
+    conn = get_conn()
+    try:
+        windows = []
+        for d in (days or "7,30").split(","):
+            try:
+                n = max(1.0, min(float(d), 3650.0))
+            except ValueError:
+                continue
+            got = contract_sales.sold_quantities(conn, [type_id], n).get(type_id)
+            windows.append({"days": int(n),
+                            "quantity": got["quantity"] if got else 0,
+                            "contracts": got["contracts"] if got else 0})
+        summary = contract_sales.sales_summary(conn, 30)
+        return {"type_id": type_id, "windows": windows,
+                # What the number can speak for: a sale whose contents were never
+                # read counts as a sale but contributes no units.
+                "sales_30d": summary["contracts"],
+                "with_items_30d": summary["with_items"],
+                "oldest": summary["oldest"]}
+    finally:
+        conn.close()
 
 
 @app.get("/api/contracts/public/items")
