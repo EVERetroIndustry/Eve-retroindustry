@@ -797,3 +797,68 @@ def test_nothing_is_marked_when_no_ship_is_remembered(client, app_module, assemb
     _forget_ships(app_module)
     html = _text(client, f"/assets?view={char_id}")
     assert "bi-rocket-takeoff-fill" not in html
+
+
+# ── the corp variant got the fix's USE but not its DEFINITION (found 2026-09-22)
+
+def test_corp_resolver_asks_only_about_ids_the_corp_owns(app_module):
+    """v0.9.21 changed BOTH resolvers to post `owned_ids`, but only defined that
+    name in the character one. The corp variant therefore raised NameError into
+    its bare `except`, custom_names came back empty, and every corp container
+    fell back to its bare type name - silently, for ten minor versions.
+
+    pyflakes names it in a second (see test_no_undefined_names.py); this test
+    pins the behaviour the fix is for.
+    """
+    import asyncio, json as _j
+
+    posted: list[list[int]] = []
+
+    class _Resp:
+        status_code = 200
+        def json(self): return [{"item_id": 111, "name": "Corp Hauler"}]
+
+    class _Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, **kw):
+            posted.append(_j.loads(kw["content"]))
+            return _Resp()
+
+    from app.web import main as m
+    orig = m.esi_client
+    m.esi_client = lambda *a, **k: _Client()
+    try:
+        ours = [{"item_id": 111, "type_id": MEGATHRON, "location_id": 60003760}]
+        got = asyncio.run(m._resolve_corp_container_names(
+            98000001, "tok", [111, 222, 333], corp_assets_raw=ours))
+    finally:
+        m.esi_client = orig
+
+    assert posted == [[111]], posted                  # only ids the corp owns
+    assert got == {111: ("Corp Hauler (Megathron)", 60003760)}
+
+
+def test_corp_resolver_skips_esi_entirely_when_it_owns_nothing(app_module):
+    import asyncio
+
+    called = []
+
+    class _Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **kw):
+            called.append(1)
+            raise AssertionError("must not call ESI with nothing to ask about")
+
+    from app.web import main as m
+    orig = m.esi_client
+    m.esi_client = lambda *a, **k: _Client()
+    try:
+        got = asyncio.run(m._resolve_corp_container_names(
+            98000001, "tok", [111, 222], corp_assets_raw=[]))
+    finally:
+        m.esi_client = orig
+
+    assert got == {}
+    assert not called

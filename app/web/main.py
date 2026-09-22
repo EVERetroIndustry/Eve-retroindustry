@@ -3845,6 +3845,15 @@ async def _resolve_corp_container_names(
     asset_map = {item["item_id"]: item for item in corp_assets_raw}
     result: dict[int, tuple[str, int]] = {}
 
+    # Same filter as the character variant (v0.9.21): ask this corporation only
+    # about items it actually owns. The v0.9.21 fix changed BOTH call sites to
+    # post owned_ids but only defined it in the character one, so this function
+    # raised NameError into a bare except and every corp container fell back to
+    # its bare type name for ten minor versions.
+    owned_ids = [cid for cid in container_ids if cid in asset_map]
+    if not owned_ids:
+        return result
+
     try:
         async with esi_client() as client:
             r = await client.post(
@@ -5235,15 +5244,25 @@ async def suggest(request: Request, q: str = ""):
 
 
 async def _bg_fetch_prices(type_ids: list[int]) -> None:
-    """Fire-and-forget: fetch Jita prices for the given type_ids using a fresh connection."""
-    import httpx as _httpx
+    """Fire-and-forget: fetch Jita prices for the given type_ids using a fresh connection.
+
+    This is how a type the user searched for but that has never been priced gets
+    its first price - new items from a patch reach the Prices table through here
+    rather than waiting for a full refresh.
+
+    It used to call `_esi_client()`, a name that exists nowhere in the app, so
+    every call raised NameError straight into a bare `except: pass` and the row
+    stayed empty forever. Failures are logged now: a fetch that quietly does
+    nothing is indistinguishable from an item that simply has no orders.
+    """
     from app.market.prices import fetch_jita_prices_bulk as _bulk
     conn = get_conn()
     try:
-        async with _esi_client() as client:
+        async with esi_client() as client:
             await _bulk(client, conn, type_ids, force=True)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[prices] background fetch failed for {len(type_ids)} type(s): "
+              f"{type(e).__name__}: {e}")
     finally:
         conn.close()
 
