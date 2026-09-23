@@ -13,6 +13,7 @@ import threading
 import time as _time
 import zipfile as _zipfile
 from pathlib import Path
+from urllib.request import pathname2url
 
 import httpx
 from app.esi.client import (
@@ -262,6 +263,30 @@ def _bundled_sde_path() -> str | None:
     return candidate if os.path.isfile(candidate) else None
 
 
+def _open_bundled_sde(path: str) -> sqlite3.Connection:
+    """Open the bundled sde_base.db for reading, including from read-only media.
+
+    An AppImage runs off a SquashFS mount, and `sqlite3.connect(path)` there
+    fails outright - the bundled database is in WAL mode, and WAL needs to
+    create a `-shm` file next to it, which read-only media will not allow. The
+    error is "unable to open database file" on SquashFS and "attempt to write a
+    readonly database" in a merely read-only directory; `mode=ro` fixes neither,
+    because the shared-memory file is still required.
+
+    `immutable=1` is the flag for exactly this: it promises SQLite the file
+    cannot change, so it skips locking and shared memory entirely.
+
+    This is why AppImage installs never picked up a new SDE: the failure landed
+    in the caller's `except`, printed to a stdout a windowed app does not have,
+    and every refresh quietly did nothing while fresh installs (a plain file
+    copy, no SQLite involved) worked fine.
+    """
+    try:
+        return sqlite3.connect(f"file:{pathname2url(path)}?immutable=1", uri=True)
+    except sqlite3.Error:
+        return sqlite3.connect(path)      # non-URI fallback (odd paths, old SQLite)
+
+
 def _refresh_sde_from_bundle(conn: sqlite3.Connection) -> int:
     """If the bundled sde_base.db has more types OR more groups than the user's
     eve_cache.db, replace the SDE tables with fresh data. Return the type count
@@ -292,7 +317,7 @@ def _refresh_sde_from_bundle(conn: sqlite3.Connection) -> int:
     # and the earlier variant could leave the SDE tables dropped on a partial
     # failure. We read EVERYTHING first (if the bundle is unreadable we don't even
     # touch the user's tables), and only then replace.
-    bsrc = sqlite3.connect(bundled)
+    bsrc = _open_bundled_sde(bundled)
     try:
         bundled_count, bundled_groups = _counts(bsrc)
 

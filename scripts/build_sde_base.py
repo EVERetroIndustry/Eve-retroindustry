@@ -110,6 +110,12 @@ def main() -> None:
     # left a 28 MB file with an unstamped sde_meta - which is how a stale bundle
     # would have shipped.
     conn_dst.commit()
+    # Ship it in DELETE journal mode, not WAL. The bundled copy is read-only
+    # media at runtime (an AppImage is a SquashFS mount), and opening a WAL
+    # database there fails outright: WAL needs a `-shm` file next to it, which
+    # read-only media will not allow. The app opens it with immutable=1 for the
+    # same reason; this is the other half of the same fix.
+    conn_dst.execute("PRAGMA journal_mode=DELETE")
     conn_dst.execute("VACUUM")
     conn_dst.close()
     conn_src.close()
