@@ -354,6 +354,7 @@
 const _PLAN_DATA = {{ result | tojson }};
 const _PLAN_STATION_ID = {{ form_station or 0 }};
 const _PLAN_STATION_NAME = {{ (form_station_name or '') | tojson }};
+const _PLAN_RXN_STATION_NAME = {{ (form_rxn_station_name or '') | tojson }};
 const _PLAN_FACILITY_TAX = {{ (result.fees.facility_tax if result.fees else 0) or 0 }};
 
 // Switch character: if the form has a product filled in, resubmit with the new
@@ -2369,6 +2370,19 @@ async function openSaveToProject() {
   }
 }
 
+// What the facility selects say right now, by label rather than by id - a
+// saved project has to still read correctly years later, when the rig list has
+// moved on. The numbers those choices produce (cost bonus, ME, TE) are already
+// inside the plan; this records WHICH setup produced them.
+function _facilityChoice(prefix) {
+  const sel = document.getElementById(prefix + '-structure-type');
+  const label = el => (el && el.selectedOptions[0]) ? el.selectedOptions[0].textContent.trim() : '';
+  const rigs = ['1', '2', '3']
+    .map(n => label(document.getElementById(`${prefix}-rig${n}-select`)))
+    .filter(t => t && !t.startsWith('- Slot'));
+  return { structure: label(sel), rigs };
+}
+
 async function _doSavePlan(projectId) {
   const r = await fetch(`/api/projects/${projectId}/add-plan`, {
     method: 'POST',
@@ -2377,6 +2391,8 @@ async function _doSavePlan(projectId) {
       plan_data: _PLAN_DATA,
       station_name: _PLAN_STATION_NAME,
       facility_tax: _PLAN_FACILITY_TAX,
+      rxn_station_name: _PLAN_RXN_STATION_NAME,
+      facility: { mfg: _facilityChoice('mfg'), rxn: _facilityChoice('rxn') },
     }),
   });
   const d = await r.json();

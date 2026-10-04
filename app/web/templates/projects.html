@@ -41,6 +41,17 @@
             <span><i class="bi bi-cart me-1"></i>{{ p.shopping_done }}/{{ p.shopping_total }} purchased</span>
             {% endif %}
           </div>
+          {# The totals as saved, straight from the stored columns. #}
+          {% if p.total_time or p.total_job_fee %}
+          <div class="d-flex gap-3 mt-1" style="font-size:.78rem">
+            {% if p.total_time %}
+            <span class="text-muted"><i class="bi bi-clock me-1"></i><span style="color:#e3b341">{{ p.total_time }}</span></span>
+            {% endif %}
+            {% if p.total_job_fee %}
+            <span class="text-muted"><i class="bi bi-receipt me-1"></i>{{ p.total_job_fee | isk0 }} fees</span>
+            {% endif %}
+          </div>
+          {% endif %}
         </div>
         <div class="mt-auto pt-2" style="font-size:.75rem;color:#6e7681">
           {{ p.updated_at | int | format_date }}

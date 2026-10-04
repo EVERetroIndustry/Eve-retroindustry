@@ -42,6 +42,32 @@
       <div class="text-muted small">purchased</div>
     </div>
   </div>
+  {# Everything below is the figure this project was SAVED with. Ticking jobs
+     off never changes it - that is what makes a saved project worth having. #}
+  <div class="col-auto">
+    <div class="card px-3 py-2 text-center" style="min-width:130px">
+      <div class="fw-bold fs-5" style="color:#e3b341">{{ project.total_time or '-' }}</div>
+      <div class="text-muted small">job time</div>
+    </div>
+  </div>
+  <div class="col-auto">
+    <div class="card px-3 py-2 text-center" style="min-width:150px">
+      <div class="fw-bold fs-5">{{ project.total_job_fee | isk0 }}</div>
+      <div class="text-muted small">install fees</div>
+    </div>
+  </div>
+  <div class="col-auto">
+    <div class="card px-3 py-2 text-center" style="min-width:150px">
+      <div class="fw-bold fs-5">{{ project.full_mat_cost | isk0 }}</div>
+      <div class="text-muted small">materials</div>
+    </div>
+  </div>
+  <div class="col-auto">
+    <div class="card px-3 py-2 text-center" style="min-width:150px">
+      <div class="fw-bold fs-5" style="color:#58a6ff">{{ project.total_buy_cost | isk0 }}</div>
+      <div class="text-muted small">still to buy</div>
+    </div>
+  </div>
 </div>
 
 {# ──── Items to Manufacture ──── #}
@@ -58,6 +84,8 @@
           <th class="text-end">Quantity</th>
           <th>ME / TE</th>
           <th>Station</th>
+          <th class="text-end">Job time</th>
+          <th class="text-end">Install fees</th>
           <th class="text-center" style="width:80px">Done</th>
         </tr>
       </thead>
@@ -76,6 +104,8 @@
             <span style="color:#e3b341">TE {{ plan.te }}</span>
           </td>
           <td class="text-muted small">{{ plan.station_name or '-' }}</td>
+          <td class="text-end" style="color:#e3b341">{{ plan.total_time or '-' }}</td>
+          <td class="text-end">{{ plan.total_job_fee | isk0 }}</td>
           <td class="text-center">
             <div class="form-check d-flex justify-content-center mb-0">
               <input class="form-check-input" type="checkbox" style="cursor:pointer;width:1.2em;height:1.2em"
@@ -90,6 +120,64 @@
   </div>
 </div>
 
+{# ──── What each plan was computed with ────
+   Kept because the numbers above mean nothing without it: the install fee
+   depends on the system cost index of that day and on the structure's bonus,
+   and both move. This is the record of what was true when the plan was saved. #}
+{% for plan in project.plans %}
+<div class="card mb-3">
+  <div class="card-header py-2 d-flex flex-wrap gap-2 align-items-baseline" style="font-size:.85rem;background:#161b22">
+    <span class="fw-semibold">{{ plan.product_name }} &times;{{ plan.quantity }}</span>
+    {% if plan.blueprint_kind %}<span class="badge bg-secondary">{{ plan.blueprint_kind }}</span>{% endif %}
+    {% if plan.mode %}<span class="text-muted small">{{ plan.mode }} build</span>{% endif %}
+    {# age_short says "now" for anything under a minute, and "saved now ago" is
+       not a sentence. #}
+    {% set _age = plan.saved_at | age_short %}
+    <span class="ms-auto text-muted" style="font-size:.72rem">
+      saved {{ _age }}{% if _age not in ('now', '-') %} ago{% endif %}{% if plan.app_version %} &middot; v{{ plan.app_version }}{% endif %}
+    </span>
+  </div>
+  <div class="card-body py-2">
+    <div class="row g-3">
+      {% for cfg, label, icon in [(plan.mfg, 'Manufacturing', 'bi-hammer'), (plan.rxn, 'Reaction', 'bi-moisture')] %}
+      {% if label == 'Manufacturing' or plan.sep_rxn_station %}
+      <div class="col-12 col-lg-6">
+        <div class="text-uppercase text-muted mb-1" style="font-size:.68rem;letter-spacing:.05em">
+          <i class="bi {{ icon }} me-1"></i>{{ label }}
+        </div>
+        <div class="small">
+          <div class="fw-semibold">{{ cfg.station or 'not recorded' }}</div>
+          <div class="text-muted" style="font-size:.78rem">
+            {% if cfg.structure %}{{ cfg.structure }}{% endif %}
+            {%- if cfg.rigs %} &middot; {{ cfg.rigs | join(' + ') }}{% endif %}
+          </div>
+          <div class="d-flex flex-wrap gap-3 mt-1 font-monospace" style="font-size:.76rem">
+            <span class="text-muted">tax <span class="text-body">{{ cfg.tax if cfg.tax is not none else '-' }}%</span></span>
+            <span class="text-muted">index <span class="text-body">{% if cfg.sci is not none %}{{ (cfg.sci * 100) | round(2) }}%{% else %}-{% endif %}</span></span>
+            <span class="text-muted">cost bonus <span class="text-body">{{ cfg.cost_bonus_pct if cfg.cost_bonus_pct is not none else 0 }}%</span></span>
+            <span class="text-muted">ME <span style="color:#3fb950">-{{ cfg.me_pct if cfg.me_pct is not none else 0 }}%</span></span>
+            <span class="text-muted">TE <span style="color:#e3b341">-{{ cfg.te_pct if cfg.te_pct is not none else 0 }}%</span></span>
+          </div>
+        </div>
+      </div>
+      {% endif %}
+      {% endfor %}
+    </div>
+    <div class="d-flex flex-wrap gap-4 mt-2 pt-2" style="border-top:1px dashed #21262d;font-size:.8rem">
+      <span class="text-muted">job time <span class="fw-semibold" style="color:#e3b341">{{ plan.total_time or '-' }}</span></span>
+      <span class="text-muted">install fees <span class="fw-semibold text-body">{{ plan.total_job_fee | isk0 }}</span></span>
+      <span class="text-muted">materials <span class="fw-semibold text-body">{{ plan.full_mat_cost | isk0 }}</span></span>
+      <span class="text-muted">still to buy <span class="fw-semibold" style="color:#58a6ff">{{ plan.total_buy | isk0 }}</span></span>
+      {% if plan.profit_stock is not none %}
+      <span class="text-muted">profit with stock
+        <span class="fw-semibold" style="color:{% if plan.profit_stock >= 0 %}#3fb950{% else %}#f85149{% endif %}">{{ plan.profit_stock | isk0 }}</span></span>
+      {% endif %}
+      {% if plan.implant_pct %}<span class="text-muted">implant <span class="text-body">-{{ plan.implant_pct }}% time</span></span>{% endif %}
+    </div>
+  </div>
+</div>
+{% endfor %}
+
 {# ──── Manufacturing Steps ──── #}
 {% if project.steps %}
 <h6 class="text-muted text-uppercase mb-2" style="font-size:.75rem;letter-spacing:.06em">
@@ -103,6 +191,15 @@
     </span>
     {% if step.all_done %}
     <span class="text-success small"><i class="bi bi-check-circle me-1"></i>Done</span>
+    {% endif %}
+    {# "Longest job" rather than a step duration: it is a fact about one job and
+       claims nothing about how many of them you can run at once. The plan's own
+       total above is the stored one, not a sum of these. #}
+    {% if step.longest %}
+    <span class="text-muted small ms-auto" style="font-size:.76rem">
+      longest job <span style="color:#e3b341">{{ step.longest }}</span>
+      &middot; fees <span class="text-body">{{ step.job_fee | isk0 }}</span>
+    </span>
     {% endif %}
   </div>
   <div class="accordion" id="step{{ step.step }}acc">
@@ -128,6 +225,10 @@
           {% endif %}
           <span class="fw-semibold me-3" style="flex:0 0 32ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ job.name }}</span>
           <span class="text-muted me-3" style="flex:0 0 10ch;font-variant-numeric:tabular-nums">×{{ job.quantity | int | format_number }}</span>
+          <span class="me-3" style="flex:0 0 12ch;font-variant-numeric:tabular-nums;color:#e3b341;font-size:.82rem"
+                title="Job duration as computed when this plan was saved">{{ job.duration or '-' }}</span>
+          <span class="text-muted me-3" style="flex:0 0 14ch;font-variant-numeric:tabular-nums;font-size:.82rem"
+                title="Install fee as computed when this plan was saved">{{ job.job_fee | isk0 }}</span>
           <span class="text-muted small me-2" style="flex:0 0 8ch">{{ job.runs }} run{% if job.runs != 1 %}s{% endif %}</span>
         {% if job.inputs %}
         </button>

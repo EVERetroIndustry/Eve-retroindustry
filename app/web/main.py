@@ -5107,10 +5107,14 @@ async def api_project_add_plan(project_id: int, request: Request):
     if not row:
         conn.close()
         return {"ok": False, "error": "Project not found"}
+    facility = body.get("facility")
     plan_id = add_plan_to_project(
         conn, project_id, plan_data,
         body.get("station_name", ""),
         float(body.get("facility_tax", 0)),
+        rxn_station_name=body.get("rxn_station_name", "") or "",
+        facility=facility if isinstance(facility, dict) else None,
+        app_version=APP_VERSION,
     )
     conn.close()
     return {"ok": True, "plan_id": plan_id}
