@@ -67,6 +67,7 @@ from app.manufacturing.planner import (
 from app.bom.resolver import BOMResolver
 from app.market.prices import ensure_price_table, fetch_station_volumes, get_cached_station_volumes, get_station_volumes_any_age, fetch_structure_market, TRADE_HUBS, JITA_REGION, HISTORY_ENDPOINT_URL, fill_region_volumes, region_volume_coverage
 from app.web.prices_helper import (
+    _apply_discovered_types,
     get_prices_for_ids,
     get_cached_prices_for_ids,
     get_price_cache_stats,
@@ -396,6 +397,14 @@ def _refresh_sde_from_bundle(conn: sqlite3.Connection) -> int:
             ph = ",".join("?" * len(rows[0]))
             conn.executemany(f"INSERT INTO {table} VALUES ({ph})", rows)
     conn.commit()
+    # sde_types was just dropped and rebuilt, which also threw away the types
+    # the app had learned from the market because the static data did not carry
+    # them. Put back the ones this bundle still lacks; the ones it now has are
+    # dropped from the discovery table, because official data beats ours.
+    try:
+        _apply_discovered_types(conn)
+    except Exception as exc:
+        print(f"[sde] re-applying discovered types failed: {exc}", flush=True)
     return conn.execute("SELECT COUNT(*) FROM sde_types").fetchone()[0]
 
 

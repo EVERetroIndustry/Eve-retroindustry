@@ -206,6 +206,131 @@ def set_custom_price(conn: sqlite3.Connection, type_id: int, price: float | None
     conn.commit()
 
 
+# ---------------------------------------------------------------------------
+# Types the static data does not know about yet
+# ---------------------------------------------------------------------------
+# The app's idea of "everything tradeable in EVE" came only from the bundled
+# SDE, and CCP publishes that on its own schedule - event boosters, new
+# accelerators and the like trade in Jita for weeks before they appear in it.
+# Measured on a live Jita order book: 19 281 type_ids on offer, of which **97
+# were entirely unknown** to the SDE. One of them, Extended 'Radiance' Cerebral
+# Accelerator (96544), had 41 orders with a cheapest sell of 69.79M - an item
+# the app simply could not show, twice reported by the user.
+#
+# The order book is the authority on what trades, so that is what we learn from.
+# Discovery is free: those pages are downloaded by the refresh anyway, and
+# /universe/types/{id} carries no rate-limit group (checked in the live spec),
+# so the only cost is one call per genuinely new id, once.
+
+_DISCOVER_SEM = asyncio.Semaphore(20)
+_DISCOVER_CAP = 500          # per refresh; a sane bound if ESI ever floods us
+
+
+def ensure_discovered_types_table(conn: sqlite3.Connection) -> None:
+    """Durable record of types learned from the market rather than the SDE.
+
+    Kept separately from sde_types because _refresh_sde_from_bundle REPLACES
+    that table wholesale - without this, every SDE update would silently throw
+    the discoveries away and the items would vanish again until the next full
+    price refresh.
+    """
+    conn.execute("""CREATE TABLE IF NOT EXISTS discovered_types (
+        type_id         INTEGER PRIMARY KEY,
+        name            TEXT NOT NULL,
+        group_id        INTEGER,
+        market_group_id INTEGER,
+        published       INTEGER NOT NULL DEFAULT 1,
+        volume          REAL,
+        packaged_volume REAL,
+        discovered_at   REAL NOT NULL
+    )""")
+    conn.commit()
+
+
+def _apply_discovered_types(conn: sqlite3.Connection) -> int:
+    """Put discovered types into sde_types for anything the bundle still lacks.
+
+    Everything that reads the type catalogue - the Prices table, the search,
+    the suggest box, the refresh set - goes through sde_types, so writing there
+    means none of them need to know this mechanism exists. Rows the SDE has
+    since gained are dropped: the official data wins over our guess.
+    """
+    ensure_discovered_types_table(conn)
+    rows = conn.execute(
+        "SELECT type_id, name, group_id, market_group_id, published, volume, packaged_volume"
+        "  FROM discovered_types").fetchall()
+    if not rows:
+        return 0
+    applied = 0
+    superseded: list[int] = []
+    for r in rows:
+        if conn.execute("SELECT 1 FROM sde_types WHERE type_id=?", (r[0],)).fetchone():
+            superseded.append(r[0])
+            continue
+        conn.execute(
+            "INSERT INTO sde_types (type_id, name, group_id, published, market_group_id,"
+            " volume, packaged_volume) VALUES (?,?,?,?,?,?,?)",
+            (r[0], r[1], r[2], r[4], r[3], r[5], r[6]))
+        applied += 1
+    if superseded:
+        ph = ",".join("?" * len(superseded))
+        conn.execute(f"DELETE FROM discovered_types WHERE type_id IN ({ph})", superseded)
+    conn.commit()
+    return applied
+
+
+async def discover_market_types(conn: sqlite3.Connection, seen_type_ids) -> list[int]:
+    """Learn the types that trade but are missing from the static data.
+
+    Returns the ids newly added, so the caller can price them in the same pass -
+    their orders are already in the bulk payload.
+    """
+    ensure_discovered_types_table(conn)
+    known = {r[0] for r in conn.execute("SELECT type_id FROM sde_types")}
+    unknown = sorted(set(seen_type_ids) - known)[:_DISCOVER_CAP]
+    if not unknown:
+        return []
+
+    async def _one(client, tid: int):
+        async with _DISCOVER_SEM:
+            try:
+                r = await client.get(f"https://esi.evetech.net/latest/universe/types/{tid}/",
+                                     params={"datasource": "tranquility"}, timeout=15)
+            except Exception:
+                return None
+        if r.status_code != 200:
+            return None                       # 404 = gone again; just skip it
+        try:
+            return tid, r.json()
+        except Exception:
+            return None
+
+    async with esi_client() as client:
+        results = await asyncio.gather(*[_one(client, t) for t in unknown])
+
+    now = time.time()
+    added: list[int] = []
+    for res in results:
+        if not res:
+            continue
+        tid, d = res
+        name = (d.get("name") or "").strip()
+        if not name:
+            continue                          # a type with no name is nothing we can show
+        conn.execute(
+            "INSERT OR REPLACE INTO discovered_types (type_id, name, group_id, market_group_id,"
+            " published, volume, packaged_volume, discovered_at) VALUES (?,?,?,?,?,?,?,?)",
+            (tid, name, d.get("group_id"), d.get("market_group_id"),
+             1 if d.get("published") else 0, d.get("volume"), d.get("packaged_volume"), now))
+        added.append(tid)
+    conn.commit()
+    if added:
+        _apply_discovered_types(conn)
+        print(f"[prices] learned {len(added)} type(s) from the market that the "
+              f"static data does not have yet", flush=True)
+    return added
+
+
 def _persist_bulk_orders(
     conn: sqlite3.Connection,
     bulk: dict[int, dict],
@@ -342,6 +467,9 @@ async def refresh_jita_prices_all(conn: sqlite3.Connection, type_ids: list[int])
     wanted = set(type_ids)
     async with esi_client() as client:
         bulk = await fetch_region_orders_bulk(client, JITA_REGION)
+    # Anything on the order book that the static data has never heard of is
+    # learned here and priced in this same pass - its orders are already in hand.
+    wanted |= set(await discover_market_types(conn, bulk.keys()))
     refreshed, traded = _persist_bulk_orders(conn, bulk, wanted)
     if traded:
         await _fill_volumes(conn, traded)
@@ -380,6 +508,7 @@ async def stream_jita_refresh(conn: sqlite3.Connection, type_ids: list[int]):
         await asyncio.sleep(0.5)
     await task
 
+    wanted |= set(await discover_market_types(conn, bulk_holder.keys()))
     refreshed, traded = _persist_bulk_orders(conn, bulk_holder, wanted)
 
     # Phase 2 - 7-day Jita volumes for everything that actually trades.
