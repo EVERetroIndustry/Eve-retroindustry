@@ -120,7 +120,7 @@ def liquid_types(conn: sqlite3.Connection, days: int = LIQUIDITY_DAYS) -> set[in
             "SELECT type_id, data_json FROM price_history_cache WHERE region_id = ?",
             (JITA_REGION,)).fetchall()
     except sqlite3.OperationalError:
-        return out
+        rows = []
     for tid, blob in rows:
         try:
             for d in json.loads(blob):
@@ -129,23 +129,65 @@ def liquid_types(conn: sqlite3.Connection, days: int = LIQUIDITY_DAYS) -> set[in
                     break
         except (ValueError, TypeError):
             continue
+    out |= _contract_traded_types(conn, days)
     return out
 
 
-def types_needing_history(conn: sqlite3.Connection) -> list[int]:
-    """Contracted types whose daily history has never been fetched.
+def _contract_traded_types(conn: sqlite3.Connection, days: int) -> set[int]:
+    """Types that changed hands on a COMPLETED contract inside the window.
 
-    Measured: 6659 of them on a real index, fetched in 12.2 s at 544 types/s. The
-    history endpoint is public and carries no token-bucket limit, and the cache is
-    the one the price chart already uses.
+    The market cannot answer for everything. A supercarrier or a titan may not
+    be put on the market at all, so it has no history and never will - and those
+    are exactly the items this list was built for, since a capital is the
+    biggest contract in the game. Judging them by market history meant every
+    contract holding one was thrown away as illiquid. Measured on a real index:
+    a Wyvern worth 42.95b sat in a contract 9.2 % under the cheapest offer
+    around and never appeared.
+
+    COMPLETED sales, deliberately, not outstanding offers. An offer is an asking
+    price, which is the very thing the liquidity test exists to distrust; a
+    finished contract is somebody actually paying.
     """
     try:
+        return {r[0] for r in conn.execute(
+            "SELECT DISTINCT i.type_id FROM contract_sale_items i"
+            "  JOIN contract_sales s ON s.contract_id = i.contract_id"
+            " WHERE s.completed_ts >= ?", (time.time() - days * 86400,))}
+    except sqlite3.OperationalError:
+        return set()               # alliance sales have never been recorded
+
+
+def types_needing_history(conn: sqlite3.Connection,
+                          days: int = LIQUIDITY_DAYS) -> list[int]:
+    """Contracted types whose daily history is missing OR too old to answer.
+
+    Measured: 6659 missing ones on a real index, fetched in 12.2 s at 544
+    types/s. The history endpoint is public and carries no token-bucket limit,
+    and the cache is the one the price chart already uses.
+
+    Two things this used to get wrong, both of which quietly shrank the Deals
+    list over time:
+
+      * it asked only for types with NO row at all, so a cached history was
+        never refreshed. Once the window slid past the day it was fetched, the
+        item read as "did not trade" however briskly it was trading. Measured a
+        month after a fetch: Pyerite and Warp Scrambler II both counted as
+        illiquid;
+      * it looked only at public contract items, so a type that appears solely
+        in alliance contracts never had its history fetched even once.
+    """
+    stale_before = time.time() - days * 86400
+    try:
         return [r[0] for r in conn.execute("""
-            SELECT DISTINCT i.type_id FROM public_contract_items i
+            SELECT DISTINCT i.type_id FROM (
+                     SELECT type_id FROM public_contract_items
+                     UNION SELECT type_id FROM alliance_contract_items) i
             JOIN market_price_cache p ON p.type_id = i.type_id
-            WHERE p.sell_price IS NOT NULL AND i.type_id NOT IN
-                  (SELECT type_id FROM price_history_cache WHERE region_id = ?)
-            """, (JITA_REGION,))]
+            WHERE p.sell_price IS NOT NULL
+              AND i.type_id NOT IN (
+                  SELECT type_id FROM price_history_cache
+                   WHERE region_id = ? AND cached_at >= ?)
+            """, (JITA_REGION, stale_before))]
     except sqlite3.OperationalError:
         return []
 

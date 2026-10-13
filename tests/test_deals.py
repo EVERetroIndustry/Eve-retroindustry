@@ -43,6 +43,11 @@ def _db() -> sqlite3.Connection:
         CREATE TABLE sov_map_cache (system_id INTEGER PRIMARY KEY, alliance_id INTEGER,
             faction_id INTEGER, cached_at REAL);
         CREATE TABLE sde_types (type_id INTEGER PRIMARY KEY, name TEXT, group_id INTEGER);
+        CREATE TABLE contract_sales (contract_id INTEGER PRIMARY KEY, alliance_id INTEGER,
+            completed_ts REAL, type TEXT, price REAL, volume REAL, issuer_id INTEGER,
+            acceptor_id INTEGER, items_read INTEGER, location_id INTEGER, location TEXT);
+        CREATE TABLE contract_sale_items (contract_id INTEGER, type_id INTEGER,
+            is_bpc INTEGER, quantity INTEGER);
     """)
     conn.commit()
     deals.drop_cache()
@@ -64,6 +69,16 @@ def _traded(conn, type_id, days_ago=1, vol=100):
     conn.execute("INSERT OR REPLACE INTO price_history_cache VALUES (?,?,?,?)",
                  (deals.JITA_REGION, type_id,
                   json.dumps([{"d": day, "avg": 1.0, "vol": vol}]), time.time()))
+    conn.commit()
+
+
+def _contract_sold(conn, type_id, days_ago=1, cid=None):
+    """Record that this type actually changed hands on a completed contract."""
+    cid = cid if cid is not None else 500000 + type_id * 10 + days_ago
+    conn.execute("INSERT OR REPLACE INTO contract_sales (contract_id, alliance_id,"
+                 " completed_ts, type, price, items_read) VALUES (?,?,?,?,?,1)",
+                 (cid, 99000001, time.time() - days_ago * 86400, "item_exchange", 1.0))
+    conn.execute("INSERT INTO contract_sale_items VALUES (?,?,0,1)", (cid, type_id))
     conn.commit()
 
 
@@ -487,3 +502,90 @@ def test_the_checkbox_is_on_the_page(client, seeded_deal):
     html = client.get("/contracts/deals").text
     assert 'name="dockable"' in html
     assert client.get("/contracts/deals?dockable=1").status_code == 200
+
+
+# ── things the market cannot speak for ───────────────────────────────────────
+
+def test_a_hull_that_only_ever_sells_on_contracts_still_counts_as_traded():
+    """Reported: a Wyvern worth 42.95b sat in an alliance contract 9.2 % under
+    the cheapest offer around, and Deals never showed it.
+
+    A supercarrier cannot be put on the market at all, so it has no daily
+    history and never will. Judging it by market history threw away every
+    contract holding one - which is most of the point of the list, since a
+    capital is the biggest contract in the game.
+    """
+    conn = _db()
+    assert HULL not in deals.liquid_types(conn)     # nothing has been traded yet
+    _contract_sold(conn, HULL, days_ago=3)
+    assert HULL in deals.liquid_types(conn)
+
+
+def test_being_on_offer_is_not_the_same_as_having_sold():
+    """The distinction the whole rule rests on. An outstanding contract is an
+    asking price, which is exactly what the liquidity test exists to distrust;
+    only a finished one is somebody actually paying."""
+    conn = _db()
+    _price(conn, ORE, 10.0)
+    _traded(conn, ORE)
+    _alliance(conn, 7001, 40.0, [(HULL, 1)])       # a hull ON OFFER, never sold
+    _price(conn, HULL, 50.0)
+    assert HULL not in deals.liquid_types(conn)
+
+
+def test_a_sale_from_before_the_window_does_not_count():
+    conn = _db()
+    _contract_sold(conn, HULL, days_ago=deals.LIQUIDITY_DAYS + 5)
+    assert HULL not in deals.liquid_types(conn)
+
+
+def test_the_contract_holding_it_is_then_found(app_module):
+    """End to end, in the shape that was reported: contents worth more than the
+    asking price, the valuable line sellable only by contract."""
+    conn = _db()
+    _price(conn, ORE, 1000.0)
+    _traded(conn, ORE)
+    # The hull's reference comes from the cheapest single-item offer, as always.
+    _alliance(conn, 7100, 42_950.0, [(HULL, 1)])
+    _alliance(conn, 7101, 40_000.0, [(HULL, 1), (ORE, 3)])
+
+    deals.drop_cache()
+    before = {r["contract_id"] for r in deals.find_deals(conn, 0.05, force=True)[0]}
+    assert 7101 not in before, "without a recorded sale it is illiquid, as before"
+
+    _contract_sold(conn, HULL, days_ago=2)
+    _contract_sold(conn, ORE, days_ago=2)
+    deals.drop_cache()
+    rows, _ = deals.find_deals(conn, 0.05, force=True)
+    found = {r["contract_id"]: r for r in rows}
+    assert 7101 in found
+    assert found[7101]["discount"] > 0.05
+
+
+# ── history that quietly went out of date ────────────────────────────────────
+
+def test_history_older_than_the_window_is_fetched_again():
+    """It used to ask only for types with NO cached history, so a fetched one was
+    never refreshed. Once the window slid past the day of the fetch, the item
+    read as "did not trade" however briskly it was trading - measured a month
+    on, Pyerite and Warp Scrambler II both counted as illiquid.
+    """
+    conn = _db()
+    _price(conn, ORE, 10.0)
+    _public(conn, 7200, 1.0, [(ORE, 1)])
+    _traded(conn, ORE)                                  # fresh: nothing to do
+    assert ORE not in deals.types_needing_history(conn)
+
+    conn.execute("UPDATE price_history_cache SET cached_at = ?",
+                 (time.time() - (deals.LIQUIDITY_DAYS + 2) * 86400,))
+    conn.commit()
+    assert ORE in deals.types_needing_history(conn)
+
+
+def test_a_type_seen_only_in_alliance_contracts_gets_its_history_fetched():
+    """It looked at public contract items alone, so a type that appears solely
+    in alliance contracts never had its history fetched even once."""
+    conn = _db()
+    _price(conn, HULL, 1000.0)
+    _alliance(conn, 7300, 900.0, [(HULL, 1)])
+    assert HULL in deals.types_needing_history(conn)
