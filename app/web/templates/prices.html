@@ -215,7 +215,7 @@
         <tr>
           <th style="width:36px"></th>
           <th class="sortable" data-col="1" data-sort-type="text" style="cursor:pointer;user-select:none">Name <span class="sort-indicator"></span></th>
-          <th class="text-end sortable pricecol pm-sell ph-jita" data-col="2" data-sort-type="num" style="cursor:pointer;user-select:none">Jita sell <span class="sort-indicator"></span></th>
+          <th class="text-end sortable pricecol pm-sell ph-jita" data-col="2" data-sort-type="num" style="cursor:pointer;user-select:none" title="Lowest sell order in The Forge. An item the market never carries - a supercarrier, a titan - has none, and then the cheapest single-item contract we have indexed is shown instead (c), or CCP's adjusted price (est). Neither is a Jita price, so neither takes part in the sort.">Jita sell <span class="sort-indicator"></span></th>
           <th class="text-end sortable pricecol pm-buy ph-jita" data-col="3" data-sort-type="num" style="cursor:pointer;user-select:none">Jita buy <span class="sort-indicator"></span></th>
           <th class="text-end sortable pricecol pm-vol ph-jita" data-col="4" data-sort-type="num" style="cursor:pointer;user-select:none" title="Traded volume over the last 7 days at Jita (from ESI history)">Jita vol/7d <span class="sort-indicator"></span></th>
           <th class="text-end sortable pricecol pm-avail ph-jita" data-col="5" data-sort-type="num" style="cursor:pointer;user-select:none" title="Available units in sell orders at Jita 4-4">Jita available <span class="sort-indicator"></span></th>
@@ -242,7 +242,7 @@
          build is 99% of this page's client-side cost (measured). #}
       <tbody>
 {% for item in items -%}
-<tr data-name="{{ item.name | lower }}" data-id="{{ item.type_id }}" data-jita-sell="{{ item.sell_price if item.sell_price is not none else '' }}"><td class="py-1"><img src="/icon/{{ item.type_id }}?size=32" width="24" height="24" class="rounded-1" loading="lazy" onerror="this.style.visibility='hidden'"></td><td class="py-1 align-middle item-hist" role="button" tabindex="0" title="Show price history">{{ item.name }}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-sell ph-jita{% if item.sell_price is none %} text-muted{% endif %}" data-v="{{ item.sell_price if item.sell_price is not none else '' }}">{% if item.sell_price is not none %}{{ item.sell_price | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-buy ph-jita{% if item.buy_price is none %} text-muted{% endif %}" data-v="{{ item.buy_price if item.buy_price is not none else '' }}">{% if item.buy_price is not none %}{{ item.buy_price | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-vol ph-jita{% if item.volume is none %} text-muted{% endif %}" data-v="{{ item.volume if item.volume is not none else '' }}">{% if item.volume is not none %}{{ item.volume | count_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-avail ph-jita{% if item.jita_available is none %} text-muted{% endif %}" data-v="{{ item.jita_available if item.jita_available is not none else '' }}">{% if item.jita_available is not none %}{{ item.jita_available | count_eu }}{% else %}-{% endif %}</td>{% set ihubs = item.get('hubs') or {} %}{% for h in downloaded_hubs %}{% set hd = ihubs.get(h.region_id) %}<td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-sell ph-{{ h.region_id }}{% if hd and hd.sell is none %} text-muted{% endif %}" data-v="{{ hd.sell if hd and hd.sell is not none else '' }}">{% if hd and hd.sell is not none %}{{ hd.sell | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-buy ph-{{ h.region_id }}{% if hd and hd.buy is none %} text-muted{% endif %}" data-v="{{ hd.buy if hd and hd.buy is not none else '' }}">{% if hd and hd.buy is not none %}{{ hd.buy | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-vol ph-{{ h.region_id }}{% if hd and hd.volume is none %} text-muted{% endif %}" data-v="{{ hd.volume if hd and hd.volume is not none else '' }}">{% if hd and hd.volume is not none %}{{ hd.volume | count_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-avail ph-{{ h.region_id }}{% if hd and hd.available is none %} text-muted{% endif %}" data-v="{{ hd.available if hd and hd.available is not none else '' }}">{% if hd and hd.available is not none %}{{ hd.available | count_eu }}{% else %}-{% endif %}</td>{% endfor %}</tr>
+<tr data-name="{{ item.name | lower }}" data-id="{{ item.type_id }}" data-jita-sell="{{ item.sell_price if item.sell_price is not none else '' }}"><td class="py-1"><img src="/icon/{{ item.type_id }}?size=32" width="24" height="24" class="rounded-1" loading="lazy" onerror="this.style.visibility='hidden'"></td><td class="py-1 align-middle item-hist" role="button" tabindex="0" title="Show price history">{{ item.name }}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-sell ph-jita{% if item.sell_price is none %} text-muted{% endif %}" data-v="{{ item.sell_price if item.sell_price is not none else '' }}"{% if item.sell_price is none and item.get('alt_price') %} data-alt="{{ item.alt_price }}" data-alt-src="{{ item.alt_source }}"{% if item.alt_where %} data-alt-where="{{ item.alt_where }}"{% endif %}{% endif %}>{% if item.sell_price is not none %}{{ item.sell_price | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-buy ph-jita{% if item.buy_price is none %} text-muted{% endif %}" data-v="{{ item.buy_price if item.buy_price is not none else '' }}">{% if item.buy_price is not none %}{{ item.buy_price | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-vol ph-jita{% if item.volume is none %} text-muted{% endif %}" data-v="{{ item.volume if item.volume is not none else '' }}">{% if item.volume is not none %}{{ item.volume | count_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-avail ph-jita{% if item.jita_available is none %} text-muted{% endif %}" data-v="{{ item.jita_available if item.jita_available is not none else '' }}">{% if item.jita_available is not none %}{{ item.jita_available | count_eu }}{% else %}-{% endif %}</td>{% set ihubs = item.get('hubs') or {} %}{% for h in downloaded_hubs %}{% set hd = ihubs.get(h.region_id) %}<td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-sell ph-{{ h.region_id }}{% if hd and hd.sell is none %} text-muted{% endif %}" data-v="{{ hd.sell if hd and hd.sell is not none else '' }}">{% if hd and hd.sell is not none %}{{ hd.sell | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-buy ph-{{ h.region_id }}{% if hd and hd.buy is none %} text-muted{% endif %}" data-v="{{ hd.buy if hd and hd.buy is not none else '' }}">{% if hd and hd.buy is not none %}{{ hd.buy | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-vol ph-{{ h.region_id }}{% if hd and hd.volume is none %} text-muted{% endif %}" data-v="{{ hd.volume if hd and hd.volume is not none else '' }}">{% if hd and hd.volume is not none %}{{ hd.volume | count_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-avail ph-{{ h.region_id }}{% if hd and hd.available is none %} text-muted{% endif %}" data-v="{{ hd.available if hd and hd.available is not none else '' }}">{% if hd and hd.available is not none %}{{ hd.available | count_eu }}{% else %}-{% endif %}</td>{% endfor %}</tr>
 {% endfor -%}
       </tbody>
     </table>
@@ -424,6 +424,26 @@
     }
     return spaceThousands(Math.round(v).toString());
   }
+  // What the app knows an item costs when the market cannot say: a supercarrier
+  // is never on a Jita sell order, so the cell was a dash while the same app
+  // priced that hull off a contract on the Contracts tab. The number goes where
+  // the dash was and never into data-v - that attribute is the Jita price, and
+  // the column sort and the history chart's reference line read it. Tag and
+  // wording are the contract appraisal's, so one item cannot get two different
+  // explanations in two tabs.
+  function paintAltPrice(td, compact) {
+    const v = parseFloat(td.getAttribute('data-alt'));
+    if (isNaN(v)) return false;
+    const where = td.getAttribute('data-alt-where') === 'alliance' ? 'alliance' : 'public';
+    const tag = td.getAttribute('data-alt-src') === 'contract'
+      ? '<span class="text-info" title="Not on a Jita sell order. This is the'
+        + ' cheapest single-item ' + where + ' contract we have indexed">c</span>'
+      : '<span class="text-warning" title="Not on a Jita sell order and on no'
+        + ' single-item contract we have indexed - CCP adjusted price, which is an'
+        + ' index value, not an offer">est</span>';
+    td.innerHTML = fmtNum(v, true, compact) + ' ' + tag;
+    return true;
+  }
   function applyNumberFormat() {
     const compact = compactNumbersOn();
     const t = document.getElementById('price-table');
@@ -434,6 +454,7 @@
       const isPrice = td.classList.contains('pm-sell') || td.classList.contains('pm-buy')
                    || td.classList.contains('station-sell-cell');
       td.classList.toggle('text-muted', v == null);
+      if (v == null && td.hasAttribute('data-alt') && paintAltPrice(td, compact)) return;
       td.textContent = fmtNum(v, isPrice, compact);
     });
   }
@@ -573,7 +594,7 @@
           ? `<span class="badge bg-secondary ms-1" style="font-size:.65em">${escHtml(item.group_name)}</span>`
           : ''}
       </td>
-      <td class="text-end py-1 align-middle font-monospace small pricecol pm-sell ph-jita" data-v="${item.sell_price != null ? item.sell_price : ''}"></td>
+      <td class="text-end py-1 align-middle font-monospace small pricecol pm-sell ph-jita" data-v="${item.sell_price != null ? item.sell_price : ''}"${item.sell_price == null && item.alt_price ? ` data-alt="${item.alt_price}" data-alt-src="${item.alt_source}"${item.alt_where ? ` data-alt-where="${item.alt_where}"` : ''}` : ''}></td>
       <td class="text-end py-1 align-middle font-monospace small pricecol pm-buy ph-jita" data-v="${item.buy_price != null ? item.buy_price : ''}"></td>
       <td class="text-end py-1 align-middle font-monospace small pricecol pm-vol ph-jita" data-v="${item.volume != null ? item.volume : ''}"></td>
       <td class="text-end py-1 align-middle font-monospace small pricecol pm-avail ph-jita" data-v="${item.jita_available != null ? item.jita_available : ''}"></td>

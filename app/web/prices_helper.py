@@ -192,6 +192,67 @@ def get_all_price_items(
     ]
 
 
+# How many types go into one IN (...). SQLite caps the host parameters a statement
+# may carry and the cap is a build option, not a constant - 999 in older builds,
+# higher in newer ones - so the number here cannot be derived from the SQLite this
+# machine happens to ship; the app also runs on Android and out of an AppImage.
+# The lookup spends two parameters per type, so 400 stays inside even the 999.
+# Cost is not the reason: 2 764 ids resolve in 26 ms this way (measured on the
+# real cache) against 900 ms for the all-types query the Deals scan uses, which
+# reads every contract row - the right trade when the answer is wanted for
+# everything, the wrong one here.
+_OFF_MARKET_CHUNK = 400
+
+
+def off_market_prices(conn: sqlite3.Connection, type_ids) -> dict[int, dict]:
+    """What an item costs when Jita has no sell order for it.
+
+    A supercarrier, a titan, a faction hull nobody lists: the market says nothing
+    about them, so the Prices table showed a dash - while the same app priced the
+    very same hull on every contract it appraised. The chain is deliberately the
+    one `appraise_items` uses, so the two can never quote different numbers for
+    the same thing:
+
+      1. the cheapest single-item contract we have indexed (alliance or public),
+      2. CCP's adjusted price - an index value, not an offer, and labelled as one,
+      3. nothing, and then the dash stays.
+
+    Returns {type_id: {"price": float, "source": "contract"|"estimate",
+                       "where": "alliance"|"public"|None}}.
+    """
+    from app.web.contracts_helper import contract_unit_prices, _adjusted_prices
+
+    ids = sorted({int(t) for t in type_ids if t})
+    out: dict[int, dict] = {}
+    for i in range(0, len(ids), _OFF_MARKET_CHUNK):
+        chunk = ids[i:i + _OFF_MARKET_CHUNK]
+        for tid, (price, where, _cid) in contract_unit_prices(conn, chunk).items():
+            if price and price > 0:
+                out[tid] = {"price": price, "source": "contract", "where": where}
+    rest = [t for t in ids if t not in out]
+    for i in range(0, len(rest), _OFF_MARKET_CHUNK):
+        chunk = rest[i:i + _OFF_MARKET_CHUNK]
+        for tid, price in _adjusted_prices(conn, chunk).items():
+            out[tid] = {"price": price, "source": "estimate", "where": None}
+    return out
+
+
+def attach_off_market_prices(conn: sqlite3.Connection, items: list[dict]) -> None:
+    """Fill in `alt_price` / `alt_source` / `alt_where` on the rows with no Jita
+    sell price. Only those: an item the market carries is quoted from the market,
+    and a contract asking more than Jita is not news."""
+    missing = [it["type_id"] for it in items if it.get("sell_price") is None]
+    if not missing:
+        return
+    alt = off_market_prices(conn, missing)
+    for it in items:
+        got = alt.get(it["type_id"]) if it.get("sell_price") is None else None
+        if got:
+            it["alt_price"] = got["price"]
+            it["alt_source"] = got["source"]
+            it["alt_where"] = got["where"]
+
+
 def set_custom_price(conn: sqlite3.Connection, type_id: int, price: float | None):
     """Stores or deletes the custom price for the given type_id."""
     ensure_price_table(conn)

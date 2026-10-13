@@ -68,6 +68,7 @@ from app.bom.resolver import BOMResolver
 from app.market.prices import ensure_price_table, fetch_station_volumes, get_cached_station_volumes, get_station_volumes_any_age, fetch_structure_market, TRADE_HUBS, JITA_REGION, HISTORY_ENDPOINT_URL, fill_region_volumes, region_volume_coverage
 from app.web.prices_helper import (
     _apply_discovered_types,
+    attach_off_market_prices,
     get_prices_for_ids,
     get_cached_prices_for_ids,
     get_price_cache_stats,
@@ -4392,6 +4393,9 @@ async def prices_page(request: Request):
         ).fetchall()
         relevant |= {r[0] for r in bp_products}
     items = get_all_price_items(conn, relevant_ids=relevant)
+    # A hull the market never carries used to show a dash here while the very same
+    # app priced it off a contract two tabs away. Same chain, same numbers.
+    attach_off_market_prices(conn, items)
 
     # Secondary trade hubs: metadata for all, price data only for those already
     # fetched. Attach each hub's sell/buy/volume to the item rows for comparison.
@@ -5605,25 +5609,27 @@ async def prices_search(q: str = ""):
             _asyncio.create_task(_bg_fetch_prices(uncached))
 
         hub_prices = get_all_hub_prices(conn, [r[0] for r in rows])
+        items = [
+            {
+                "type_id":       r[0],
+                "name":          r[1],
+                "group_name":    r[2],
+                "sell_price":    r[3],
+                "buy_price":     r[4],
+                "fresh":         bool(r[5] and (now - r[5]) < PRICE_CACHE_TTL),
+                "volume":        r[6],
+                "jita_available": r[7],
+                "hubs":          hub_prices.get(r[0], {}),
+            }
+            for r in rows
+        ]
+        attach_off_market_prices(conn, items)
         conn.close()
         return {
             "mode": "group",
             "group_name": label,
             "fetching_prices": len(uncached) > 0,
-            "items": [
-                {
-                    "type_id":       r[0],
-                    "name":          r[1],
-                    "group_name":    r[2],
-                    "sell_price":    r[3],
-                    "buy_price":     r[4],
-                    "fresh":         bool(r[5] and (now - r[5]) < PRICE_CACHE_TTL),
-                    "volume":        r[6],
-                    "jita_available": r[7],
-                    "hubs":          hub_prices.get(r[0], {}),
-                }
-                for r in rows
-            ],
+            "items": items,
         }
 
     # Fallback: search within item names. LEFT JOIN so types without a price in
@@ -5654,25 +5660,23 @@ async def prices_search(q: str = ""):
         import asyncio as _asyncio
         _asyncio.create_task(_bg_fetch_prices(uncached))
     hub_prices = get_all_hub_prices(conn, [r[0] for r in rows])
+    items = [
+        {
+            "type_id":       r[0],
+            "name":          r[1],
+            "group_name":    r[2],
+            "sell_price":    r[3],
+            "buy_price":     r[4],
+            "fresh":         bool(r[5] and (now - r[5]) < PRICE_CACHE_TTL),
+            "volume":        r[6],
+            "jita_available": r[7],
+            "hubs":          hub_prices.get(r[0], {}),
+        }
+        for r in rows
+    ]
+    attach_off_market_prices(conn, items)
     conn.close()
-    return {
-        "mode": "name",
-        "group_name": None,
-        "items": [
-            {
-                "type_id":       r[0],
-                "name":          r[1],
-                "group_name":    r[2],
-                "sell_price":    r[3],
-                "buy_price":     r[4],
-                "fresh":         bool(r[5] and (now - r[5]) < PRICE_CACHE_TTL),
-                "volume":        r[6],
-                "jita_available": r[7],
-                "hubs":          hub_prices.get(r[0], {}),
-            }
-            for r in rows
-        ],
-    }
+    return {"mode": "name", "group_name": None, "items": items}
 
 
 @app.post("/api/prices/custom")
