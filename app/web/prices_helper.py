@@ -237,6 +237,29 @@ def off_market_prices(conn: sqlite3.Connection, type_ids) -> dict[int, dict]:
     return out
 
 
+def fill_missing_sell_prices(conn: sqlite3.Connection,
+                             prices: dict[int, tuple]) -> dict[int, str]:
+    """Patch a {type_id: (sell, buy)} map with what the app knows about the types
+    the market has no sell order for, and say where each number came from.
+
+    A cached row whose sell price is NULL is not "we have a price of nothing" - it
+    is the market having nothing to say, which for a supercarrier or a titan is
+    permanent. Valuing those at zero made a 44b pile of assets count as 1.11b.
+
+    Returns {type_id: "contract"|"estimate"} for the entries it filled, so the UI
+    can mark them: neither is a market price and the reader has to be able to see
+    which is which.
+    """
+    missing = [t for t, pair in prices.items() if pair[0] is None]
+    if not missing:
+        return {}
+    sources: dict[int, str] = {}
+    for tid, got in off_market_prices(conn, missing).items():
+        prices[tid] = (got["price"], prices[tid][1])
+        sources[tid] = got["source"]
+    return sources
+
+
 def attach_off_market_prices(conn: sqlite3.Connection, items: list[dict]) -> None:
     """Fill in `alt_price` / `alt_source` / `alt_where` on the rows with no Jita
     sell price. Only those: an item the market carries is quoted from the market,

@@ -96,7 +96,10 @@
           {% if item.volume %}{{ item.volume | m3 }}{% else %}<span class="opacity-50">-</span>{% endif %}
         </td>
         <td class="text-end text-muted">
-          {% if item.unit_price %}{{ item.unit_price | isk0 }}{% else %}<span class="text-muted opacity-50">-</span>{% endif %}
+          {% if item.unit_price %}{{ item.unit_price | isk0 }}{#
+            A price the market cannot give. Same tag and the same words as the
+            contract appraisal uses, so one item does not get two explanations.
+          #}{% if item.price_source == 'contract' %} <span class="text-info" title="Not on a Jita sell order. This is the cheapest single-item contract we have indexed">c</span>{% elif item.price_source == 'estimate' %} <span class="text-warning" title="Not on a Jita sell order and on no single-item contract we have indexed - CCP adjusted price, which is an index value, not an offer">est</span>{% endif %}{% else %}<span class="text-muted opacity-50">-</span>{% endif %}
         </td>
         <td class="text-end text-isk fw-semibold">
           {% if item.total_value %}{{ item.total_value | isk0 }}{% else %}<span class="text-muted opacity-50">-</span>{% endif %}

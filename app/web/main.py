@@ -69,6 +69,7 @@ from app.market.prices import ensure_price_table, fetch_station_volumes, get_cac
 from app.web.prices_helper import (
     _apply_discovered_types,
     attach_off_market_prices,
+    fill_missing_sell_prices,
     get_prices_for_ids,
     get_cached_prices_for_ids,
     get_price_cache_stats,
@@ -1672,6 +1673,9 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
             prices = await get_prices_for_ids(conn, list(all_type_ids_set))
         else:
             prices = get_cached_prices_for_ids(conn, list(all_type_ids_set))
+        # Otherwise the same hull is 42.95b on the Assets page and zero here. Both
+        # halves read the same map, so they cannot disagree about one pile.
+        fill_missing_sell_prices(conn, prices)
 
     # Blueprint group_ids - exclude from net worth (matches in-game behavior)
     bp_group_ids: set[int] = {
@@ -3552,6 +3556,11 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                     all_price_ids |= {item["type_id"] for item in bucket.values()}
         all_price_ids = list(all_price_ids)
         prices = await get_prices_for_ids(conn, all_price_ids)
+        # A supercarrier is never on a market order, so its cached sell price is
+        # NULL - and a hangar holding one was valued as if the hull were not in it
+        # (44b read as 1.11b). Same chain as the contract appraisal, and the source
+        # travels with the number so the row can say which kind of price it is.
+        price_source = fill_missing_sell_prices(conn, prices)
 
         def _add_prices(bucket: dict):
             for item in bucket.values():
@@ -3562,6 +3571,7 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                     sell_p, _ = prices.get(item["type_id"], (None, None))
                     item["unit_price"] = sell_p
                     item["total_value"] = sell_p * item["quantity"] if sell_p else None
+                    item["price_source"] = price_source.get(item["type_id"])
 
         for sd in station_data.values():
             _add_prices(sd["hangar"])

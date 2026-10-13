@@ -14,7 +14,8 @@ from __future__ import annotations
 import pytest
 
 from app.web import contracts_helper as ch
-from app.web.prices_helper import attach_off_market_prices, off_market_prices
+from app.web.prices_helper import (attach_off_market_prices,
+                                  fill_missing_sell_prices, off_market_prices)
 
 NPC_STATION = 60003760
 JITA_SYSTEM = 30000142
@@ -231,3 +232,55 @@ def test_the_search_answers_with_it_too(conn, client):
     assert row["sell_price"] is None
     assert row["alt_price"] == 42_950_000_000.0
     assert row["alt_source"] == "contract" and row["alt_where"] == "alliance"
+
+
+# ── assets: the same pile, the same number ────────────────────────────────────
+
+def test_a_hangar_is_not_worth_less_because_the_market_is_silent(conn):
+    """The reported case: a fitted Wyvern read as 1.11b - the three rigs - because
+    the hull itself, 42.95b of it, had no price to count."""
+    prices = {WYVERN: (None, 1_234_000_000.0), TRIT: (5.0, 4.0)}
+    _ally(conn, 7010, 42_950_000_000.0, [(WYVERN, 1)])
+
+    sources = fill_missing_sell_prices(conn, prices)
+    assert prices[WYVERN] == (42_950_000_000.0, 1_234_000_000.0)   # buy side kept
+    assert sources == {WYVERN: "contract"}
+    assert prices[TRIT] == (5.0, 4.0)                              # untouched
+
+
+def test_nothing_known_leaves_the_row_without_a_price(conn):
+    """Not zero. A row with no price is read as "we do not know", and a zero
+    would be read as "worthless" - which is how a supercarrier came to weigh
+    nothing at all in a hangar's total."""
+    prices = {WYVERN: (None, None)}
+    assert fill_missing_sell_prices(conn, prices) == {}
+    assert prices[WYVERN] == (None, None)
+
+
+def test_the_assets_page_shows_the_number_and_says_where_it_is_from(conn, client):
+    """End to end, because the valuation and the marker have to arrive together:
+    a contract price in the Value column with nothing saying so would be the app
+    quoting a market price it does not have.
+
+    The buy price stays on the row on purpose - that is the real shape of the
+    reported case (a Wyvern with a 1.23b lowball buy order and no sell order) and
+    it is what makes the row count as cached at all. Strip it and the type reads
+    as never fetched, which sends get_prices_for_ids to ESI for an average price,
+    and the test would then depend on the network.
+    """
+    seeded = conn.execute("SELECT sell_price, buy_price FROM market_price_cache"
+                          " WHERE type_id=?", (TRIT,)).fetchone()
+    conn.execute("UPDATE market_price_cache SET sell_price=NULL, buy_price=4.0"
+                 " WHERE type_id=?", (TRIT,))
+    conn.commit()
+    _ally(conn, 7011, 7.0, [(TRIT, 1)])
+    try:
+        html = client.get("/assets").text
+    finally:
+        conn.execute("UPDATE market_price_cache SET sell_price=?, buy_price=?"
+                     " WHERE type_id=?", (seeded[0], seeded[1], TRIT))
+        conn.commit()
+    assert "Tritanium" in html, "the seeded Tritanium is not on the page"
+    assert "Not on a Jita sell order" in html and ">c</span>" in html
+    # 10 000 units at the contract's 7.00, where the row used to carry nothing.
+    assert "70 000" in html
