@@ -284,3 +284,23 @@ def test_the_assets_page_shows_the_number_and_says_where_it_is_from(conn, client
     assert "Not on a Jita sell order" in html and ">c</span>" in html
     # 10 000 units at the contract's 7.00, where the row used to carry nothing.
     assert "70 000" in html
+
+
+def test_the_folded_hull_keeps_the_marker(app_module):
+    """A ship with a fit is drawn as a container and its hull row is built from
+    scratch, not taken from the hangar bucket. That is the one row where a
+    contract price is most likely - a fitted capital is exactly what sits on
+    contracts - so losing the marker there would show the number as a market
+    price on the only line that is usually not one."""
+    owner, ship_cid = 900000001, 555002
+    hangar_row = {"type_id": WYVERN, "name": "Wyvern", "quantity": 1,
+                  "is_blueprint_copy": False, "character_id": owner,
+                  "character_name": "Pilot", "unit_price": 42_950_000_000.0,
+                  "total_value": 42_950_000_000.0, "price_source": "contract"}
+    node = {"hangar": {(WYVERN, owner, False, "", False): hangar_row},
+            "containers": {ship_cid: {}}}
+    app_module._fold_ship_hulls(node, {ship_cid: WYVERN}, {ship_cid: (owner, "Pilot")})
+
+    hull = node["containers"][ship_cid][("_hull", ship_cid)]
+    assert hull["unit_price"] == 42_950_000_000.0
+    assert hull["price_source"] == "contract"

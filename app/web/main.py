@@ -4114,6 +4114,11 @@ def _fold_ship_hulls(
             "unit_volume": assembled,
             "unit_price": unit_p,
             "total_value": unit_p,   # hull = 1 unit
+            # Where that price came from travels with it. The hull row is built
+            # here rather than taken from the bucket, so a marker left out here is
+            # a contract price presented as a market one - on the one row where
+            # that is most likely, because a hull with a fit is usually a capital.
+            "price_source": entry.get("price_source"),
             # Sorts above every slot, so the ship table reads hull → fit → cargo.
             "slot": "Hull",
             "slot_order": 0,
