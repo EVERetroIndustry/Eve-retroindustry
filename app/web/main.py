@@ -6199,7 +6199,7 @@ async def wallet_page(request: Request, char: str = "", scope: str = "personal",
         "error": None, "division_names": dict(_CORP_DIVISION_NAMES),
         "corp_div_note": None, "custom_divisions": set(),
         "row_cap": _WALLET_ROW_CAP,
-        "data_age": None, "stale_note": None,
+        "data_age": None, "stale_note": None, "txn_note": "",
     }
 
     if not plan_char_id:
@@ -6229,6 +6229,7 @@ async def wallet_page(request: Request, char: str = "", scope: str = "personal",
         ctx["balance"] = payload.get("balance")
         ctx["journal"] = payload.get("journal") or []
         ctx["transactions"] = payload.get("transactions") or []
+        ctx["txn_note"] = payload.get("txn_note") or ""
         if payload.get("corp_wallets"):
             ctx["corp_wallets"] = payload["corp_wallets"]
         if payload.get("corp_name"):
@@ -6299,7 +6300,9 @@ async def wallet_page(request: Request, char: str = "", scope: str = "personal",
                     if wallets:
                         journal = await wallet_api.fetch_corp_journal(
                             client, corp_id, division, token, limit=_WALLET_ROW_CAP)
-                        txns = await wallet_api.fetch_corp_transactions(client, corp_id, division, token)
+                        txns, txn_meta = await wallet_api.fetch_corp_transactions(
+                            client, corp_id, division, token)
+                        ctx["txn_note"] = _txn_snapshot_note(journal, txns, txn_meta)
                         bal = next((w["balance"] for w in wallets if w["division"] == division), None)
                         ctx["balance"] = bal
                         names = await _wallet_names(conn, journal, txns, token)
@@ -6309,7 +6312,8 @@ async def wallet_page(request: Request, char: str = "", scope: str = "personal",
                 balance = await wallet_api.fetch_balance(client, plan_char_id, token)
                 journal = await wallet_api.fetch_journal(
                     client, plan_char_id, token, limit=_WALLET_ROW_CAP)
-                txns = await wallet_api.fetch_transactions(client, plan_char_id, token)
+                txns, txn_meta = await wallet_api.fetch_transactions(client, plan_char_id, token)
+                ctx["txn_note"] = _txn_snapshot_note(journal, txns, txn_meta)
                 ctx["balance"] = balance
                 names = await _wallet_names(conn, journal, txns, token)
                 ctx["journal"], ctx["transactions"] = _decorate(
@@ -6327,6 +6331,7 @@ async def wallet_page(request: Request, char: str = "", scope: str = "personal",
             "balance": ctx["balance"],
             "journal": ctx["journal"],
             "transactions": ctx["transactions"],
+            "txn_note": ctx["txn_note"],
             "corp_wallets": ctx["corp_wallets"],
             "corp_name": ctx["corp_name"],
             "division_names": [[k, v] for k, v in ctx["division_names"].items()],
@@ -6395,6 +6400,57 @@ _WALLET_ROW_CAP = 2500
 # balance moves while you play; long enough that clicking between the two tabs
 # and back is free. Refresh always bypasses it.
 _WALLET_PAGE_TTL = 5 * 60
+
+
+def _snapshot_time(header: str) -> str:
+    """An HTTP date as "YYYY-MM-DD HH:MM UTC", or "" if it cannot be read."""
+    if not header:
+        return ""
+    try:
+        from email.utils import parsedate_to_datetime
+        return parsedate_to_datetime(header).strftime("%Y-%m-%d %H:%M UTC")
+    except Exception:
+        return ""
+
+
+def _txn_snapshot_note(journal: list[dict], txns: list[dict], meta: dict) -> str:
+    """Say so when the journal knows about sales the transactions list does not.
+
+    Reported as a bug: the Journal showed three market transactions that the
+    Transactions tab did not have, right after a refresh. Both lists were
+    fetched in the same request and both were exactly what ESI returned - the
+    transactions endpoint simply answers from an hourly snapshot, and those
+    sales happened after it was taken. The page said nothing, so it read as
+    lost data.
+
+    Counted by transaction id (the journal carries it as context_id), among the
+    rows no older than the newest one the snapshot has: the journal also holds
+    fees and taxes and so reaches further back, and those older sales are not
+    pending, they are simply past the end of the list. The two conditions do
+    different work - several sales share a timestamp to the second, so the date
+    alone cannot tell the newest one in the snapshot from one taken at the same
+    moment and left out of it.
+    """
+    if not meta.get("last_modified") or not txns:
+        # Nothing to compare against: an empty list may be an empty wallet or a
+        # fetch that failed, and this note must not guess which.
+        return ""
+    newest = max((t.get("date") or "" for t in txns), default="")
+    known = {t.get("transaction_id") for t in txns}
+    pending = sum(1 for j in journal
+                  if j.get("ref_type") == "market_transaction"
+                  and (j.get("date") or "") >= newest
+                  and j.get("context_id") not in known)
+    if not pending:
+        return ""
+    taken = _snapshot_time(meta.get("last_modified", ""))
+    nxt = _snapshot_time(meta.get("expires", ""))
+    note = (f"ESI publishes market transactions as an hourly snapshot"
+            + (f", and this one was taken at {taken}" if taken else "")
+            + f". {pending} market transaction" + ("s" if pending != 1 else "")
+            + " already in the Journal "
+            + ("are" if pending != 1 else "is") + " not in it yet")
+    return note + (f" - the next snapshot is due at {nxt}." if nxt else ".")
 
 
 def _decorate(conn, journal: list[dict], txns: list[dict],

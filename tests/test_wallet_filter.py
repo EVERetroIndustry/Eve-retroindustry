@@ -28,7 +28,7 @@ def _wallet_html(client, app_module, journal, txns):
     """
     async def _bal(*a, **k): return 1_000_000.0
     async def _jr(*a, **k): return journal
-    async def _tx(*a, **k): return txns
+    async def _tx(*a, **k): return txns, {}       # (rows, snapshot meta)
     async def _names(conn, j, t, tok): return {}
     orig = (app_module.wallet_api.fetch_balance, app_module.wallet_api.fetch_journal,
             app_module.wallet_api.fetch_transactions, app_module._wallet_names)

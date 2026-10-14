@@ -75,18 +75,36 @@ async def fetch_journal(client: httpx.AsyncClient, char_id: int, token: str,
     return out
 
 
-async def fetch_transactions(client: httpx.AsyncClient, char_id: int, token: str) -> list[dict]:
-    """The character's market transactions (ESI returns the last ~2500)."""
+def _snapshot_meta(r: httpx.Response) -> dict:
+    """When ESI built this answer and when it will build the next one.
+
+    The transactions endpoint does not answer from live data: it hands out an
+    hourly snapshot. Asking again inside that hour returns the same rows, so a
+    sale made after the snapshot was taken is in the journal (built on its own,
+    shorter clock) minutes later and in the transactions list only after the
+    snapshot rolls over. Without these two headers the page cannot tell that
+    apart from a sale it simply failed to fetch, and neither could the user.
+    """
+    return {"last_modified": r.headers.get("last-modified") or "",
+            "expires": r.headers.get("expires") or ""}
+
+
+async def fetch_transactions(client: httpx.AsyncClient, char_id: int, token: str
+                             ) -> tuple[list[dict], dict]:
+    """The character's market transactions (ESI returns the last ~2500).
+
+    Returns (rows, meta); see _snapshot_meta for what meta is good for.
+    """
     try:
         r = await client.get(
             f"{ESI_BASE}/characters/{char_id}/wallet/transactions/",
             headers=_auth(token), timeout=15,
         )
         if r.status_code == 200:
-            return r.json()
+            return r.json(), _snapshot_meta(r)
     except Exception:
         pass
-    return []
+    return [], {}
 
 
 # ── Corporation ─────────────────────────────────────────────────────────────
@@ -174,17 +192,19 @@ async def fetch_corp_journal(client: httpx.AsyncClient, corp_id: int, division: 
 
 
 async def fetch_corp_transactions(client: httpx.AsyncClient, corp_id: int, division: int,
-                                  token: str) -> list[dict]:
+                                  token: str) -> tuple[list[dict], dict]:
+    """The division's market transactions. Returns (rows, meta) - the corp
+    endpoint hands out the same hourly snapshot as the character one."""
     try:
         r = await client.get(
             f"{ESI_BASE}/corporations/{corp_id}/wallets/{division}/transactions/",
             headers=_auth(token), timeout=15,
         )
         if r.status_code == 200:
-            return r.json()
+            return r.json(), _snapshot_meta(r)
     except Exception:
         pass
-    return []
+    return [], {}
 
 
 # ── ref_type humanization ─────────────────────────────────────────────────────

@@ -227,7 +227,7 @@ def test_corp_wallet_page_shows_the_custom_division_name(client, app_module, cle
         return []
 
     async def _txns(cl, corp_id, div, token):
-        return []
+        return [], {}                                # (rows, snapshot meta)
 
     async def _party(ids):
         return {i: "Test Corp" for i in ids}

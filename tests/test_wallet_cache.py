@@ -46,7 +46,7 @@ class _Esi:
 
         async def txns(client, char_id, token):
             self.txn_calls += 1
-            return list(_TXNS) if self.up else []
+            return (list(_TXNS) if self.up else []), {}
 
         monkeypatch.setattr(wallet_api, "fetch_balance", balance)
         monkeypatch.setattr(wallet_api, "fetch_journal", journal)
@@ -165,9 +165,12 @@ def test_an_empty_wallet_is_not_mistaken_for_a_failure(client, clean, monkeypatc
     async def empty(*a, **kw):
         return []
 
+    async def empty_txns(*a, **kw):
+        return [], {}
+
     monkeypatch.setattr(wallet_api, "fetch_balance", balance)
     monkeypatch.setattr(wallet_api, "fetch_journal", empty)
-    monkeypatch.setattr(wallet_api, "fetch_transactions", empty)
+    monkeypatch.setattr(wallet_api, "fetch_transactions", empty_txns)
 
     r = _get(client)
     assert r.status_code == 200
