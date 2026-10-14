@@ -3618,9 +3618,12 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
         # container_id → (owner_character_id, owner_character_name)
         char_name_lookup = {cid: name for cid, name in selected_chars}
         container_owner_map: dict[int, tuple[int, str]] = {}
+        # container_id → whatever holds it. A ship is not always in a hangar.
+        container_parent_map: dict[int, int] = {}
         for owner_id, ar in assets_raw_by_char.items():
             for item in ar:
                 container_type_map[item["item_id"]] = item["type_id"]
+                container_parent_map[item["item_id"]] = item["location_id"]
                 container_owner_map.setdefault(
                     item["item_id"], (owner_id, char_name_lookup.get(owner_id, ""))
                 )
@@ -3636,7 +3639,8 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
         container_labels = {cid: info[0] for cid, info in container_info.items()}
         for sd in station_data.values():
             _fold_ship_hulls(sd, container_type_map, container_owner_map, type_facts,
-                             active_items=active_ships)
+                             active_items=active_ships,
+                             parent_map=container_parent_map)
             _prune_by_search(sd, container_labels, search)
 
         for sid, sd in station_data.items():
@@ -3694,6 +3698,8 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
         if corp_sd and corp_id:
             corp_assets_raw = _load_corp_assets_from_cache(conn, corp_id)
             corp_container_type_map = {item["item_id"]: item["type_id"] for item in corp_assets_raw}
+            corp_container_parent_map = {item["item_id"]: item["location_id"]
+                                         for item in corp_assets_raw}
             all_corp_container_ids = [
                 cid
                 for sid_data in corp_sd.values()
@@ -3711,7 +3717,8 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                 for dv in sid_data.values():
                     # No owner_map: corp rows carry no character.
                     _fold_ship_hulls(dv, corp_container_type_map, None, type_facts,
-                                     active_items=active_ships)
+                                     active_items=active_ships,
+                                     parent_map=corp_container_parent_map)
                     _prune_by_search(dv, corp_container_labels, search)
 
             def _build_corp_container(cid, items, sid):
@@ -3880,6 +3887,24 @@ async def assets_distances(request: Request):
 # Blueprints
 # ---------------------------------------------------------------------------
 
+def _location_above_items(asset_map: dict[int, dict], start_loc: int) -> int:
+    """Walk up until the location is no longer an item of this owner - a station
+    or a structure.
+
+    An item's `location_id` is only its IMMEDIATE holder, and a holder can itself
+    be held: a container inside a ship, anything inside an Asset Safety Wrap.
+    Taking that id for a station put a bare item_id where a station name belongs,
+    because nothing can resolve a name for it. The loop is bounded by `seen` -
+    ESI has handed back cycles before.
+    """
+    loc = start_loc
+    seen: set[int] = set()
+    while loc in asset_map and loc not in seen:
+        seen.add(loc)
+        loc = asset_map[loc]["location_id"]
+    return loc
+
+
 async def _resolve_corp_container_names(
     corp_id: int,
     token: str,
@@ -3927,7 +3952,7 @@ async def _resolve_corp_container_names(
         asset = asset_map.get(cid)
         if not asset:
             continue
-        parent_loc = asset["location_id"]
+        parent_loc = _location_above_items(asset_map, asset["location_id"])
         display = _container_display_name(
             custom_names.get(cid, ""), type_names.get(asset["type_id"], ""), cid
         )
@@ -4063,8 +4088,9 @@ def _fold_ship_hulls(
     owner_map: dict[int, tuple[int, str]] | None = None,
     facts: dict[int, dict] | None = None,
     active_items: dict | None = None,
+    parent_map: dict[int, int] | None = None,
 ) -> None:
-    """Move a ship's hull row out of the hangar and into its own container row.
+    """Move a ship's hull row out of wherever it sits and into its own container row.
 
     A container whose item_id is itself an asset with a ship type IS that ship -
     its "contents" are the fit and cargo. Folding the hull in makes the ship one
@@ -4077,9 +4103,24 @@ def _fold_ship_hulls(
     the synthesized hull row is a row like any other - without it 228 ships on a
     real account had an empty Type and no volume, which is worse than useless:
     they were the biggest things in the hangar.
+
+    `parent_map` (item_id -> the location it sits in) says WHERE to look for the
+    hull. A hangar is not the only place a ship can be: one in an Asset Safety
+    Wrap, a ship maintenance bay or a freighter's hold is an asset of that
+    container, not of the station - and the tree flattens every container to a
+    direct child of its station, so the ship and the box holding it end up side
+    by side. Searching the hangar alone found nothing there and left the hull out
+    of its own ship: a Rapier in asset safety totalled 58.70m of fit with the
+    hull missing. Without the map the old behaviour stands, which is correct for
+    anything that really is in a hangar.
     """
-    hangar = node["hangar"]
     for cid, items in node["containers"].items():
+        # Where this ship itself is stored. Its own row lives in that bucket.
+        holder = node["hangar"]
+        if parent_map is not None:
+            parent = parent_map.get(cid)
+            if parent is not None and parent in node["containers"]:
+                holder = node["containers"][parent]
         ship_type = type_map.get(cid)
         if not ship_type:
             continue
@@ -4090,7 +4131,7 @@ def _fold_ship_hulls(
             if not owner:
                 continue
             owner_id, owner_name = owner
-        key, entry = _find_hangar_ship(hangar, ship_type, owner_id,
+        key, entry = _find_hangar_ship(holder, ship_type, owner_id,
                                        prefer_active=bool(active_items and cid in active_items))
         if entry is None:
             continue
@@ -4132,7 +4173,7 @@ def _fold_ship_hulls(
             hull["character_name"] = owner_name
         items[("_hull", cid)] = hull
         if entry["quantity"] == 0:
-            del hangar[key]
+            del holder[key]
 
 
 def _prune_by_search(node: dict, container_labels: dict[int, str], query: str) -> None:
@@ -4171,7 +4212,10 @@ async def _resolve_container_names(
 
     display_name is the container's custom name from ESI assets/names,
     or the container type (Small Secure Container etc.) as a fallback.
-    parent_location_id is the container's location_id in assets (station/structure).
+    parent_location_id is the station or structure the container is in - walked up
+    through any holders in between, because a container can sit inside another
+    one (a box in a ship, anything in an Asset Safety Wrap) and its own
+    location_id is then an item_id that no name lookup can resolve.
     """
     asset_map = {item["item_id"]: item for item in assets}
     result: dict[int, tuple[str, int]] = {}
@@ -4214,7 +4258,7 @@ async def _resolve_container_names(
         asset = asset_map.get(cid)
         if not asset:
             continue
-        parent_loc = asset["location_id"]
+        parent_loc = _location_above_items(asset_map, asset["location_id"])
         display = _container_display_name(
             custom_names.get(cid, ""), type_names.get(asset["type_id"], ""), cid
         )

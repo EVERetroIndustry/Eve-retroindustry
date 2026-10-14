@@ -144,6 +144,114 @@ def test_corp_fold_without_an_owner_map(app_module):
     assert "character_id" not in hull
 
 
+# ── a hangar is not the only place a ship can be ──────────────────────────────
+
+def _ship_in_a_box():
+    """Station -> Asset Safety Wrap -> Rapier -> its fit.
+
+    The reported shape, and the one the tree cannot express: every container is
+    flattened to a direct child of its station, so the box and the ship it holds
+    come out side by side and the ship's own row is a line INSIDE the box.
+    """
+    wrap_cid, ship_cid = 777001, 777002
+    return {
+        "hangar": {},
+        "containers": {
+            wrap_cid: {
+                (MEGATHRON, OWNER, False): _hangar_row(
+                    MEGATHRON, "Megathron", 1, 151_212_000.0),
+                (TRIT, OWNER, False): _hangar_row(TRIT, "Tritanium", 10, 5.0),
+            },
+            ship_cid: {
+                (ANTIMATTER, OWNER, False): _hangar_row(
+                    ANTIMATTER, "Antimatter Charge L", 400, 100.0),
+            },
+        },
+    }, wrap_cid, ship_cid
+
+
+def test_hull_folds_in_when_the_ship_sits_in_a_container(app_module):
+    """Measured on a real account: a Rapier in asset safety totalled 58.70m of
+    fit with no hull line at all, while its 151.21m hull was listed as cargo of
+    the wrap next to it. The fold looked in the station hangar, and there is
+    nothing of this ship in the station hangar."""
+    node, wrap_cid, ship_cid = _ship_in_a_box()
+    app_module._fold_ship_hulls(
+        node, {wrap_cid: 60, ship_cid: MEGATHRON}, {ship_cid: (OWNER, "Pilot")},
+        parent_map={ship_cid: wrap_cid})
+
+    hull = node["containers"][ship_cid][("_hull", ship_cid)]
+    assert hull["type_id"] == MEGATHRON and hull["quantity"] == 1
+    assert hull["total_value"] == 151_212_000.0
+    # And it left the box, which was counting it as its own contents.
+    assert (MEGATHRON, OWNER, False) not in node["containers"][wrap_cid]
+    assert (TRIT, OWNER, False) in node["containers"][wrap_cid]
+
+
+def test_the_ship_total_is_hull_plus_fit_wherever_the_ship_is(app_module):
+    node, wrap_cid, ship_cid = _ship_in_a_box()
+    app_module._fold_ship_hulls(
+        node, {wrap_cid: 60, ship_cid: MEGATHRON}, {ship_cid: (OWNER, "Pilot")},
+        parent_map={ship_cid: wrap_cid})
+
+    assert sum(i["total_value"] for i in node["containers"][ship_cid].values()) == \
+        151_212_000.0 + 400 * 100.0
+
+
+def test_a_ship_in_the_hangar_still_folds_with_a_parent_map(app_module):
+    """The common case must not regress: the map says the station, which is not
+    a container, so the hangar is where the hull is looked for."""
+    node, ship_cid = _node()
+    station_id = 60003760
+    app_module._fold_ship_hulls(
+        node, {ship_cid: MEGATHRON}, {ship_cid: (OWNER, "Pilot")},
+        parent_map={ship_cid: station_id})
+
+    assert node["containers"][ship_cid][("_hull", ship_cid)]["quantity"] == 1
+    assert node["hangar"][(MEGATHRON, OWNER, False)]["quantity"] == 1
+
+
+def test_without_a_parent_map_nothing_changes(app_module):
+    """Callers that have no map keep the old behaviour rather than guessing."""
+    node, wrap_cid, ship_cid = _ship_in_a_box()
+    app_module._fold_ship_hulls(node, {wrap_cid: 60, ship_cid: MEGATHRON},
+                                {ship_cid: (OWNER, "Pilot")})
+    assert ("_hull", ship_cid) not in node["containers"][ship_cid]
+
+
+# ── a container's station is not always one step up ───────────────────────────
+
+STATION = 60003760
+
+
+def _assets(*rows):
+    return {r["item_id"]: r for r in rows}
+
+
+def test_a_container_in_a_station_is_already_there(app_module):
+    box = {"item_id": 1, "type_id": 3296, "location_id": STATION}
+    assert app_module._location_above_items(_assets(box), box["location_id"]) == STATION
+
+
+def test_a_container_inside_a_container_still_names_the_station(app_module):
+    """Where the station name came out as a bare item_id. The blueprints page
+    groups by this id, so a blueprint in a box in a ship was filed under a number
+    nothing can resolve a name for."""
+    wrap = {"item_id": 1, "type_id": 60, "location_id": STATION}
+    ship = {"item_id": 2, "type_id": MEGATHRON, "location_id": 1}
+    box = {"item_id": 3, "type_id": 3296, "location_id": 2}
+    assets = _assets(wrap, ship, box)
+    assert app_module._location_above_items(assets, box["location_id"]) == STATION
+    assert app_module._location_above_items(assets, ship["location_id"]) == STATION
+
+
+def test_a_cycle_in_the_asset_tree_terminates(app_module):
+    """ESI has handed back items holding each other. A walk up must end anyway."""
+    a = {"item_id": 1, "type_id": 60, "location_id": 2}
+    b = {"item_id": 2, "type_id": 60, "location_id": 1}
+    assert app_module._location_above_items(_assets(a, b), 1) in (1, 2)
+
+
 # ── container-aware search ────────────────────────────────────────────────────
 
 def _folded():
