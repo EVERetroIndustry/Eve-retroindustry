@@ -1100,6 +1100,35 @@ def _load_assets_from_cache(conn: sqlite3.Connection, char_id: int) -> list[dict
     return json.loads(row[0])
 
 
+def _corp_assets_across_chars(corp_data: dict[int, tuple[int, list]]) -> tuple[int, list]:
+    """Every corp's assets in one list, plus the corp to answer questions about.
+
+    Characters can sit in different corps, and the all-characters view shows all
+    of their corp hangars at once - but the things keyed off a corporation (the
+    division labels, the container names) can only speak for one of them. Name
+    one that actually holds something: the corp used to be whichever element a
+    set handed out first, which on a real account was an empty corp, and then
+    every corp container lost its name and every corp ship its hull row - the
+    hull is folded in by type, and the type came from that corp's assets.
+
+    Returns (corp_id, assets) with each corp's rows added once, in the order the
+    characters were selected.
+    """
+    corp_id = 0
+    assets: list = []
+    seen: set[int] = set()
+    for cid_corp, c_list in corp_data.values():
+        if not cid_corp or cid_corp in seen:
+            continue
+        seen.add(cid_corp)
+        assets += c_list
+        if c_list and not corp_id:
+            corp_id = cid_corp
+    # Nobody holds anything: still name a corp, so the hangar divisions keep
+    # their custom labels on an empty page.
+    return (corp_id or next(iter(seen), 0)), assets
+
+
 def _load_corp_assets_from_cache(conn: sqlite3.Connection, corp_id: int) -> list[dict]:
     row = conn.execute(
         "SELECT data_json FROM corp_assets_cache WHERE corporation_id=?", (corp_id,)
@@ -3436,14 +3465,7 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
         if len(selected_chars) == 1:
             corp_id, corp_assets_list = corp_data.get(char_id, (0, []))
         else:
-            corp_id = 0
-            corp_assets_list = []
-            seen_corp_ids: set[int] = set()
-            for cid_corp, c_list in corp_data.values():
-                if cid_corp and cid_corp not in seen_corp_ids:
-                    seen_corp_ids.add(cid_corp)
-                    corp_assets_list = corp_assets_list + c_list
-            corp_id = next(iter(seen_corp_ids), 0)
+            corp_id, corp_assets_list = _corp_assets_across_chars(corp_data)
 
         # ── Corporate assets ─────────────────────────────────────────────────
         # A corporation can rename its 7 hangar divisions; use the real names
@@ -3697,9 +3719,13 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
         # ── Build corp stations ───────────────────────────────────────────────
         if corp_sd and corp_id:
             corp_assets_raw = _load_corp_assets_from_cache(conn, corp_id)
-            corp_container_type_map = {item["item_id"]: item["type_id"] for item in corp_assets_raw}
-            corp_container_parent_map = {item["item_id"]: item["location_id"]
-                                         for item in corp_assets_raw}
+            # Taken from the rows the tree itself was built from, not from one
+            # corp's cache: the all-characters view aggregates every corp a
+            # character belongs to, so a map holding one of them leaves the rest
+            # with no type to fold and no parent to look in.
+            corp_container_type_map = {a.item_id: a.type_id for a in corp_assets_list}
+            corp_container_parent_map = {a.item_id: a.location_id
+                                         for a in corp_assets_list}
             all_corp_container_ids = [
                 cid
                 for sid_data in corp_sd.values()

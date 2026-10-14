@@ -970,3 +970,101 @@ def test_corp_resolver_skips_esi_entirely_when_it_owns_nothing(app_module):
 
     assert got == {}
     assert not called
+
+
+# ── more than one corp on the account (found 2026-10-14) ──────────────────────
+# A character's corp hangar is shown next to their personal one, and with every
+# character selected those hangars can belong to different corporations. The
+# page answers to a single corp_id, which was taken as whichever element a set
+# handed out first - on a real account an empty corp. Everything keyed by it
+# then spoke about the wrong corporation: the container names were never looked
+# up and the fold had no type for the ship, so a fitted corp ship lost its hull.
+
+def _container_block(html: str, type_id: int) -> str:
+    """The rendered rows of the container whose header icon is `type_id`.
+
+    Matched on the header's own icon rather than its label: a container with no
+    custom name is headed "Container <item_id>", which says nothing about what
+    the thing is.
+    """
+    # Personal containers are #cont-, corporate ones #ccont-.
+    heads = [m.start() for m in re.finditer(r'data-bs-target="#c?cont-', html)]
+    for i, start in enumerate(heads):
+        end = heads[i + 1] if i + 1 < len(heads) else len(html)
+        block = html[start:end]
+        head = block[:block.find("</div>")]
+        if 'data-render="/icon/%d?' % type_id in head:
+            return block
+    return ""
+
+
+def test_the_corp_named_is_one_that_actually_holds_assets(app_module):
+    m = app_module
+    corp_id, assets = m._corp_assets_across_chars({
+        900000001: (98000001, []),          # a corp with an empty hangar
+        900000002: (98000002, ["ship"]),
+    })
+    assert corp_id == 98000002
+    assert assets == ["ship"]
+
+
+def test_every_corp_contributes_its_hangar_once(app_module):
+    m = app_module
+    corp_id, assets = m._corp_assets_across_chars({
+        900000001: (98000001, ["a"]),
+        900000002: (98000002, ["b"]),
+        900000003: (98000001, ["a"]),       # same corp again: already counted
+    })
+    assert corp_id == 98000001
+    assert assets == ["a", "b"]
+
+
+def test_a_corp_is_named_even_when_no_hangar_holds_anything(app_module):
+    """The division labels are worth fetching for an empty hangar too."""
+    m = app_module
+    corp_id, assets = m._corp_assets_across_chars({
+        900000001: (98000001, []),
+        900000002: (0, []),                 # no corp assets scope at all
+    })
+    assert corp_id == 98000001
+    assert assets == []
+
+
+def test_a_corp_ship_keeps_its_hull_when_another_corp_is_on_the_account(
+        client, app_module):
+    """End to end: the hull is folded from the rows the tree was built from.
+
+    The maps used to come from one corporation's cached assets, so a ship in any
+    other corp's hangar - or in this corp's, when the cache had not been written
+    yet - was listed as its fit alone.
+    """
+    from app.character.assets import CharAsset
+    STATION = 60003760
+    SHIP_ITEM = 780001
+
+    def _row(item_id, type_id, loc, flag, qty, singleton):
+        return CharAsset(item_id=item_id, type_id=type_id, location_id=loc,
+                         location_flag=flag, quantity=qty, is_singleton=singleton,
+                         is_blueprint_copy=False)
+
+    held = {
+        900000001: (98000001, []),                       # empty corp, listed first
+        900000002: (98000002, [
+            _row(SHIP_ITEM, MEGATHRON, STATION, "CorpSAG1", 1, True),
+            _row(780002, ANTIMATTER, SHIP_ITEM, "HiSlot0", 100, False),
+        ]),
+    }
+
+    async def _corp(cl, char_id, token, conn, force_refresh=False):
+        return held.get(char_id, (0, []))
+
+    real = app_module.fetch_corp_assets
+    app_module.fetch_corp_assets = _corp
+    try:
+        html = client.get("/assets?view=all").text
+    finally:
+        app_module.fetch_corp_assets = real
+
+    ship = _container_block(html, MEGATHRON)
+    assert ship, "the corp ship is not on the page at all"
+    assert ">Hull</td>" in ship, "the corp ship is listed without its hull"
