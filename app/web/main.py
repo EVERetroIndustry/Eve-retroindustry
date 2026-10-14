@@ -6199,7 +6199,7 @@ async def wallet_page(request: Request, char: str = "", scope: str = "personal",
         "error": None, "division_names": dict(_CORP_DIVISION_NAMES),
         "corp_div_note": None, "custom_divisions": set(),
         "row_cap": _WALLET_ROW_CAP,
-        "data_age": None, "stale_note": None, "txn_note": "",
+        "data_age": None, "stale_note": None, "txn_note": "", "txn_meta": {},
     }
 
     if not plan_char_id:
@@ -6221,9 +6221,12 @@ async def wallet_page(request: Request, char: str = "", scope: str = "personal",
     # 150 tokens per 15 minutes per character, and a 2xx costs 2.
     ck = f"c:{plan_char_id}:{division}" if scope == "corp" else f"p:{plan_char_id}"
     force = request.query_params.get("refresh") == "1"
-    if force:
-        drop_cached(conn, "wallet", ck)
-    stored = None if force else get_cached(conn, "wallet", ck)
+    # Read before anything else and keep it: Refresh skips it for rendering, but
+    # the copy is still what we fall back on when ESI does not answer, and still
+    # holds the transactions snapshot ESI will not rebuild yet. It used to be
+    # dropped here, so a Refresh that failed left the page with nothing.
+    cached = get_cached(conn, "wallet", ck)
+    stored = None if force else cached
 
     def _apply_stored(payload: dict, age: float) -> None:
         ctx["balance"] = payload.get("balance")
@@ -6252,8 +6255,8 @@ async def wallet_page(request: Request, char: str = "", scope: str = "personal",
     token = await _valid_token_async(plan_char_id)
     row = get_character_row(conn, plan_char_id)
     if not token or not row:
-        if stored:
-            _apply_stored(stored[0], stored[1])
+        if cached:
+            _apply_stored(cached[0], cached[1])
             ctx["stale_note"] = "ESI could not be reached to refresh this."
         else:
             ctx["error"] = "The character token expired - sign in again."
@@ -6269,6 +6272,18 @@ async def wallet_page(request: Request, char: str = "", scope: str = "personal",
         return {r[0]: r[1] for r in conn.execute(
             f"SELECT type_id, name FROM sde_types WHERE type_id IN ({ph})", list(type_ids)
         ).fetchall()}
+
+    # ESI does not build the market-transaction list on demand: it hands out an
+    # hourly snapshot and will not build the next one before `expires`. Asking
+    # again inside that hour returns the rows we already have and costs two
+    # tokens of char-wallet, the tightest rate-limit group the app touches - and
+    # asking the moment it runs out is what gets the freshest rows there are.
+    # Refresh is included deliberately: it cannot make ESI answer twice either,
+    # and the note below says how far behind the snapshot is.
+    prev = (cached[0] if cached else {}) or {}
+    snap_meta = prev.get("txn_meta") or {}
+    snap_rows = prev.get("transactions") or []
+    snap_valid = _expires_epoch(snap_meta.get("expires", "")) > _time.time()
 
     live_error: str | None = None
     try:
@@ -6300,24 +6315,37 @@ async def wallet_page(request: Request, char: str = "", scope: str = "personal",
                     if wallets:
                         journal = await wallet_api.fetch_corp_journal(
                             client, corp_id, division, token, limit=_WALLET_ROW_CAP)
-                        txns, txn_meta = await wallet_api.fetch_corp_transactions(
-                            client, corp_id, division, token)
-                        ctx["txn_note"] = _txn_snapshot_note(journal, txns, txn_meta)
+                        if snap_valid:
+                            txns, txn_meta = [], snap_meta
+                        else:
+                            txns, txn_meta = await wallet_api.fetch_corp_transactions(
+                                client, corp_id, division, token)
                         bal = next((w["balance"] for w in wallets if w["division"] == division), None)
                         ctx["balance"] = bal
                         names = await _wallet_names(conn, journal, txns, token)
-                        ctx["journal"], ctx["transactions"] = _decorate(
+                        ctx["journal"], fresh_txns = _decorate(
                             conn, journal, txns, _type_names, names)
+                        ctx["transactions"] = snap_rows if snap_valid else fresh_txns
+                        ctx["txn_meta"] = txn_meta
+                        ctx["txn_note"] = _txn_snapshot_note(
+                            journal, ctx["transactions"], txn_meta)
             else:  # personal
                 balance = await wallet_api.fetch_balance(client, plan_char_id, token)
                 journal = await wallet_api.fetch_journal(
                     client, plan_char_id, token, limit=_WALLET_ROW_CAP)
-                txns, txn_meta = await wallet_api.fetch_transactions(client, plan_char_id, token)
-                ctx["txn_note"] = _txn_snapshot_note(journal, txns, txn_meta)
+                if snap_valid:
+                    txns, txn_meta = [], snap_meta
+                else:
+                    txns, txn_meta = await wallet_api.fetch_transactions(
+                        client, plan_char_id, token)
                 ctx["balance"] = balance
                 names = await _wallet_names(conn, journal, txns, token)
-                ctx["journal"], ctx["transactions"] = _decorate(
+                ctx["journal"], fresh_txns = _decorate(
                     conn, journal, txns, _type_names, names)
+                ctx["transactions"] = snap_rows if snap_valid else fresh_txns
+                ctx["txn_meta"] = txn_meta
+                ctx["txn_note"] = _txn_snapshot_note(
+                    journal, ctx["transactions"], txn_meta)
     except Exception as exc:
         live_error = str(exc)
 
@@ -6332,15 +6360,17 @@ async def wallet_page(request: Request, char: str = "", scope: str = "personal",
             "journal": ctx["journal"],
             "transactions": ctx["transactions"],
             "txn_note": ctx["txn_note"],
+            # Kept so the next visit knows when ESI will have a newer snapshot.
+            "txn_meta": ctx["txn_meta"],
             "corp_wallets": ctx["corp_wallets"],
             "corp_name": ctx["corp_name"],
             "division_names": [[k, v] for k, v in ctx["division_names"].items()],
             "custom_divisions": sorted(ctx["custom_divisions"]),
             "corp_div_note": ctx["corp_div_note"],
         })
-    elif stored:
+    elif cached:
         keep_error = ctx["corp_error"]        # a permission refusal still explains itself
-        _apply_stored(stored[0], stored[1])
+        _apply_stored(cached[0], cached[1])
         ctx["corp_error"] = keep_error
         ctx["stale_note"] = ("ESI did not answer" if not live_error
                              else f"ESI did not answer ({live_error})")
@@ -6411,6 +6441,17 @@ def _snapshot_time(header: str) -> str:
         return parsedate_to_datetime(header).strftime("%Y-%m-%d %H:%M UTC")
     except Exception:
         return ""
+
+
+def _expires_epoch(header: str) -> float:
+    """An HTTP Expires header as epoch seconds, or 0 when it cannot be read."""
+    if not header:
+        return 0.0
+    try:
+        from email.utils import parsedate_to_datetime
+        return parsedate_to_datetime(header).timestamp()
+    except Exception:
+        return 0.0
 
 
 def _txn_snapshot_note(journal: list[dict], txns: list[dict], meta: dict) -> str:
@@ -6495,6 +6536,10 @@ def _decorate(conn, journal: list[dict], txns: list[dict],
         up = t.get("unit_price", 0.0)
         dt.append({
             "date": t.get("date", ""),
+            # Not rendered. It is what tells a stored snapshot's rows apart from
+            # the journal's market transactions, so the pending count survives
+            # the row being decorated and put in the page cache.
+            "transaction_id": t.get("transaction_id"),
             "type_id": t.get("type_id"),
             "item": tnames.get(t.get("type_id"), f"#{t.get('type_id')}"),
             "quantity": qty,

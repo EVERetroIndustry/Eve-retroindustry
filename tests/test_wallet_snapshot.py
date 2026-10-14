@@ -109,3 +109,131 @@ def test_a_sale_sharing_the_newest_timestamp_is_still_counted(app_module):
                _market_journal(1, "2026-10-14T13:02:31Z")]   # the one it has
     note = app_module._txn_snapshot_note(journal, txns, META)
     assert "1 market transaction already in the Journal is not in it yet" in note
+
+
+# ── not asking for a snapshot ESI has not rebuilt yet ─────────────────────────
+# The same hour that puts the Transactions tab behind the Journal also makes
+# every repeat call pointless: ESI answers with the rows already in hand and
+# charges two tokens of char-wallet, 150 per 15 minutes per character.
+
+import datetime as _dt
+import time as _time
+from email.utils import format_datetime
+
+import pytest
+
+from app.character import wallet as wallet_api
+from app.web.page_cache import drop_cached
+
+CHAR = 900000001
+
+
+def _http_date(seconds_from_now: float) -> str:
+    return format_datetime(_dt.datetime.now(_dt.timezone.utc)
+                           + _dt.timedelta(seconds=seconds_from_now), usegmt=True)
+
+
+class _Wallet:
+    """Stand-in wallet endpoints that count what was asked for."""
+
+    def __init__(self, monkeypatch, expires_in=3600.0, journal=None, txns=None):
+        self.journal = journal if journal is not None else []
+        self.txns = txns if txns is not None else []
+        self.expires_in = expires_in
+        self.balance_calls = self.journal_calls = self.txn_calls = 0
+
+        async def balance(client, char_id, token):
+            self.balance_calls += 1
+            return 5_000_000.0
+
+        async def journal_fn(client, char_id, token, limit=2500):
+            self.journal_calls += 1
+            return list(self.journal)
+
+        async def txns_fn(client, char_id, token):
+            self.txn_calls += 1
+            return list(self.txns), {"last_modified": _http_date(-60),
+                                     "expires": _http_date(self.expires_in)}
+
+        async def names(conn, j, t, tok):
+            return {}
+
+        monkeypatch.setattr(wallet_api, "fetch_balance", balance)
+        monkeypatch.setattr(wallet_api, "fetch_journal", journal_fn)
+        monkeypatch.setattr(wallet_api, "fetch_transactions", txns_fn)
+        import app.web.main as m
+        monkeypatch.setattr(m, "_wallet_names", names)
+
+
+@pytest.fixture
+def clean_wallet(app_module):
+    def _clear():
+        conn = app_module.get_conn()
+        try:
+            drop_cached(conn, "wallet")
+        finally:
+            conn.close()
+    _clear()
+    yield
+    _clear()
+
+
+def _refresh(client):
+    return client.get(f"/wallet?char={CHAR}&scope=personal&refresh=1")
+
+
+def test_a_snapshot_still_in_date_is_not_asked_for_again(client, clean_wallet, monkeypatch):
+    w = _Wallet(monkeypatch, expires_in=3600,
+                txns=[_txn(1, "2026-10-14T13:02:31Z")])
+    first = _refresh(client)
+    assert w.txn_calls == 1
+
+    second = _refresh(client)
+    assert w.txn_calls == 1, "ESI cannot build a new snapshot yet - do not ask"
+    assert w.balance_calls == 2, "the balance moves while you play, keep asking"
+    assert w.journal_calls == 2, "the journal has its own clock, keep asking"
+    # And the rows are still on the page, not dropped with the call.
+    assert first.text.count("tbl-txns") == second.text.count("tbl-txns")
+    assert "Tritanium" in second.text
+
+
+def test_a_snapshot_past_its_date_is_fetched_again(client, clean_wallet, monkeypatch):
+    w = _Wallet(monkeypatch, expires_in=-1,
+                txns=[_txn(1, "2026-10-14T13:02:31Z")])
+    _refresh(client)
+    _refresh(client)
+    assert w.txn_calls == 2
+
+
+def test_the_pending_count_follows_the_journal_while_the_snapshot_waits(
+        client, clean_wallet, monkeypatch):
+    """The snapshot is reused, but the journal is not - so the count of what it
+    is missing has to be worked out again on every visit."""
+    w = _Wallet(monkeypatch, expires_in=3600,
+                txns=[_txn(1, "2026-10-14T13:02:31Z")],
+                journal=[_market_journal(1, "2026-10-14T13:02:31Z")])
+    first = _refresh(client)
+    assert "not in it yet" not in first.text
+
+    w.journal = [_market_journal(2, "2026-10-14T14:54:42Z"),
+                 _market_journal(1, "2026-10-14T13:02:31Z")]
+    second = _refresh(client)
+    assert w.txn_calls == 1, "still the same snapshot"
+    assert "1 market transaction already in the Journal is not in it yet" in second.text
+
+
+def test_a_refresh_that_esi_refuses_still_shows_the_stored_copy(
+        client, clean_wallet, monkeypatch, app_module):
+    """Refresh used to throw the stored copy away before asking. When the ask
+    then failed, the page had nothing left to show."""
+    w = _Wallet(monkeypatch, expires_in=3600,
+                txns=[_txn(1, "2026-10-14T13:02:31Z")])
+    assert "Tritanium" in _refresh(client).text
+
+    async def no_balance(client_, char_id, token):
+        return None
+
+    monkeypatch.setattr(wallet_api, "fetch_balance", no_balance)
+    down = _refresh(client)
+    assert "Tritanium" in down.text, "the stored rows must survive a failed Refresh"
+    assert "ESI did not answer" in down.text
