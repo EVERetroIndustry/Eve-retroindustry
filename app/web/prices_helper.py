@@ -560,6 +560,13 @@ async def refresh_jita_prices_all(conn: sqlite3.Connection, type_ids: list[int])
     return refreshed
 
 
+def sweep_error_message(exc: BaseException) -> str:
+    """What a failed order-book sweep tells the page. Always says the stored prices
+    are untouched, because that is the one thing the user needs to know."""
+    why = str(exc) or type(exc).__name__
+    return f"{why} Stored prices were left as they were - try again in a moment."
+
+
 async def stream_jita_refresh(conn: sqlite3.Connection, type_ids: list[int]):
     """Async generator yielding SSE chunks. Bulk paginated fetch - progress
     is sent after each page of the orders endpoint (~500 pages for the Jita region).
@@ -590,7 +597,14 @@ async def stream_jita_refresh(conn: sqlite3.Connection, type_ids: list[int]):
         pct = int(done * 80 / total) if total else 0
         yield f"data: {_json.dumps({'current': done, 'total': total, 'pct': pct, 'phase': 'orders'})}\n\n"
         await asyncio.sleep(0.5)
-    await task
+    try:
+        await task
+    except Exception as exc:
+        # Nothing has been written yet, and nothing will be: see
+        # IncompleteOrderBook. Say so, rather than ending the stream and leaving
+        # the page to guess at a "Connection error".
+        yield f"data: {_json.dumps({'error': sweep_error_message(exc)})}\n\n"
+        return
 
     wanted |= set(await discover_market_types(conn, bulk_holder.keys()))
     refreshed, traded = _persist_bulk_orders(conn, bulk_holder, wanted)
@@ -748,7 +762,11 @@ async def stream_hub_refresh(conn: sqlite3.Connection, type_ids: list[int], regi
         pct = int(done * 80 / total) if total else 0
         yield f"data: {_json.dumps({'current': done, 'total': total, 'pct': pct, 'phase': 'orders'})}\n\n"
         await asyncio.sleep(0.5)
-    await task
+    try:
+        await task
+    except Exception as exc:
+        yield f"data: {_json.dumps({'error': sweep_error_message(exc)})}\n\n"
+        return
 
     refreshed, traded = _persist_hub_bulk_orders(conn, region_id, bulk_holder, wanted)
 

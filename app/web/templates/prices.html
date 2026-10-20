@@ -797,6 +797,15 @@
     const es = new EventSource('/prices/refresh/stream');
     es.onmessage = (e) => {
       const d = JSON.parse(e.data);
+      if (d.error) {
+        // The sweep could not read the whole order book, so it wrote nothing.
+        es.close();
+        dlFinish('error', 'Error: ' + d.error);
+        refreshBtn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Refresh Jita Prices';
+        dlLock(false);
+        dlHide(8000);
+        return;
+      }
       if (d.done) {
         es.close();
         const volMsg = d.volume_updated ? `, ${d.volume_updated} volumes` : '';
@@ -1020,6 +1029,13 @@
       const es = new EventSource('/prices/refresh/hub/' + rid + '/stream');
       es.onmessage = (e) => {
         const d = JSON.parse(e.data);
+        if (d.error) {
+          es.close();
+          dlFinish('error', name + ': ' + d.error);
+          dlLock(false);
+          dlHide(8000);
+          return;
+        }
         if (d.done) {
           es.close();
           dlFinish('done', 'Done (' + name + '): ' + d.refreshed + ' prices.');

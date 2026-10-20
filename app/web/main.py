@@ -65,7 +65,7 @@ from app.manufacturing.planner import (
     MFG_IMPLANTS, MFG_IMPLANT_PCTS,
 )
 from app.bom.resolver import BOMResolver
-from app.market.prices import ensure_price_table, fetch_station_volumes, get_cached_station_volumes, get_station_volumes_any_age, fetch_structure_market, TRADE_HUBS, JITA_REGION, HISTORY_ENDPOINT_URL, fill_region_volumes, region_volume_coverage
+from app.market.prices import ensure_price_table, fetch_station_volumes, get_cached_station_volumes, get_station_volumes_any_age, fetch_structure_market, TRADE_HUBS, JITA_REGION, HISTORY_ENDPOINT_URL, fill_region_volumes, region_volume_coverage, IncompleteOrderBook
 from app.web.prices_helper import (
     _apply_discovered_types,
     attach_off_market_prices,
@@ -78,6 +78,7 @@ from app.web.prices_helper import (
     set_custom_price,
     stream_jita_refresh,
     stream_hub_refresh,
+    sweep_error_message,
     get_hub_cache_stats,
     get_all_hub_prices,
     get_price_history,
@@ -5849,7 +5850,9 @@ async def prices_station_stream(request: Request, location_id: int):
 
             exc = task.exception()
             if exc is not None:
-                yield f"data: {_json.dumps({'error': str(exc) or 'Fetch failed.'})}\n\n"
+                msg = (sweep_error_message(exc) if isinstance(exc, IncompleteOrderBook)
+                       else str(exc) or 'Fetch failed.')
+                yield f"data: {_json.dumps({'error': msg})}\n\n"
                 return
             task = None   # completed cleanly - don't cancel in finally
             # The sweep above only asked about what this station sells. Top the

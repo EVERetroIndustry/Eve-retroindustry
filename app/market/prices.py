@@ -42,6 +42,21 @@ TRADE_HUBS: dict[int, dict] = {
 # ~3 s, and the user usually refreshes once a day.
 
 _JITA_SEM = asyncio.Semaphore(10)
+
+
+class IncompleteOrderBook(RuntimeError):
+    """ESI did not hand over every page of an order book.
+
+    An order book with a page missing is not a smaller market, it is an unknown
+    one: whatever sat on that page - the cheapest order, or every order of a rare
+    type - is simply absent. Writing it would turn "could not ask" into "nothing
+    for sale", and that is exactly what a refresh during downtime used to do:
+    every page answered 503, each one was read as an empty page, and the whole
+    price cache was rewritten as "no price" while the bar said Done. So a sweep is
+    all or nothing, and the stored prices stay as they were.
+    """
+
+
 # The 7-day history is fetched per-type (no bulk endpoint), so it is the dominant
 # part of a refresh (~19k calls).
 # Concurrency for market history. ESI rate-limits this endpoint by REQUEST RATE,
@@ -581,7 +596,12 @@ async def _fetch_orders_page(
     region_id: int,
     page: int,
 ) -> tuple[list[dict], int]:
-    """Fetches a single page of orders and returns (orders, x_pages)."""
+    """Fetches a single page of orders and returns (orders, x_pages).
+
+    Raises IncompleteOrderBook when the page cannot be had, never an empty list:
+    an empty page and an unreadable one must not look alike to the caller.
+    """
+    status = "no answer"
     async with _JITA_SEM:
         for attempt in range(3):
             try:
@@ -591,10 +611,12 @@ async def _fetch_orders_page(
                     timeout=30,
                 )
             except (httpx.TimeoutException, httpx.ConnectError):
+                status = "timeout"
                 if attempt < 2:
                     await asyncio.sleep(2 ** attempt * 3)
                     continue
-                return [], 0
+                break
+            status = f"HTTP {r.status_code}"
             if r.status_code in (420, 429):
                 retry_after = int(r.headers.get("Retry-After", 60))
                 await asyncio.sleep(min(retry_after, 120))
@@ -603,9 +625,10 @@ async def _fetch_orders_page(
                 if attempt < 2:
                     await asyncio.sleep(5)
                     continue
-                return [], 0
+                break
             return r.json(), int(r.headers.get("x-pages", 1))
-        return [], 0
+    raise IncompleteOrderBook(
+        f"ESI did not return page {page} of the order book ({status}).")
 
 
 async def _fetch_all_region_orders(
@@ -615,10 +638,11 @@ async def _fetch_all_region_orders(
 ) -> list[list[dict]]:
     """Fetches ALL pages of the region's orders, paginated (in parallel, _JITA_SEM).
     Returns a list of pages (each = list of orders). progress_cb(done, total) after each
-    page. Shared between region-bulk and station-bulk aggregation."""
+    page. Shared between region-bulk and station-bulk aggregation.
+
+    Every page or IncompleteOrderBook - see that class for why a partial book is
+    never returned."""
     first, total_pages = await _fetch_orders_page(client, region_id, 1)
-    if not first and total_pages == 0:
-        return []
 
     pages_data: list[list[dict]] = [first]
     if progress_cb:
@@ -636,7 +660,12 @@ async def _fetch_all_region_orders(
             if progress_cb:
                 await _maybe_call(progress_cb, completed[0], total_pages)
 
-    await asyncio.gather(*[_one(p) for p in remaining], return_exceptions=True)
+    results = await asyncio.gather(*[_one(p) for p in remaining], return_exceptions=True)
+    failed = [r for r in results if isinstance(r, Exception)]
+    if failed:
+        raise IncompleteOrderBook(
+            f"ESI did not return {len(failed)} of {total_pages} pages of the order "
+            f"book ({failed[0]}).")
     return pages_data
 
 
@@ -1040,12 +1069,14 @@ async def fetch_structure_market(
                 r = None; break   # 400/404/… → give up this page
 
             if r is None or r.status_code != 200:
-                # Couldn't read this page after retries. If we never read ANY page,
-                # fail loudly so the caller surfaces it and we don't cache blank
-                # sell/available over good data (the bug: only 7d vol showed).
-                if not got_ok:
-                    raise RuntimeError("Could not read the structure market (ESI timeout/error). Try again.")
-                break
+                # Couldn't read this page after retries. Any page, not just the
+                # first: stopping at a later one used to persist the pages before
+                # it, so every type whose orders sat further on was written as
+                # "nothing for sale here" over whatever the last good load found.
+                raise IncompleteOrderBook(
+                    "Could not read the structure market" + (
+                        f" (page {page} failed)" if got_ok else "")
+                    + " - ESI timeout/error.")
 
             got_ok = True
             orders = r.json()
@@ -1210,7 +1241,12 @@ async def _fetch_orders_for_type(
     location_id: int,
     type_id: int,
 ) -> tuple[int | None, float | None]:
-    """Returns (volume_sum, best_sell) for the given type at a specific station."""
+    """Returns (volume_sum, best_sell) for the given type at a specific station.
+
+    (0, None) means the station has no sell order for it. A failed request
+    raises IncompleteOrderBook instead of answering: it used to come back as
+    (None, None) and be stored over the price the last good load had found.
+    """
     async with _STATION_SEM:
         try:
             r = await client.get(
@@ -1218,10 +1254,13 @@ async def _fetch_orders_for_type(
                 params={"type_id": type_id, "order_type": "sell", "datasource": "tranquility"},
                 timeout=15,
             )
-            if r.status_code != 200:
-                return None, None
-        except Exception:
-            return None, None
+        except Exception as exc:
+            raise IncompleteOrderBook(
+                f"ESI did not return the orders for type {type_id} "
+                f"({type(exc).__name__}).") from exc
+        if r.status_code != 200:
+            raise IncompleteOrderBook(
+                f"ESI did not return the orders for type {type_id} (HTTP {r.status_code}).")
 
     orders = [o for o in r.json() if o.get("location_id") == location_id]
     if not orders:
@@ -1262,8 +1301,15 @@ async def fetch_station_volumes(
         async with esi_client() as client:
             order_tasks = [_fetch_orders_for_type(client, region_id, location_id, tid) for tid in type_ids]
             order_results = await asyncio.gather(*order_tasks, return_exceptions=True)
+        failed = [r for r in order_results if isinstance(r, Exception)]
+        if failed:
+            # Same rule as the bulk path: a type we could not ask about is not a
+            # type with nothing for sale. Nothing is written, nothing is lost.
+            raise IncompleteOrderBook(
+                f"ESI did not return the orders for {len(failed)} of "
+                f"{len(type_ids)} type(s) ({failed[0]}).")
         for tid, res in zip(type_ids, order_results):
-            order_map[tid] = res if isinstance(res, tuple) else (None, None)
+            order_map[tid] = res
 
     # Persist the fast phase (this station's own orders) before touching region
     # history, same reasoning as fetch_structure_market: a load interrupted
