@@ -543,94 +543,100 @@ async def _maybe_call(cb, *args):
 
 
 async def refresh_jita_prices_all(conn: sqlite3.Connection, type_ids: list[int]) -> int:
-    """Fetches fresh Jita prices for all passed type_ids - bulk paginated region orders.
-    Then, for types with at least one order, also fetches the 7-day volume from the history endpoint.
-    Returns the number of types with at least one price.
+    """Full Jita refresh without progress; returns the number of types priced."""
+    return (await refresh_jita(conn, type_ids))['refreshed']
+
+
+def sweep_error_message(exc: BaseException) -> str:
+    """What a failed refresh tells the page.
+
+    Only an unreadable order book is known to have written nothing - that is
+    the IncompleteOrderBook guarantee - so only then does the message promise
+    the stored prices are untouched. Anything else may have failed after the
+    prices were stored (in the volume phase, say), and claiming otherwise would
+    be untrue.
+    """
+    from app.market.prices import IncompleteOrderBook
+    why = str(exc) or type(exc).__name__
+    if isinstance(exc, IncompleteOrderBook):
+        return f"{why} Stored prices were left as they were - try again in a moment."
+    return why
+
+
+async def _report(report, payload: dict) -> None:
+    if report is not None:
+        report(**payload)
+
+
+async def refresh_jita(conn: sqlite3.Connection, type_ids: list[int], report=None) -> dict:
+    """The full Jita refresh: every order in The Forge, then 7-day volumes.
+
+    `report(**payload)` receives the same payloads the progress stream sends, so
+    the background scheduler and the Prices page see one run the same way. Raises
+    IncompleteOrderBook (and writes nothing) when the order book is not whole.
     """
     ensure_price_table(conn)
     wanted = set(type_ids)
+
+    async def _progress(done: int, total: int):
+        # Phase 1 = order fetch - 0-80 % so phase 2 (volumes) has the last 20 %.
+        await _report(report, {'current': done, 'total': total, 'phase': 'orders',
+                               'pct': int(done * 80 / total) if total else 0})
+
     async with esi_client() as client:
-        bulk = await fetch_region_orders_bulk(client, JITA_REGION)
+        bulk = await fetch_region_orders_bulk(client, JITA_REGION, progress_cb=_progress)
+
     # Anything on the order book that the static data has never heard of is
     # learned here and priced in this same pass - its orders are already in hand.
     wanted |= set(await discover_market_types(conn, bulk.keys()))
     refreshed, traded = _persist_bulk_orders(conn, bulk, wanted)
-    if traded:
-        await _fill_volumes(conn, traded)
-    return refreshed
+
+    # Phase 2 - 7-day Jita volumes for everything that actually trades.
+    vol_total = len(traded)
+    await _report(report, {'pct': 80, 'phase': 'volumes', 'vol_done': 0, 'vol_total': vol_total})
+
+    async def _vol_progress(done: int, total: int):
+        await _report(report, {'phase': 'volumes', 'vol_done': done, 'vol_total': vol_total,
+                               'pct': 80 + int(done * 20 / vol_total) if vol_total else 100})
+
+    updated_vol = await _fill_volumes(conn, traded, progress_cb=_vol_progress)
+    return {'refreshed': refreshed, 'total': len(wanted), 'volume_updated': updated_vol}
 
 
-def sweep_error_message(exc: BaseException) -> str:
-    """What a failed order-book sweep tells the page. Always says the stored prices
-    are untouched, because that is the one thing the user needs to know."""
-    why = str(exc) or type(exc).__name__
-    return f"{why} Stored prices were left as they were - try again in a moment."
+async def stream_refresh(work):
+    """SSE chunks for a refresh run in this request: `work(report)` is the
+    refresh. Kept for callers that own the run; the Prices page follows the
+    background scheduler's run instead (see follow_job in main.py)."""
+    latest: dict = {'pct': 0, 'phase': 'orders', 'current': 0, 'total': 0}
 
+    def _r(**payload):
+        latest.update(payload)
 
-async def stream_jita_refresh(conn: sqlite3.Connection, type_ids: list[int]):
-    """Async generator yielding SSE chunks. Bulk paginated fetch - progress
-    is sent after each page of the orders endpoint (~500 pages for the Jita region).
-    """
-    ensure_price_table(conn)
-    wanted = set(type_ids)
-    total_pages_holder = [0]
-    completed_holder = [0]
-
-    async def _progress(done: int, total: int):
-        total_pages_holder[0] = total
-        completed_holder[0] = done
-
-    bulk_holder: dict = {}
-
-    async def _run():
-        async with esi_client() as client:
-            bulk_holder.update(
-                await fetch_region_orders_bulk(client, JITA_REGION, progress_cb=_progress)
-            )
-
-    task = asyncio.create_task(_run())
+    task = asyncio.create_task(work(_r))
     while not task.done():
-        total = total_pages_holder[0]
-        done = completed_holder[0]
-        # Phase 1 = order fetch - display 0-80 % so phase 2 (volumes)
-        # has the last 20 %.
-        pct = int(done * 80 / total) if total else 0
-        yield f"data: {_json.dumps({'current': done, 'total': total, 'pct': pct, 'phase': 'orders'})}\n\n"
+        payload = dict(latest)
+        if payload.get('phase') == 'volumes':
+            throttle = esi_throttle_status(HISTORY_ENDPOINT_URL)
+            if throttle["paused"]:
+                payload["throttled"] = True
+                payload["wait_s"] = throttle["seconds"]
+        yield f"data: {_json.dumps(payload)}\n\n"
         await asyncio.sleep(0.5)
     try:
-        await task
+        result = task.result()
     except Exception as exc:
         # Nothing has been written yet, and nothing will be: see
         # IncompleteOrderBook. Say so, rather than ending the stream and leaving
         # the page to guess at a "Connection error".
         yield f"data: {_json.dumps({'error': sweep_error_message(exc)})}\n\n"
         return
+    yield f"data: {_json.dumps({'pct': 100, 'done': True, **result})}\n\n"
 
-    wanted |= set(await discover_market_types(conn, bulk_holder.keys()))
-    refreshed, traded = _persist_bulk_orders(conn, bulk_holder, wanted)
 
-    # Phase 2 - 7-day Jita volumes for everything that actually trades.
-    vol_done_holder = [0]
-    vol_total = len(traded)
-    yield f"data: {_json.dumps({'pct': 80, 'phase': 'volumes', 'vol_done': 0, 'vol_total': vol_total})}\n\n"
-
-    async def _vol_progress(done: int, total: int):
-        vol_done_holder[0] = done
-
-    vol_task = asyncio.create_task(_fill_volumes(conn, traded, progress_cb=_vol_progress))
-    while not vol_task.done():
-        d = vol_done_holder[0]
-        pct = 80 + int(d * 20 / vol_total) if vol_total else 100
-        payload = {'phase': 'volumes', 'vol_done': d, 'vol_total': vol_total, 'pct': pct}
-        throttle = esi_throttle_status(HISTORY_ENDPOINT_URL)
-        if throttle["paused"]:
-            payload["throttled"] = True
-            payload["wait_s"] = throttle["seconds"]
-        yield f"data: {_json.dumps(payload)}\n\n"
-        await asyncio.sleep(0.5)
-    updated_vol = await vol_task
-
-    yield f"data: {_json.dumps({'pct': 100, 'done': True, 'refreshed': refreshed, 'total': len(wanted), 'volume_updated': updated_vol})}\n\n"
+async def stream_jita_refresh(conn: sqlite3.Connection, type_ids: list[int]):
+    """SSE generator for a Jita refresh run in this request."""
+    async for chunk in stream_refresh(lambda r: refresh_jita(conn, type_ids, r)):
+        yield chunk
 
 
 # ---------------------------------------------------------------------------
@@ -733,64 +739,39 @@ async def _fill_hub_volumes(
     return updated
 
 
-async def stream_hub_refresh(conn: sqlite3.Connection, type_ids: list[int], region_id: int):
-    """SSE generator for a single trade hub. Same two phases as Jita
-    (region orders → 7-day volumes), writing to hub_price_cache."""
+async def refresh_hub(conn: sqlite3.Connection, type_ids: list[int], region_id: int,
+                      report=None) -> dict:
+    """One secondary trade hub. Same two phases as Jita (region orders, then
+    7-day volumes), writing to hub_price_cache. Same all-or-nothing rule."""
     ensure_price_table(conn)
     wanted = set(type_ids)
-    total_pages_holder = [0]
-    completed_holder = [0]
-
-    async def _progress(done: int, total: int):
-        total_pages_holder[0] = total
-        completed_holder[0] = done
-
-    bulk_holder: dict = {}
-
     station = TRADE_HUBS.get(region_id, {}).get("station", 0)
 
-    async def _run():
-        async with esi_client() as client:
-            bulk_holder.update(
-                await fetch_region_orders_bulk(client, region_id, progress_cb=_progress, station_id=station)
-            )
+    async def _progress(done: int, total: int):
+        await _report(report, {'current': done, 'total': total, 'phase': 'orders',
+                               'pct': int(done * 80 / total) if total else 0})
 
-    task = asyncio.create_task(_run())
-    while not task.done():
-        total = total_pages_holder[0]
-        done = completed_holder[0]
-        pct = int(done * 80 / total) if total else 0
-        yield f"data: {_json.dumps({'current': done, 'total': total, 'pct': pct, 'phase': 'orders'})}\n\n"
-        await asyncio.sleep(0.5)
-    try:
-        await task
-    except Exception as exc:
-        yield f"data: {_json.dumps({'error': sweep_error_message(exc)})}\n\n"
-        return
+    async with esi_client() as client:
+        bulk = await fetch_region_orders_bulk(client, region_id, progress_cb=_progress,
+                                              station_id=station)
 
-    refreshed, traded = _persist_hub_bulk_orders(conn, region_id, bulk_holder, wanted)
+    refreshed, traded = _persist_hub_bulk_orders(conn, region_id, bulk, wanted)
 
-    vol_done_holder = [0]
     vol_total = len(traded)
-    yield f"data: {_json.dumps({'pct': 80, 'phase': 'volumes', 'vol_done': 0, 'vol_total': vol_total})}\n\n"
+    await _report(report, {'pct': 80, 'phase': 'volumes', 'vol_done': 0, 'vol_total': vol_total})
 
     async def _vol_progress(done: int, total: int):
-        vol_done_holder[0] = done
+        await _report(report, {'phase': 'volumes', 'vol_done': done, 'vol_total': vol_total,
+                               'pct': 80 + int(done * 20 / vol_total) if vol_total else 100})
 
-    vol_task = asyncio.create_task(_fill_hub_volumes(conn, region_id, traded, progress_cb=_vol_progress))
-    while not vol_task.done():
-        d = vol_done_holder[0]
-        pct = 80 + int(d * 20 / vol_total) if vol_total else 100
-        payload = {'phase': 'volumes', 'vol_done': d, 'vol_total': vol_total, 'pct': pct}
-        throttle = esi_throttle_status(HISTORY_ENDPOINT_URL)
-        if throttle["paused"]:
-            payload["throttled"] = True
-            payload["wait_s"] = throttle["seconds"]
-        yield f"data: {_json.dumps(payload)}\n\n"
-        await asyncio.sleep(0.5)
-    updated_vol = await vol_task
+    updated_vol = await _fill_hub_volumes(conn, region_id, traded, progress_cb=_vol_progress)
+    return {'refreshed': refreshed, 'total': len(wanted), 'volume_updated': updated_vol}
 
-    yield f"data: {_json.dumps({'pct': 100, 'done': True, 'refreshed': refreshed, 'total': len(wanted), 'volume_updated': updated_vol})}\n\n"
+
+async def stream_hub_refresh(conn: sqlite3.Connection, type_ids: list[int], region_id: int):
+    """SSE generator for a hub refresh run in this request."""
+    async for chunk in stream_refresh(lambda r: refresh_hub(conn, type_ids, region_id, r)):
+        yield chunk
 
 
 def get_hub_cache_stats(conn: sqlite3.Connection, region_id: int) -> dict:

@@ -65,7 +65,8 @@ from app.manufacturing.planner import (
     MFG_IMPLANTS, MFG_IMPLANT_PCTS,
 )
 from app.bom.resolver import BOMResolver
-from app.market.prices import ensure_price_table, fetch_station_volumes, get_cached_station_volumes, get_station_volumes_any_age, fetch_structure_market, TRADE_HUBS, JITA_REGION, HISTORY_ENDPOINT_URL, fill_region_volumes, region_volume_coverage, IncompleteOrderBook
+from app.market.prices import ensure_price_table, fetch_station_volumes, get_cached_station_volumes, get_station_volumes_any_age, fetch_structure_market, TRADE_HUBS, JITA_REGION, HISTORY_ENDPOINT_URL, fill_region_volumes, region_volume_coverage, foreground_prices_active, PRICE_CACHE_TTL
+from app.web import background as bg
 from app.web.prices_helper import (
     _apply_discovered_types,
     attach_off_market_prices,
@@ -76,8 +77,8 @@ from app.web.prices_helper import (
     refresh_jita_prices_all,
     get_all_price_items,
     set_custom_price,
-    stream_jita_refresh,
-    stream_hub_refresh,
+    refresh_jita,
+    refresh_hub,
     sweep_error_message,
     get_hub_cache_stats,
     get_all_hub_prices,
@@ -1466,11 +1467,11 @@ async def api_delete_character(request: Request, char_id: int):
 
 @app.post("/api/sync/start")
 async def api_sync_start():
-    """Manually trigger an ESI sync for all characters."""
+    """Manually trigger an ESI sync for all characters - the scheduler's
+    "characters" job, so a sync started here shows in the panel like any other."""
     if _sync_state["running"]:
         return {"ok": False, "error": "Already running"}
-    _sync_reset()
-    asyncio.create_task(_bg_initial_sync())
+    bg.run_now("characters")
     return {"ok": True}
 
 
@@ -2108,7 +2109,19 @@ async def api_dashboard_live(request: Request, force: int = 0):
     stored (inside the TTL, or older because a refresh could not happen), and
     nothing-yet. `force=1` is the Refresh icon on a card - when someone asks for
     current numbers they get them.
+
+    Whatever it answers, answering is what opens the background scheduler's
+    startup gate: this is the data the first screen waits for, so background
+    refreshes start only once it is delivered. Delivered, not successful - an
+    ESI outage must not keep them from ever starting.
     """
+    try:
+        return await _dashboard_live(request, force)
+    finally:
+        bg.GATE.delivered()
+
+
+async def _dashboard_live(request: Request, force: int):
     conn = get_conn()
     try:
         if not has_any_character(conn):
@@ -5440,25 +5453,43 @@ async def prices_refresh(request: Request):
     })
 
 
+async def _follow_job(key: str, throttle_url: str | None = None):
+    """SSE view of a background job: start it (or join the run already going)
+    and report that run until it ends.
+
+    The refresh used to live inside this request, so leaving the page during the
+    order phase threw every fetched page away while the fetch carried on. The
+    work now belongs to the scheduler; closing the stream only stops watching.
+    """
+    run_id = bg.run_now(key)
+    while not bg.finished(key, run_id):
+        st = bg.job_state(key)
+        if st.running and st.run_id == run_id:
+            payload = {"pct": 0, "phase": "orders", "current": 0, "total": 0,
+                       **st.progress}
+            if payload.get("phase") == "volumes" and throttle_url:
+                throttle = esi_throttle_status(throttle_url)
+                if throttle["paused"]:
+                    payload["throttled"] = True
+                    payload["wait_s"] = throttle["seconds"]
+        else:
+            payload = {"pct": 0, "note": "Waiting for another price refresh to finish..."}
+        yield f"data: {json.dumps(payload)}\n\n"
+        await asyncio.sleep(0.5)
+    st = bg.job_state(key)
+    if st.error:
+        yield f"data: {json.dumps({'error': st.error})}\n\n"
+    else:
+        yield f"data: {json.dumps({'pct': 100, 'done': True, **(st.result or {})})}\n\n"
+
+
+_SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+
 @app.get("/prices/refresh/stream")
 async def prices_refresh_stream():
-    conn = get_conn()
-    all_ids = _refresh_type_ids(conn)
-
-    async def event_gen():
-        try:
-            async for chunk in stream_jita_refresh(conn, all_ids):
-                yield chunk
-        except Exception:
-            pass
-        finally:
-            conn.close()
-
-    return StreamingResponse(
-        event_gen(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    return StreamingResponse(_follow_job("jita", HISTORY_ENDPOINT_URL),
+                             media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @app.get("/prices/refresh/hub/{region_id}/stream")
@@ -5468,23 +5499,8 @@ async def prices_refresh_hub_stream(region_id: int):
     from fastapi.responses import JSONResponse
     if region_id not in TRADE_HUBS:
         return JSONResponse({"error": "unknown hub"}, status_code=404)
-    conn = get_conn()
-    all_ids = _refresh_type_ids(conn)
-
-    async def event_gen():
-        try:
-            async for chunk in stream_hub_refresh(conn, all_ids, region_id):
-                yield chunk
-        except Exception:
-            pass
-        finally:
-            conn.close()
-
-    return StreamingResponse(
-        event_gen(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    return StreamingResponse(_follow_job(f"hub:{region_id}", HISTORY_ENDPOINT_URL),
+                             media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @app.get("/api/prices/history")
@@ -5850,9 +5866,7 @@ async def prices_station_stream(request: Request, location_id: int):
 
             exc = task.exception()
             if exc is not None:
-                msg = (sweep_error_message(exc) if isinstance(exc, IncompleteOrderBook)
-                       else str(exc) or 'Fetch failed.')
-                yield f"data: {_json.dumps({'error': msg})}\n\n"
+                yield f"data: {_json.dumps({'error': sweep_error_message(exc)})}\n\n"
                 return
             task = None   # completed cleanly - don't cancel in finally
             # The sweep above only asked about what this station sells. Top the
@@ -7524,7 +7538,14 @@ async def _alliance_fill_loop() -> None:
 
 
 def ensure_alliance_filler() -> None:
-    """Start the background filler once, on demand (visiting the tab is enough)."""
+    """Start the background filler once, on demand (visiting the tab is enough).
+
+    Not while automatic updating is off: that switch means nothing refreshes by
+    itself, and a filler that loops for as long as the app runs is exactly that.
+    The tab's own Index button still works.
+    """
+    if not bg.auto_update_enabled():
+        return
     task = _ALLIANCE_WORKER.get("task")
     if task is not None and not task.done():        # type: ignore[union-attr]
         return
@@ -7566,44 +7587,37 @@ async def _any_structure_token(conn: sqlite3.Connection) -> str | None:
 # public - 872 of them, 57 with a public market - and that list moves on the
 # order of a day, so it is fetched once and cached in location_name_cache, where
 # the ordinary name search picks it up.
-_PUBSTRUCT_WORKER: dict[str, object] = {}
-_PUBSTRUCT_STATE: dict = {"phase": "idle"}
+# Refreshed by the background scheduler ("structures" job, registered at the end
+# of this module); the station search can also ask for it when it is due.
 
 
-def public_structure_state() -> dict:
-    return dict(_PUBSTRUCT_STATE)
-
-
-async def _public_structure_refresh(token: str) -> None:
+async def _job_public_structures(report) -> dict:
     conn = get_conn()
     try:
-        _PUBSTRUCT_STATE.update(phase="filling", named=0, total=0)
+        token = await _any_structure_token(conn)
+        if not token:
+            # _structures_apply already found a character whose token carries
+            # the scope, so what failed here is the login itself.
+            raise RuntimeError("No character that can read structures has a working "
+                               "login right now - check the logins on the dashboard.")
 
         def _p(named, total):
-            _PUBSTRUCT_STATE.update(phase="filling", named=named, total=total)
+            report(named=named, total=total,
+                   pct=int(named * 100 / total) if total else 0)
 
-        res = await refresh_public_structures(conn, token, progress_cb=_p)
-        _PUBSTRUCT_STATE.update(phase="done", **res)
-    except asyncio.CancelledError:
-        _PUBSTRUCT_STATE.update(phase="stopped")
-        raise
-    except Exception as exc:
-        _PUBSTRUCT_STATE.update(phase="error", error=str(exc)[:200])
+        return await refresh_public_structures(conn, token, progress_cb=_p)
     finally:
         conn.close()
 
 
 def ensure_public_structures(token: str | None) -> None:
     """Start the daily refresh if it is due. Never blocks the caller."""
-    if not token:
-        return                      # the structure-info endpoint needs one
-    task = _PUBSTRUCT_WORKER.get("task")
-    if task is not None and not task.done():      # type: ignore[union-attr]
-        return
+    if not token or not bg.auto_update_enabled():
+        return                      # the structure-info endpoint needs a token
     try:
-        _PUBSTRUCT_WORKER["task"] = asyncio.create_task(_public_structure_refresh(token))
-    except RuntimeError:
-        pass                        # no running loop (CLI/tests)
+        bg.run_now("structures")
+    except (KeyError, RuntimeError):
+        pass                        # not registered / no running loop (CLI, tests)
 
 
 # ── Region volume top-up ──────────────────────────────────────────────────────
@@ -7704,7 +7718,7 @@ async def _region_fill_loop(region_id: int) -> None:
 
 def ensure_region_filler(region_id: int | None) -> None:
     """Start topping this region up, unless a fill is already running."""
-    if not region_id:
+    if not region_id or not bg.auto_update_enabled():
         return
     task = _REGION_WORKER.get("task")
     if task is not None and not task.done():        # type: ignore[union-attr]
@@ -7779,6 +7793,8 @@ async def _public_fill_loop() -> None:
 
 
 def ensure_public_filler() -> None:
+    if not bg.auto_update_enabled():        # see ensure_alliance_filler
+        return
     task = _PUBLIC_WORKER.get("task")
     if task is not None and not task.done():        # type: ignore[union-attr]
         return
@@ -9405,3 +9421,388 @@ async def api_version_apply():
         return {"error": f"could not start the updater: {exc}"}
     asyncio.get_event_loop().call_later(0.5, lambda: os._exit(0))
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Background refresh: the jobs, the fillers, and the panel behind Sync All
+# ---------------------------------------------------------------------------
+# The scheduler itself is app/web/background.py; this is where the app's own
+# work is described to it. Order here is the order of the panel.
+
+def _ensure_background_runs(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS background_runs (
+        job     TEXT PRIMARY KEY,
+        last_ok REAL NOT NULL)""")
+
+
+def _mark_ok(conn: sqlite3.Connection, job: str) -> None:
+    """A whole refresh landed. Stored, so the age survives a restart."""
+    _ensure_background_runs(conn)
+    conn.execute("INSERT OR REPLACE INTO background_runs (job, last_ok) VALUES (?,?)",
+                 (job, _time.time()))
+    conn.commit()
+
+
+def _recorded_ok(job: str, fallback) -> float | None:
+    """When `job` last completed, else what the data itself says (a refresh
+    done before this table existed still counts)."""
+    conn = get_conn()
+    try:
+        _ensure_background_runs(conn)
+        row = conn.execute("SELECT last_ok FROM background_runs WHERE job=?",
+                           (job,)).fetchone()
+        return row[0] if row else fallback(conn)
+    finally:
+        conn.close()
+
+
+def _describe_sweep(p: dict) -> tuple[int | None, str]:
+    if p.get("phase") == "volumes":
+        return p.get("pct"), (f"7-day volumes {_count_eu(p.get('vol_done') or 0)}"
+                              f" / {_count_eu(p.get('vol_total') or 0)}")
+    if p.get("total"):
+        return p.get("pct"), f"orders, page {p.get('current') or 0} / {p.get('total')}"
+    return p.get("pct"), "reading the order book"
+
+
+# ── Characters: blueprints, assets, skills, corp assets ──────────────────────
+
+def _sync_detail() -> str:
+    if _sync_state.get("phase") == "locations":
+        return "resolving station names"
+    total = _sync_state.get("total") or 0
+    who = _sync_state.get("char") or ""
+    step = _sync_state.get("step") or ""
+    if not total:
+        return "starting"
+    return f"{who} - {step}".strip(" -") + f" ({_sync_state.get('index') or 0}/{total})"
+
+
+async def _job_characters(report) -> dict:
+    # Joins a sync that is already running (the one after a login, or the old
+    # Sync All endpoint) instead of starting a second one over the same tokens.
+    if not _sync_state["running"]:
+        _sync_reset()
+        asyncio.create_task(_bg_initial_sync())
+    while _sync_state["running"]:
+        report(pct=_sync_pct(), detail=_sync_detail())
+        await asyncio.sleep(0.5)
+    total, failed = _sync_state.get("total") or 0, _sync_state.get("failed") or 0
+    if total and failed >= total:
+        raise RuntimeError("No character could be synced - check the logins on the "
+                           "dashboard.")
+    return {"characters": total, "failed": failed}
+
+
+def _characters_last_ok() -> float | None:
+    conn = get_conn()
+    try:
+        return conn.execute("SELECT MAX(last_sync_at) FROM characters").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def _characters_apply() -> str | None:
+    conn = get_conn()
+    try:
+        return None if has_any_character(conn) else "no characters added"
+    finally:
+        conn.close()
+
+
+# ── Market sweeps: Jita and the trade hubs ───────────────────────────────────
+
+_ORDERS_URL = "https://esi.evetech.net/latest/markets/10000002/orders/"
+
+
+async def _job_jita(report) -> dict:
+    conn = get_conn()
+    try:
+        res = await refresh_jita(conn, _refresh_type_ids(conn), report)
+        _mark_ok(conn, "jita")
+        return res
+    finally:
+        conn.close()
+
+
+def _hub_job(region_id: int):
+    async def run(report) -> dict:
+        conn = get_conn()
+        try:
+            res = await refresh_hub(conn, _refresh_type_ids(conn), region_id, report)
+            _mark_ok(conn, f"hub:{region_id}")
+            return res
+        finally:
+            conn.close()
+
+    def stats() -> dict:
+        conn = get_conn()
+        try:
+            return get_hub_cache_stats(conn, region_id)
+        finally:
+            conn.close()
+
+    def applies() -> str | None:
+        # A hub is refreshed only once the user has downloaded it: the four of
+        # them would otherwise cost four more region sweeps for columns nobody
+        # turned on.
+        return None if stats()["has_data"] else "not downloaded yet"
+
+    return run, applies, (lambda: _recorded_ok(
+        f"hub:{region_id}", lambda c: get_hub_cache_stats(c, region_id)["last_update"]))
+
+
+# ── Fillers that manage themselves: shown and switched, not scheduled ────────
+
+_FILLER_ROWS: dict[str, tuple[float, list]] = {}
+
+
+def _cached_rows(key: str, build) -> list[dict]:
+    """The panel polls every couple of seconds; counting 50 000 contracts that
+    often is wasted work, and nothing in them changes faster than this."""
+    hit = _FILLER_ROWS.get(key)
+    if hit and _time.time() - hit[0] < 5:
+        return hit[1]
+    rows = build()
+    _FILLER_ROWS[key] = (_time.time(), rows)
+    return rows
+
+
+def _cancel(worker: dict) -> None:
+    task = worker.get("task")
+    if task is not None and not task.done():        # type: ignore[union-attr]
+        task.cancel()                               # type: ignore[union-attr]
+
+
+def _filler_row(key: str, title: str, href: str, last_ok) -> dict:
+    return {"key": key, "title": title, "kind": "filler", "href": href,
+            "last_ok": last_ok, "pct": None, "detail": "", "reason": None,
+            "error": None, "next_in": None, "can_run": False, "state": "idle"}
+
+
+def _filler_not_started(row: dict) -> bool:
+    """Shape an idle filler row whose filler the scheduler has not started yet.
+    Without this it read "due now" while the startup gate was still shut."""
+    if not bg.auto_update_enabled():
+        row.update(state="off")
+        return True
+    waiting = bg.GATE.waiting_for()
+    if waiting:
+        row.update(state="waiting", reason=f"starts after {waiting} has loaded")
+        return True
+    return False
+
+
+def _public_rows() -> list[dict]:
+    conn = get_conn()
+    try:
+        status = contracts_helper.public_index_status(conn)
+    finally:
+        conn.close()
+    st = public_fill_state()
+    row = _filler_row("public", "Public contracts", "/contracts/public", status["newest"])
+    remaining = max(0, status["priced"] - status["with_items"] - status.get("absent", 0))
+    phase = st.get("phase")
+    if phase == "listing":
+        total = st.get("total") or 0
+        row.update(state="running", pct=int((st.get("done") or 0) * 100 / total) if total else 0,
+                   detail=f"listing regions {st.get('done') or 0} / {total}")
+    elif phase == "contents" and remaining:
+        priced = status["priced"] or 1
+        row.update(state="running", pct=int(status["with_items"] * 100 / priced),
+                   detail=f"contents for item search {_count_eu(status['with_items'])}"
+                          f" / {_count_eu(status['priced'])}")
+    elif phase == "error":
+        row.update(state="error", error=st.get("error"))
+    elif _filler_not_started(row):
+        pass
+    elif status["newest"]:
+        row["next_in"] = max(0, int(status["newest"] + _PUBLIC_LIST_TTL - _time.time()))
+    return [row]
+
+
+def _party_name(aid: int) -> str:
+    conn = get_conn()
+    try:
+        _ensure_party_name_cache(conn)
+        row = conn.execute("SELECT name FROM party_name_cache WHERE party_id=?",
+                           (aid,)).fetchone()
+        return row[0] if row and row[0] else ""
+    finally:
+        conn.close()
+
+
+def _alliance_rows() -> list[dict]:
+    conn = get_conn()
+    try:
+        ids = set(_ALLIANCE_FILL) | set(contracts_helper.indexed_alliances(conn))
+        statuses = {aid: contracts_helper.get_alliance_index_status(conn, aid) or {}
+                    for aid in ids}
+    finally:
+        conn.close()
+    rows = []
+    for aid in sorted(ids):
+        st = alliance_fill_state(aid)
+        name = _party_name(aid)
+        row = _filler_row(f"alliance:{aid}",
+                          "Alliance contracts" + (f" - {name}" if name else ""),
+                          f"/contracts/alliance?alliance={aid}",
+                          statuses[aid].get("indexed_at"))
+        phase = st.get("phase")
+        if phase == "listing":
+            row.update(state="running", detail="listing the alliance's contracts")
+        elif phase == "contents":
+            total = st.get("total") or 0
+            row.update(state="running",
+                       pct=int((st.get("done") or 0) * 100 / total) if total else 0,
+                       detail=f"contract contents {st.get('done') or 0} / {total}")
+        elif phase == "waiting":
+            mins = max(1, int((st.get("retry_in") or 0) / 60))
+            row.update(state="waiting",
+                       reason=f"ESI contract budget used up - continuing in {mins} min")
+        elif phase == "error":
+            row.update(state="error", error=st.get("error"))
+        elif _filler_not_started(row):
+            pass
+        elif row["last_ok"]:
+            row["next_in"] = max(0, int(row["last_ok"] + _ALLIANCE_LIST_TTL - _time.time()))
+        rows.append(row)
+    return rows
+
+
+def _region_rows() -> list[dict]:
+    st = region_fill_state()
+    if st.get("phase") not in ("starting", "filling", "waiting"):
+        return []                   # only while a station load's top-up is going
+    names = dict(_REGIONS_CACHE or [])
+    rid = st.get("region_id")
+    row = _filler_row("region", f"7-day volumes - {names.get(rid, 'region')}", "/prices", None)
+    total = st.get("total") or 0
+    if st["phase"] == "waiting":
+        row.update(state="waiting", reason="ESI history budget - continuing shortly")
+    else:
+        row.update(state="running", pct=int((st.get("have") or 0) * 100 / total) if total else 0,
+                   detail=f"{_count_eu(st.get('have') or 0)} / {_count_eu(total)} types")
+    return [row]
+
+
+def _structures_due() -> bool:
+    conn = get_conn()
+    try:
+        return public_structures_stale(conn)
+    finally:
+        conn.close()
+
+
+def _structures_last_ok() -> float | None:
+    conn = get_conn()
+    try:
+        _ = public_structures_stale(conn)           # creates the meta table
+        row = conn.execute(
+            "SELECT refreshed_at FROM public_structure_meta WHERE id=1").fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def _structures_apply() -> str | None:
+    # Read from the stored tokens' scopes: no refresh, no ESI. An expired token
+    # still names its scopes, which is all this asks.
+    conn = get_conn()
+    try:
+        for cid, _n in list_characters(conn):
+            row = get_character_row(conn, cid) or {}
+            if token_has_scope(row.get("access_token"), "esi-universe.read_structures.v1"):
+                return None
+    finally:
+        conn.close()
+    return "no character can read structures"
+
+
+def _register_background() -> None:
+    bg.GATE.sde_ready = lambda: bool(_SDE_READY[0])
+    bg.GATE.sync_running = lambda: bool(_sync_state["running"])
+    bg.error_text = lambda exc: esi_error_message(exc) or sweep_error_message(exc)
+    # Never call esi_throttle_status() without a URL from here: that form is the
+    # worst pause across every group, which would hold a job back for a 429 in
+    # a bucket it never touches (the 0.11.19 dashboard bug).
+    bg.throttle_status = (lambda url: esi_throttle_status(url) if url
+                          else {"paused": False, "seconds": 0})
+    bg.foreground_active = foreground_prices_active
+
+    bg.register(bg.Job(
+        key="characters", title="Characters",
+        group="character", every=60 * 60, run=_job_characters,
+        last_ok=_characters_last_ok, applies=_characters_apply,
+        describe=lambda p: (p.get("pct"), p.get("detail") or ""), href="/assets"))
+    bg.register(bg.Job(
+        key="jita", title="Jita prices", group="market", every=PRICE_CACHE_TTL,
+        run=_job_jita, describe=_describe_sweep, throttle_url=_ORDERS_URL, href="/prices",
+        last_ok=lambda: _recorded_ok(
+            "jita", lambda c: get_price_cache_stats(c)["last_update"])))
+    for rid, info in TRADE_HUBS.items():
+        run, applies, last_ok = _hub_job(rid)
+        bg.register(bg.Job(
+            key=f"hub:{rid}", title=f"{info['name']} prices", group="market",
+            every=PRICE_CACHE_TTL, run=run, applies=applies, last_ok=last_ok,
+            describe=_describe_sweep, throttle_url=_ORDERS_URL, href="/prices"))
+    bg.register(bg.Job(
+        key="structures", title="Public structure names", group="structures",
+        every=24 * 3600, run=_job_public_structures, is_due=_structures_due,
+        last_ok=_structures_last_ok, applies=_structures_apply, in_run_all=False,
+        describe=lambda p: (p.get("pct"), f"{p.get('named') or 0} / {p.get('total') or 0}")))
+
+    bg.register_filler(bg.Filler(
+        key="public", title="Public contracts", start=ensure_public_filler,
+        stop=lambda: _cancel(_PUBLIC_WORKER),
+        rows=lambda: _cached_rows("public", _public_rows)))
+    bg.register_filler(bg.Filler(
+        key="alliance", title="Alliance contracts", start=ensure_alliance_filler,
+        stop=lambda: _cancel(_ALLIANCE_WORKER),
+        rows=lambda: _cached_rows("alliance", _alliance_rows)))
+    bg.register_filler(bg.Filler(
+        key="region", title="Region 7-day volumes", start=lambda: None,
+        stop=lambda: _cancel(_REGION_WORKER), rows=_region_rows))
+
+
+_register_background()
+
+
+@app.on_event("startup")
+async def _start_background() -> None:
+    """The loop starts with the app but does nothing until the startup gate opens."""
+    if os.environ.get("EVE_NO_BACKGROUND"):
+        return                      # tests, and anyone who wants a quiet process
+    bg.start_loop()
+
+
+@app.get("/api/activity")
+async def api_activity():
+    """Everything the panel behind Sync All shows, in one answer."""
+    return bg.snapshot()
+
+
+@app.post("/api/activity/run")
+async def api_activity_run(request: Request):
+    from fastapi.responses import JSONResponse
+    key = str((await request.json()).get("key") or "")
+    try:
+        bg.run_now(key)
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "unknown job"}, status_code=404)
+    return {"ok": True}
+
+
+@app.post("/api/activity/run-all")
+async def api_activity_run_all():
+    """Refresh everything now - what Sync All always meant, and a bit more."""
+    return {"ok": True, "started": bg.run_all()}
+
+
+@app.post("/api/activity/auto")
+async def api_activity_auto(request: Request):
+    enabled = bool((await request.json()).get("enabled"))
+    bg.set_auto_update(enabled)
+    if not enabled:
+        bg.stop_fillers()
+    return {"ok": True, "auto": enabled}

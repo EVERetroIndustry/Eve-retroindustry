@@ -19,6 +19,9 @@ build/
 *.db-wal
 !sde_base.db
 data/tokens.json
+# App config (client id, the auto-update switch). Written next to the app in
+# dev runs, so it lands in the repository unless it is ignored.
+.eve_config.json
 
 # EVE SDE data (large files, downloaded separately). Globbed rather than named:
 # the download is ~100 MB and the file name carries the build number, so a rule

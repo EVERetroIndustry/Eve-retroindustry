@@ -67,6 +67,8 @@ def app_module():
     shutil.copy2(os.path.join(REPO, "sde_base.db"), os.path.join(tmp, "eve_cache.db"))
     os.environ["EVE_APP_DIR"] = tmp
     os.environ["EVE_BUNDLE_DIR"] = REPO
+    # No background refreshes from a test process: they would reach for ESI.
+    os.environ["EVE_NO_BACKGROUND"] = "1"
     if REPO not in sys.path:
         sys.path.insert(0, REPO)
 

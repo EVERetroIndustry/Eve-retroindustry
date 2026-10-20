@@ -811,6 +811,9 @@
         const volMsg = d.volume_updated ? `, ${d.volume_updated} volumes` : '';
         dlFinish('done', `Done! Fetched ${d.refreshed} prices${volMsg}.`);
         setTimeout(() => window.location.reload(), 1500);
+      } else if (d.note) {
+        // Queued behind another price refresh in the same ESI group.
+        dlSet(d.pct || 0, d.note);
       } else if (d.phase === 'volumes') {
         dlSet(d.pct || 0, `Volumes: ${d.vol_done} / ${d.vol_total}…${throttleNote(d)}`);
       } else {
@@ -1040,6 +1043,8 @@
           es.close();
           dlFinish('done', 'Done (' + name + '): ' + d.refreshed + ' prices.');
           setTimeout(() => window.location.reload(), 1500);
+        } else if (d.note) {
+          dlSet(d.pct || 0, name + ': ' + d.note);
         } else if (d.phase === 'volumes') {
           dlSet(d.pct || 0, name + ' volumes: ' + d.vol_done + ' / ' + d.vol_total + '…' + throttleNote(d));
         } else {

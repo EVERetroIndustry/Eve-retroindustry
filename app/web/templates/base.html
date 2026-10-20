@@ -203,6 +203,58 @@
   @media (prefers-reduced-motion: reduce) {
     .nav-update-pill { animation: none; }
   }
+  /* Background updates: the Sync All button doubles as the indicator. Idle it is
+     the old button; while something refreshes its icon turns inside a ring that
+     fills with the overall percentage - no extra width, so the navbar's
+     labels-or-icons threshold does not move. */
+  .act-btn { position: relative; }
+  .act-ring {
+    position: relative; display: inline-grid; place-items: center;
+    width: 1.15rem; height: 1.15rem; border-radius: 50%;
+  }
+  .act-btn.busy .act-ring {
+    background: conic-gradient(var(--eve-steel) calc(var(--p, 0) * 1%), rgba(123,184,236,.18) 0);
+  }
+  .act-btn.busy .act-ring::after {
+    content: ""; position: absolute; inset: 2px; border-radius: 50%; background: #0f141b;
+  }
+  .act-btn.busy .act-ring .bi {
+    position: relative; z-index: 1; font-size: .68rem; animation: actSpin 1.2s linear infinite;
+  }
+  @keyframes actSpin { to { transform: rotate(360deg); } }
+  .act-dot {
+    position: absolute; top: -3px; right: -3px; width: 8px; height: 8px;
+    border-radius: 50%; background: var(--eve-gold); box-shadow: 0 0 0 2px #0f141b;
+  }
+  .act-menu {
+    width: 380px; max-width: calc(100vw - 32px); padding: .65rem .8rem;
+    background: #161b22; border-color: #30363d;
+  }
+  .act-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+  .act-title { font-size: .7rem; letter-spacing: .06em; text-transform: uppercase; color: #8b949e; }
+  .act-note { font-size: .74rem; color: #d29922; margin-top: .35rem; }
+  .act-note:empty { display: none; }
+  .act-row { display: grid; grid-template-columns: 1rem 1fr auto; gap: .1rem .5rem;
+             padding: .45rem 0; border-top: 1px solid #21262d; align-items: baseline; }
+  .act-row .act-ico { font-size: .8rem; text-align: center; }
+  .act-row .act-name { font-size: .82rem; color: #e6edf3; text-decoration: none;
+                       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .act-row a.act-name:hover { color: var(--eve-gold); }
+  .act-row .act-age { font-size: .7rem; color: #8b949e; white-space: nowrap;
+                      font-variant-numeric: tabular-nums; }
+  .act-row .act-meta { grid-column: 2 / 4; font-size: .72rem; color: #8b949e;
+                       font-variant-numeric: tabular-nums; }
+  .act-row .act-meta.err { color: #d29922; }
+  .act-row .act-run { font-size: .72rem; padding: 0; margin-left: .45rem; vertical-align: baseline;
+                      color: var(--eve-steel); text-decoration: none; }
+  .act-row .act-run:hover { color: var(--eve-steel-hi); }
+  .act-bar { grid-column: 2 / 4; height: 3px; background: #21262d; border-radius: 2px; overflow: hidden; }
+  .act-bar > span { display: block; height: 100%; background: var(--eve-steel); transition: width .4s; }
+  .act-foot { font-size: .74rem; padding-top: .45rem; border-top: 1px solid #21262d; }
+  @media (prefers-reduced-motion: reduce) {
+    .act-btn.busy .act-ring .bi { animation: none; }
+    .act-bar > span { transition: none; }
+  }
   </style>
 <script>
 // Escape before dropping a value into innerHTML. Names that players choose -
@@ -471,11 +523,34 @@ window.renderContractItems = function (box, data, price) {
         </li>
 
         {% if all_characters %}
-        <li class="nav-item">
-          <button class="btn btn-sm btn-outline-secondary d-flex align-items-center"
-                  onclick="syncAll(this)" title="Sync blueprints, assets, skills & wallet for all characters">
-            <i class="bi bi-arrow-clockwise"></i><span class="nav-label">Sync All</span>
+        {# Sync All is also the background-updates indicator: one control for
+           "refresh my data", whether the app does it or the user asks. #}
+        <li class="nav-item dropdown">
+          <button type="button" class="btn btn-sm btn-outline-secondary d-flex align-items-center act-btn"
+                  data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false"
+                  id="act-btn" title="Background updates - what is being refreshed">
+            <span class="act-ring" id="act-ring"><i class="bi bi-arrow-clockwise"></i></span><span class="nav-label">Sync All</span>
+            <span class="act-dot d-none" id="act-dot"></span>
           </button>
+          <div class="dropdown-menu dropdown-menu-end shadow act-menu" id="act-menu">
+            <div class="act-head">
+              <span class="act-title">Background updates</span>
+              <div class="form-check form-switch m-0"
+                   title="When on, the app keeps prices, contracts and characters current by itself">
+                <input class="form-check-input" type="checkbox" role="switch" id="act-auto" checked>
+                <label class="form-check-label small" for="act-auto">Automatic</label>
+              </div>
+            </div>
+            <div class="act-note" id="act-note"></div>
+            <button type="button" class="btn btn-sm btn-outline-primary w-100 my-2" id="act-runall">
+              <i class="bi bi-arrow-clockwise me-1"></i>Refresh everything now
+            </button>
+            <div id="act-list"></div>
+            <div class="act-foot d-none" id="act-reload">
+              <i class="bi bi-arrow-repeat me-1"></i>New data arrived -
+              <a href="#" onclick="location.reload(); return false;">reload this page</a>
+            </div>
+          </div>
         </li>
         <li class="nav-item dropdown">
           <a class="nav-link dropdown-toggle d-flex align-items-center gap-2" href="#"
@@ -605,18 +680,123 @@ window.addEventListener('resize', scheduleNavFit);
 window.addEventListener('load', fitNavbar);
 document.addEventListener('DOMContentLoaded', fitNavbar);
 
-// Global Sync All - available on every page via the navbar button.
-async function syncAll(btn) {
-  const orig = btn.innerHTML;
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-  try {
-    const r = await fetch('/api/sync/start', {method: 'POST'});
-    if (r.ok) { setTimeout(() => location.reload(), 3500); return; }
-  } catch (e) {}
-  btn.disabled = false;
-  btn.innerHTML = orig;
-}
+// Background updates panel (the Sync All button). Polls /api/activity: every
+// 2 s while open or while something is refreshing, otherwise every 20 s, which is
+// enough to start the ring when the scheduler picks up work by itself.
+(function () {
+  const btn = document.getElementById('act-btn');
+  if (!btn) return;
+  const ring = document.getElementById('act-ring'), dot = document.getElementById('act-dot');
+  const list = document.getElementById('act-list'), note = document.getElementById('act-note');
+  const auto = document.getElementById('act-auto'), reload = document.getElementById('act-reload');
+  const esc = window.escHtml;
+  // Taken before the busy-bar wrapper below replaces window.fetch: a poll is
+  // not something the user is waiting for, and must never light that bar.
+  const rawFetch = window.fetch.bind(window);
+  let open = false, timer = null;
+  const wasRunning = {};
+
+  function span(s) {
+    s = Math.max(0, Math.round(s));
+    if (s < 60) return s + ' s';
+    if (s < 3600) return Math.round(s / 60) + ' min';
+    if (s < 86400) return Math.round(s / 3600) + ' h';
+    return Math.round(s / 86400) + ' d';
+  }
+  function age(ts) {
+    if (!ts) return 'never';
+    const s = Date.now() / 1000 - ts;
+    return s < 45 ? 'just now' : span(s) + ' ago';
+  }
+  const ICON = {
+    running: '<span class="spinner-border spinner-border-sm" style="width:.7rem;height:.7rem;color:var(--eve-steel)"></span>',
+    queued:  '<i class="bi bi-hourglass-split text-muted"></i>',
+    waiting: '<i class="bi bi-hourglass-split" style="color:#d29922"></i>',
+    error:   '<i class="bi bi-exclamation-triangle-fill" style="color:#d29922"></i>',
+    off:     '<i class="bi bi-pause-circle text-muted"></i>',
+    idle:    '<i class="bi bi-check2" style="color:#3fb950"></i>',
+  };
+
+  function meta(j) {
+    if (j.state === 'running') {
+      const parts = [j.detail, j.pct != null ? j.pct + ' %' : '', j.reason].filter(Boolean);
+      return [parts.join(' - '), false];
+    }
+    if (j.state === 'error') {
+      const err = String(j.error || 'failed').replace(/\.\s*$/, '');
+      return [err + (j.next_in != null ? ' - retrying in ' + span(j.next_in) : ''), true];
+    }
+    if (j.state === 'queued' || j.state === 'waiting') return [j.reason || j.detail || 'waiting', j.state === 'waiting'];
+    if (j.state === 'off') return ['', false];      // the note at the top says it once
+    if (j.next_in == null) return ['', false];
+    return [j.next_in === 0 ? 'due now' : 'next in ' + span(j.next_in), false];
+  }
+
+  function row(j) {
+    const name = j.href
+      ? `<a class="act-name" href="${esc(j.href)}">${esc(j.title)}</a>`
+      : `<span class="act-name">${esc(j.title)}</span>`;
+    const [text, warn] = meta(j);
+    const run = (j.can_run && j.state !== 'running' && j.state !== 'queued')
+      ? `<button type="button" class="btn btn-link act-run" data-key="${esc(j.key)}">Run now</button>` : '';
+    const bar = j.state === 'running' && j.pct != null
+      ? `<div class="act-bar"><span style="width:${Math.min(100, j.pct)}%"></span></div>` : '';
+    return `<div class="act-row" data-key="${esc(j.key)}" data-state="${esc(j.state)}">`
+      + `<span class="act-ico">${ICON[j.state] || ''}</span>${name}`
+      + `<span class="act-age">${esc(age(j.last_ok))}${run}</span>`
+      + (text ? `<div class="act-meta${warn ? ' err' : ''}">${esc(text)}</div>` : '')
+      + bar + '</div>';
+  }
+
+  function render(d) {
+    const busy = d.running > 0;
+    btn.classList.toggle('busy', busy);
+    ring.style.setProperty('--p', d.pct == null ? 0 : d.pct);
+    dot.classList.toggle('d-none', busy || !d.errors);
+    btn.title = busy
+      ? `Refreshing ${d.running} ${d.running === 1 ? 'source' : 'sources'}`
+        + (d.pct == null ? '' : ` - ${d.pct} %`)
+      : (d.errors ? 'A background update failed - open for details'
+                  : 'Background updates - what is being refreshed');
+    auto.checked = !!d.auto;
+    note.textContent = !d.auto
+      ? 'Automatic updates are off: nothing refreshes by itself. Run a source here or refresh everything.'
+      : (!d.ready ? `Background updates start once ${d.waiting_for} has loaded.` : '');
+    list.innerHTML = d.jobs.map(row).join('');
+    // A refresh that finished while this page was open changed data the page
+    // already rendered; say so rather than reloading under the user.
+    d.jobs.forEach(j => {
+      if (wasRunning[j.key] && j.state !== 'running' && j.state !== 'error') reload.classList.remove('d-none');
+      wasRunning[j.key] = j.state === 'running';
+    });
+    return busy || d.jobs.some(j => j.state === 'queued');
+  }
+
+  async function poll() {
+    clearTimeout(timer);
+    let active = false;
+    try { active = render(await (await rawFetch('/api/activity')).json()); } catch (e) {}
+    timer = setTimeout(poll, open || active ? 2000 : 20000);
+  }
+
+  async function post(url, body) {
+    try {
+      await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(body || {})});
+    } catch (e) {}
+    poll();
+  }
+
+  list.addEventListener('click', e => {
+    const b = e.target.closest('.act-run');
+    if (b) post('/api/activity/run', {key: b.dataset.key});
+  });
+  document.getElementById('act-runall').addEventListener('click', () => post('/api/activity/run-all'));
+  auto.addEventListener('change', () => post('/api/activity/auto', {enabled: auto.checked}));
+  btn.addEventListener('show.bs.dropdown', () => { open = true; poll(); });
+  btn.addEventListener('hide.bs.dropdown', () => { open = false; });
+  poll();
+})();
 
 // Version check - once per session, show dot if update available.
 // Desktop-only: on Android the native updater handles updates (About → Check for
