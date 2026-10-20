@@ -107,7 +107,7 @@ Report = Callable[..., None]
 @dataclass
 class Job:
     key: str
-    title: str
+    title: "str | Callable[[], str]"              # callable when it depends on data
     group: str                                   # ESI rate-limit group it spends
     every: float                                 # seconds between refreshes
     run: Callable[[Report], Awaitable[Optional[dict]]]
@@ -177,6 +177,20 @@ def register(job: Job) -> None:
     _STATE.setdefault(job.key, _State())
 
 
+def unregister(key: str) -> None:
+    """Drop a job that no longer applies (a station that was removed). Its state
+    stays, so a stream following a run that is still going can see it end."""
+    _JOBS.pop(key, None)
+
+
+def keys(prefix: str = "") -> list[str]:
+    return [k for k in _JOBS if k.startswith(prefix)]
+
+
+def title_of(job: Job) -> str:
+    return job.title() if callable(job.title) else job.title
+
+
 def register_filler(filler: Filler) -> None:
     _FILLERS[filler.key] = filler
 
@@ -219,7 +233,8 @@ def _hold_reason(job: Job, now: float) -> Optional[str]:
     if in_downtime(now):
         return "EVE downtime (11:00 UTC) - waiting it out"
     if job.group == "market" and foreground_active():
-        return "waiting for the price load you started"
+        # Not "the one you started": background jobs set the same marker.
+        return "waiting for another price load to finish"
     t = throttle_status(job.throttle_url)
     if t.get("paused"):
         return f"ESI rate limit - retrying in {t.get('seconds') or 0}s"
@@ -347,7 +362,7 @@ def finished(key: str, run_id: int) -> bool:
 def _row(key: str, now: float, auto: bool) -> dict:
     job, st = _JOBS[key], _STATE[key]
     last = job.last_ok()
-    row = {"key": key, "title": job.title, "kind": "job", "href": job.href,
+    row = {"key": key, "title": title_of(job), "kind": "job", "href": job.href,
            "last_ok": last, "pct": None, "detail": "", "reason": None,
            "error": None, "next_in": None, "can_run": True}
     if st.running:

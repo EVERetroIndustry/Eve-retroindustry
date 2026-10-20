@@ -87,7 +87,7 @@ def test_leaving_the_page_does_not_throw_the_refresh_away(m, monkeypatch):
     # on. Now the stream only watches.
     release = asyncio.Event()
 
-    async def fake_refresh(conn, type_ids, report=None):
+    async def fake_refresh(conn, type_ids, report=None, stations=()):
         report(phase="orders", current=1, total=2, pct=40)
         await release.wait()
         return {"refreshed": 7, "total": 9, "volume_updated": 0}
@@ -113,7 +113,7 @@ def test_leaving_the_page_does_not_throw_the_refresh_away(m, monkeypatch):
 
 
 def test_the_prices_page_stream_reports_the_run_to_its_end(client, m, monkeypatch):
-    async def fake_refresh(conn, type_ids, report=None):
+    async def fake_refresh(conn, type_ids, report=None, stations=()):
         report(phase="orders", current=2, total=2, pct=80)
         return {"refreshed": 3, "total": 5, "volume_updated": 1}
     monkeypatch.setattr(m, "refresh_jita", fake_refresh)
@@ -124,7 +124,7 @@ def test_the_prices_page_stream_reports_the_run_to_its_end(client, m, monkeypatc
 
 
 def test_the_prices_page_stream_says_the_prices_were_kept(client, m, monkeypatch):
-    async def fake_refresh(conn, type_ids, report=None):
+    async def fake_refresh(conn, type_ids, report=None, stations=()):
         raise IncompleteOrderBook("ESI did not return page 1 of the order book (HTTP 503).")
     monkeypatch.setattr(m, "refresh_jita", fake_refresh)
     events = _events(client.get("/prices/refresh/stream"))

@@ -24,10 +24,21 @@
     {% for h in hubs %}
     <span class="fresh-chip"><strong>{{ h.name }}</strong> <span class="{% if not h.last_update %}text-muted{% endif %}">{{ h.last_update | age_short }}</span></span>
     {% endfor %}
-    <span id="freshness-station" class="fresh-chip d-none"><strong class="stn-fresh-label"></strong> <span class="stn-fresh-age"></span></span>
+    {% for st in stations %}
+    <span class="fresh-chip" title="{{ st.name }}"><strong>{{ st.label }}</strong> <span class="{% if not st.last_update %}text-muted{% endif %}">{{ st.last_update | age_short }}</span></span>
+    {% endfor %}
   </div>
 </div>
 <style>
+  .stn-chip { display:inline-flex; align-items:center; gap:.15rem; max-width:260px;
+    background:#1c2128; border:1px solid var(--eve-border,#30363d); border-radius:20px;
+    padding:.05rem .3rem .05rem .7rem; font-size:.8rem; }
+  .stn-chip-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .stn-chip button { border:0; background:none; color:#8b949e; padding:0 .2rem; line-height:1;
+    font-size:.75rem; border-radius:50%; }
+  .stn-chip button:hover:not(:disabled) { color:var(--eve-gold); }
+  .stn-chip button:focus-visible { outline:2px solid var(--eve-steel); }
+  .stn-chip .stn-remove:hover:not(:disabled) { color:#f85149; }
   .fresh-chip { display:inline-flex; gap:.35rem; align-items:baseline;
     background:#1c2128; border:1px solid var(--eve-border,#30363d);
     border-radius:20px; padding:.15rem .7rem; white-space:nowrap; }
@@ -64,14 +75,29 @@
             background:#161b22; border:1px solid #30363d; border-radius:6px;
             max-height:260px; overflow-y:auto; display:none;"></div>
         </div>
-        <button id="station-vol-load" class="btn btn-sm btn-outline-primary flex-shrink-0" disabled>
-          <i class="bi bi-download me-1"></i>Load
+        <button id="station-add" class="btn btn-sm btn-outline-primary flex-shrink-0" disabled
+                title="Add this station to your stations - its prices get their own columns and stay current">
+          <i class="bi bi-plus-lg me-1"></i>Add
         </button>
+      </div>
+      {# Stations the user added. Each keeps its own columns and is refreshed with
+         the rest of the market data; x removes it (its stored prices stay, so
+         adding it back is instant). #}
+      <div id="station-list" class="d-flex flex-wrap align-items-center gap-2 mt-2{% if not stations %} d-none{% endif %}">
+        <span class="text-muted small">Your stations:</span>
+        {% for st in stations %}
+        <span class="stn-chip" data-loc="{{ st.location_id }}" data-label="{{ st.label }}" title="{{ st.name }}">
+          <span class="stn-chip-name">{{ st.label }}</span>
+          <button type="button" class="stn-refresh" data-loc="{{ st.location_id }}" title="Refresh {{ st.label }} now"><i class="bi bi-arrow-clockwise"></i></button>
+          <button type="button" class="stn-remove" data-loc="{{ st.location_id }}" title="Remove {{ st.label }}"><i class="bi bi-x-lg"></i></button>
+        </span>
+        {% endfor %}
       </div>
       <p class="text-muted small mt-2 mb-0" style="font-size:.78rem">
         <strong>Jita</strong> - all materials, components &amp; blueprints (~1-2 min, 30-min cache).
         <strong>Hubs</strong> - sell/buy + 7-day volume, add comparison columns below.
-        <strong>Custom station</strong> - sell prices at any station/citadel (7-day volume is region-wide).
+        <strong>Stations</strong> - add any station or citadel you can see; each gets sell, available
+        and region-wide 7-day volume columns, kept current with the rest.
       </p>
 
       {# Shared progress bar - reused by all three downloads (one at a time) #}
@@ -85,8 +111,7 @@
                role="progressbar" style="width:0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
         </div>
       </div>
-      <div id="station-vol-status" class="small text-muted mt-2 d-none"></div>
-      <div id="region-fill-status" class="small text-muted mt-1 d-none"></div>
+      <div id="station-vol-status" class="small mt-2 d-none"></div>
     </div>
   </div>
   <div class="col-xl-4">
@@ -124,6 +149,15 @@
               <td class="text-center px-2"><input type="checkbox" class="col-cb form-check-input" data-hub="{{ h.region_id }}" data-metric="buy"></td>
               <td class="text-center px-2"><input type="checkbox" class="col-cb form-check-input" data-hub="{{ h.region_id }}" data-metric="vol"></td>
               <td class="text-center px-2"><input type="checkbox" class="col-cb form-check-input" data-hub="{{ h.region_id }}" data-metric="avail"></td>
+            </tr>
+            {% endfor %}
+            {% for st in stations %}
+            <tr>
+              <td class="pe-3 fw-semibold align-middle text-truncate" style="max-width:150px" title="{{ st.name }}">{{ st.label }}</td>
+              <td class="text-center px-2"><input type="checkbox" class="col-cb form-check-input" data-hub="s{{ st.location_id }}" data-metric="sell"></td>
+              <td class="text-center px-2 text-muted" title="Only sell orders are read for a station">-</td>
+              <td class="text-center px-2"><input type="checkbox" class="col-cb form-check-input" data-hub="s{{ st.location_id }}" data-metric="vol"></td>
+              <td class="text-center px-2"><input type="checkbox" class="col-cb form-check-input" data-hub="s{{ st.location_id }}" data-metric="avail"></td>
             </tr>
             {% endfor %}
           </tbody>
@@ -225,16 +259,11 @@
           <th class="text-end sortable pricecol hubcol pm-vol ph-{{ h.region_id }}" data-col="{{ ns.c }}" data-sort-type="num" style="cursor:pointer;user-select:none" title="7-day region trade volume for {{ h.name }}">{{ h.name }} vol/7d <span class="sort-indicator"></span></th>{% set ns.c = ns.c + 1 %}
           <th class="text-end sortable pricecol hubcol pm-avail ph-{{ h.region_id }}" data-col="{{ ns.c }}" data-sort-type="num" style="cursor:pointer;user-select:none" title="Units in sell orders at {{ h.name }}'s main station">{{ h.name }} available <span class="sort-indicator"></span></th>{% set ns.c = ns.c + 1 %}
           {% endfor %}
-          <th class="text-end station-col sortable" data-col="{{ ns.c }}" data-sort-type="num" style="display:none;cursor:pointer;user-select:none" title="Best sell price at station">
-            <span class="stn-name">Station</span> sell <span class="sort-indicator"></span>
-          </th>{% set ns.c = ns.c + 1 %}
-          <th class="text-end station-col sortable" data-col="{{ ns.c }}" data-sort-type="num" style="display:none;cursor:pointer;user-select:none" title="Trade volume over the last 7 days across the station's whole REGION (ESI market history). Fenris Creations does not publish trade history for individual player structures, so this is region-wide demand - not sales at this specific station/citadel.">
-            <span class="stn-name">Station</span> region vol/7d
-            <i class="bi bi-info-circle ms-1" style="opacity:.5;font-size:.75rem"></i> <span class="sort-indicator"></span>
-          </th>{% set ns.c = ns.c + 1 %}
-          <th class="text-end station-col sortable" data-col="{{ ns.c }}" data-sort-type="num" style="display:none;cursor:pointer;user-select:none" title="Available units in sell orders at station">
-            <span class="stn-name">Station</span> available <span class="sort-indicator"></span>
-          </th>
+          {% for st in stations %}
+          <th class="text-end sortable pricecol stncol pm-sell ph-s{{ st.location_id }}" data-col="{{ ns.c }}" data-sort-type="num" style="cursor:pointer;user-select:none" title="Best sell order at {{ st.name }}">{{ st.label }} sell <span class="sort-indicator"></span></th>{% set ns.c = ns.c + 1 %}
+          <th class="text-end sortable pricecol stncol pm-vol ph-s{{ st.location_id }}" data-col="{{ ns.c }}" data-sort-type="num" style="cursor:pointer;user-select:none" title="Trade volume over the last 7 days across the whole REGION of {{ st.name }} (ESI market history). Fenris Creations does not publish trade history for individual stations or player structures, so this is region-wide demand - not sales at this station.">{{ st.label }} region vol/7d <i class="bi bi-info-circle ms-1" style="opacity:.5;font-size:.75rem"></i> <span class="sort-indicator"></span></th>{% set ns.c = ns.c + 1 %}
+          <th class="text-end sortable pricecol stncol pm-avail ph-s{{ st.location_id }}" data-col="{{ ns.c }}" data-sort-type="num" style="cursor:pointer;user-select:none" title="Units in sell orders at {{ st.name }}">{{ st.label }} available <span class="sort-indicator"></span></th>{% set ns.c = ns.c + 1 %}
+          {% endfor %}
         </tr>
       </thead>
       {# Row markup is deliberately whitespace-free: with ~1900 items the
@@ -242,7 +271,7 @@
          build is 99% of this page's client-side cost (measured). #}
       <tbody>
 {% for item in items -%}
-<tr data-name="{{ item.name | lower }}" data-id="{{ item.type_id }}" data-jita-sell="{{ item.sell_price if item.sell_price is not none else '' }}"><td class="py-1"><img src="/icon/{{ item.type_id }}?size=32" width="24" height="24" class="rounded-1" loading="lazy" onerror="this.style.visibility='hidden'"></td><td class="py-1 align-middle item-hist" role="button" tabindex="0" title="Show price history">{{ item.name }}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-sell ph-jita{% if item.sell_price is none %} text-muted{% endif %}" data-v="{{ item.sell_price if item.sell_price is not none else '' }}"{% if item.sell_price is none and item.get('alt_price') %} data-alt="{{ item.alt_price }}" data-alt-src="{{ item.alt_source }}"{% if item.alt_where %} data-alt-where="{{ item.alt_where }}"{% endif %}{% endif %}>{% if item.sell_price is not none %}{{ item.sell_price | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-buy ph-jita{% if item.buy_price is none %} text-muted{% endif %}" data-v="{{ item.buy_price if item.buy_price is not none else '' }}">{% if item.buy_price is not none %}{{ item.buy_price | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-vol ph-jita{% if item.volume is none %} text-muted{% endif %}" data-v="{{ item.volume if item.volume is not none else '' }}">{% if item.volume is not none %}{{ item.volume | count_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-avail ph-jita{% if item.jita_available is none %} text-muted{% endif %}" data-v="{{ item.jita_available if item.jita_available is not none else '' }}">{% if item.jita_available is not none %}{{ item.jita_available | count_eu }}{% else %}-{% endif %}</td>{% set ihubs = item.get('hubs') or {} %}{% for h in downloaded_hubs %}{% set hd = ihubs.get(h.region_id) %}<td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-sell ph-{{ h.region_id }}{% if hd and hd.sell is none %} text-muted{% endif %}" data-v="{{ hd.sell if hd and hd.sell is not none else '' }}">{% if hd and hd.sell is not none %}{{ hd.sell | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-buy ph-{{ h.region_id }}{% if hd and hd.buy is none %} text-muted{% endif %}" data-v="{{ hd.buy if hd and hd.buy is not none else '' }}">{% if hd and hd.buy is not none %}{{ hd.buy | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-vol ph-{{ h.region_id }}{% if hd and hd.volume is none %} text-muted{% endif %}" data-v="{{ hd.volume if hd and hd.volume is not none else '' }}">{% if hd and hd.volume is not none %}{{ hd.volume | count_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-avail ph-{{ h.region_id }}{% if hd and hd.available is none %} text-muted{% endif %}" data-v="{{ hd.available if hd and hd.available is not none else '' }}">{% if hd and hd.available is not none %}{{ hd.available | count_eu }}{% else %}-{% endif %}</td>{% endfor %}</tr>
+<tr data-name="{{ item.name | lower }}" data-id="{{ item.type_id }}" data-jita-sell="{{ item.sell_price if item.sell_price is not none else '' }}"><td class="py-1"><img src="/icon/{{ item.type_id }}?size=32" width="24" height="24" class="rounded-1" loading="lazy" onerror="this.style.visibility='hidden'"></td><td class="py-1 align-middle item-hist" role="button" tabindex="0" title="Show price history">{{ item.name }}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-sell ph-jita{% if item.sell_price is none %} text-muted{% endif %}" data-v="{{ item.sell_price if item.sell_price is not none else '' }}"{% if item.sell_price is none and item.get('alt_price') %} data-alt="{{ item.alt_price }}" data-alt-src="{{ item.alt_source }}"{% if item.alt_where %} data-alt-where="{{ item.alt_where }}"{% endif %}{% endif %}>{% if item.sell_price is not none %}{{ item.sell_price | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-buy ph-jita{% if item.buy_price is none %} text-muted{% endif %}" data-v="{{ item.buy_price if item.buy_price is not none else '' }}">{% if item.buy_price is not none %}{{ item.buy_price | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-vol ph-jita{% if item.volume is none %} text-muted{% endif %}" data-v="{{ item.volume if item.volume is not none else '' }}">{% if item.volume is not none %}{{ item.volume | count_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-avail ph-jita{% if item.jita_available is none %} text-muted{% endif %}" data-v="{{ item.jita_available if item.jita_available is not none else '' }}">{% if item.jita_available is not none %}{{ item.jita_available | count_eu }}{% else %}-{% endif %}</td>{% set ihubs = item.get('hubs') or {} %}{% for h in downloaded_hubs %}{% set hd = ihubs.get(h.region_id) %}<td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-sell ph-{{ h.region_id }}{% if hd and hd.sell is none %} text-muted{% endif %}" data-v="{{ hd.sell if hd and hd.sell is not none else '' }}">{% if hd and hd.sell is not none %}{{ hd.sell | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-buy ph-{{ h.region_id }}{% if hd and hd.buy is none %} text-muted{% endif %}" data-v="{{ hd.buy if hd and hd.buy is not none else '' }}">{% if hd and hd.buy is not none %}{{ hd.buy | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-vol ph-{{ h.region_id }}{% if hd and hd.volume is none %} text-muted{% endif %}" data-v="{{ hd.volume if hd and hd.volume is not none else '' }}">{% if hd and hd.volume is not none %}{{ hd.volume | count_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-avail ph-{{ h.region_id }}{% if hd and hd.available is none %} text-muted{% endif %}" data-v="{{ hd.available if hd and hd.available is not none else '' }}">{% if hd and hd.available is not none %}{{ hd.available | count_eu }}{% else %}-{% endif %}</td>{% endfor %}{% set istn = item.get('stations') or {} %}{% for st in stations %}{% set sd = istn.get(st.location_id) %}<td class="text-end py-1 align-middle font-monospace small pricecol stncol pm-sell ph-s{{ st.location_id }}{% if not sd or sd.sell is none %} text-muted{% endif %}" data-v="{{ sd.sell if sd and sd.sell is not none else '' }}">{% if sd and sd.sell is not none %}{{ sd.sell | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol stncol pm-vol ph-s{{ st.location_id }}{% if not sd or sd.volume is none %} text-muted{% endif %}" data-v="{{ sd.volume if sd and sd.volume is not none else '' }}">{% if sd and sd.volume is not none %}{{ sd.volume | count_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol stncol pm-avail ph-s{{ st.location_id }}{% if not sd or sd.available is none %} text-muted{% endif %}" data-v="{{ sd.available if sd and sd.available is not none else '' }}">{% if sd and sd.available is not none %}{{ sd.available | count_eu }}{% else %}-{% endif %}</td>{% endfor %}</tr>
 {% endfor -%}
       </tbody>
     </table>
@@ -351,10 +380,12 @@
 (function () {
   // Downloaded secondary hubs (region_id + name) - server-rendered.
   const DL_HUBS = [{% for h in downloaded_hubs %}{id:{{ h.region_id }}, name:{{ h.name|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}];
-  // Markets available in the price-history chart (region-level). Jita + all hubs;
-  // a loaded custom station is appended at runtime as histCustomStation.
-  const HIST_MARKETS = [{id: 10000002, name: 'Jita'}{% for h in hubs %}, {id: {{ h.region_id }}, name: {{ h.name|tojson }}}{% endfor %}];
-  let histCustomStation = null;   // {id: region_id, name} once a custom station is loaded
+  // Tracked stations, in column order (server-rendered, like the hubs).
+  const DL_STATIONS = {{ stations | map(attribute='location_id') | list | tojson }};
+  // Markets available in the price-history chart. Jita + all hubs by region; a
+  // station adds its region's history and, on the Market tab, its own orders.
+  const HIST_MARKETS = [{id: 10000002, name: 'Jita'}{% for h in hubs %}, {id: {{ h.region_id }}, name: {{ h.name|tojson }}}{% endfor %}]
+    .concat([{% for st in stations %}{id: {{ st.region_id or 0 }}, name: {{ st.label|tojson }}, location_id: {{ st.location_id }}}{% if not loop.last %}, {% endif %}{% endfor %}]);
 
   // ── Column preferences: each (hub × metric) column toggled independently ──
   function loadColPrefs() {
@@ -451,8 +482,7 @@
     t.querySelectorAll('td[data-v]').forEach(td => {
       const dv = td.getAttribute('data-v');
       const v = (dv === '' || dv == null) ? null : parseFloat(dv);
-      const isPrice = td.classList.contains('pm-sell') || td.classList.contains('pm-buy')
-                   || td.classList.contains('station-sell-cell');
+      const isPrice = td.classList.contains('pm-sell') || td.classList.contains('pm-buy');
       td.classList.toggle('text-muted', v == null);
       if (v == null && td.hasAttribute('data-alt') && paintAltPrice(td, compact)) return;
       td.textContent = fmtNum(v, isPrice, compact);
@@ -525,46 +555,12 @@
   let inGroupMode = false;
   let searchDebounce = null;
 
-  // Persists across searches so station data survives tbody replacement
-  let loadedStationData = null;
-
-  // The 3 custom-station cells are NOT server-rendered (they were ~5.8k hidden
-  // DOM elements = 25% of this page's nodes, and DOM node count is what drives
-  // its render cost). They are created here, on demand, the first time station
-  // data is loaded. They stay the LAST three cells in the row, so the
-  // positional column indices used by sorting remain correct.
-  const STN_CELL_CLS = 'text-end py-1 align-middle font-monospace small station-col ';
-  function ensureStationCells(tr) {
-    let sell = tr.querySelector('.station-sell-cell');
-    if (sell) return sell;                        // JS-rendered rows already have them
-    ['station-sell-cell', 'station-traded-cell', 'station-avail-cell'].forEach(c => {
-      const td = document.createElement('td');
-      td.className = STN_CELL_CLS + c;
-      td.textContent = '-';
-      tr.appendChild(td);
-    });
-    return tr.querySelector('.station-sell-cell');
-  }
-
-  function applyStationDataToTbody() {
-    applyColumnPrefs();   // re-apply metric/hub column visibility after any tbody rebuild
-    if (loadedStationData && tbody) {
-      tbody.querySelectorAll('tr').forEach(tr => {
-        const sellCell = ensureStationCells(tr);
-        if (!sellCell) return;
-        const tradedCell = tr.querySelector('.station-traded-cell');
-        const availCell  = tr.querySelector('.station-avail-cell');
-        sellCell.style.display = ''; tradedCell.style.display = ''; availCell.style.display = '';
-        const entry  = loadedStationData[tr.dataset.id];
-        const sell   = entry?.best_sell;
-        const traded = entry?.traded_volume;
-        const vol    = entry?.volume;
-        sellCell.setAttribute('data-v', sell != null ? sell : '');
-        tradedCell.setAttribute('data-v', (traded != null && traded > 0) ? traded : '');
-        availCell.setAttribute('data-v', (vol != null && vol > 0) ? vol : '');
-      });
-    }
-    applyNumberFormat();   // (re)format all data-v cells, incl. station, per compact pref
+  // Column visibility + number format for whatever rows the tbody holds now.
+  // Station columns used to be bolted on here by JS for the one station the
+  // browser remembered; they are server-rendered now, like the hub columns.
+  function refreshCells() {
+    applyColumnPrefs();
+    applyNumberFormat();
   }
 
   // European number format: space thousands separator, dot decimal (matches the
@@ -599,9 +595,7 @@
       <td class="text-end py-1 align-middle font-monospace small pricecol pm-vol ph-jita" data-v="${item.volume != null ? item.volume : ''}"></td>
       <td class="text-end py-1 align-middle font-monospace small pricecol pm-avail ph-jita" data-v="${item.jita_available != null ? item.jita_available : ''}"></td>
       ${DL_HUBS.map(h => { const hd=(item.hubs||{})[h.id]||{}; const dv=x=>x!=null?x:''; return `<td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-sell ph-${h.id}" data-v="${dv(hd.sell)}"></td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-buy ph-${h.id}" data-v="${dv(hd.buy)}"></td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-vol ph-${h.id}" data-v="${dv(hd.volume)}"></td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-avail ph-${h.id}" data-v="${dv(hd.available)}"></td>`; }).join('')}
-      <td class="text-end py-1 align-middle font-monospace small station-col station-sell-cell" style="display:none">${na}</td>
-      <td class="text-end py-1 align-middle font-monospace small station-col station-traded-cell" style="display:none">${na}</td>
-      <td class="text-end py-1 align-middle font-monospace small station-col station-avail-cell" style="display:none">${na}</td>
+      ${DL_STATIONS.map(id => { const sd=(item.stations||{})[id]||{}; const dv=x=>x!=null?x:''; return `<td class="text-end py-1 align-middle font-monospace small pricecol stncol pm-sell ph-s${id}" data-v="${dv(sd.sell)}"></td><td class="text-end py-1 align-middle font-monospace small pricecol stncol pm-vol ph-s${id}" data-v="${dv(sd.volume)}"></td><td class="text-end py-1 align-middle font-monospace small pricecol stncol pm-avail ph-s${id}" data-v="${dv(sd.available)}"></td>`; }).join('')}
     </tr>`;
   }
 
@@ -613,7 +607,7 @@
     tbody.innerHTML = '';
     originalRows.forEach(tr => tbody.appendChild(tr));
     inGroupMode = false;
-    applyStationDataToTbody();
+    refreshCells();
   }
 
   function applyNameFilter(q) {
@@ -647,7 +641,7 @@
         if (data.items && data.items.length) {
           data_group_name = data.group_name || '';
           tbody.innerHTML = data.items.map(makeGroupRow).join('');
-          applyStationDataToTbody();
+          refreshCells();
           inGroupMode = true;
           noResults.classList.add('d-none');
           if (data.fetching_prices) {
@@ -662,7 +656,7 @@
                 if (d2.items && d2.items.length && search.value.trim().toLowerCase() === q) {
                   data_group_name = d2.group_name || '';
                   tbody.innerHTML = d2.items.map(makeGroupRow).join('');
-                  applyStationDataToTbody();
+                  refreshCells();
                 }
               } catch { /* ignore */ }
             }, 6000);
@@ -744,18 +738,19 @@
   let downloadBusy = false;
   function dlTriggers() {
     return [document.getElementById('refresh-btn'),
-            document.getElementById('station-vol-load'),
-            ...document.querySelectorAll('.hub-fetch-btn')];
+            document.getElementById('station-add'),
+            ...document.querySelectorAll('.hub-fetch-btn'),
+            ...document.querySelectorAll('.stn-refresh, .stn-remove')];
   }
   function dlLock(on) {
     downloadBusy = on;
     document.body.classList.toggle('dl-busy', on);   // dims item popups (see CSS)
     dlTriggers().forEach(b => { if (b) b.disabled = on; });
     if (!on) {
-      // The custom-station Load button also requires a chosen station.
+      // Add also needs a station picked from the suggestions.
       const sid = document.getElementById('station-vol-id');
-      const sl  = document.getElementById('station-vol-load');
-      if (sl) sl.disabled = !(sid && sid.value);
+      const sa  = document.getElementById('station-add');
+      if (sa) sa.disabled = !(sid && sid.value);
     }
   }
   function dlStart(text) {
@@ -830,48 +825,23 @@
     };
   });
 
-  // --- Station volume search ---
+  // --- Custom stations: pick from the suggestions, Add, and they stay ---
   const stationDisplay = document.getElementById('station-vol-display');
   const stationId      = document.getElementById('station-vol-id');
   const stationBox     = document.getElementById('station-vol-suggestions');
-  const stationLoad    = document.getElementById('station-vol-load');
+  const stationAdd     = document.getElementById('station-add');
   const stationStatus  = document.getElementById('station-vol-status');
-  const regionFillEl   = document.getElementById('region-fill-status');
 
-  // A station load only asks about what that station sells, which is what makes
-  // it quick; the rest of the region is topped up afterwards in the background.
-  // Without saying so, the blank vol/7d cells look like a failure.
-  let regionFillTimer = null;
-  function pollRegionFill(regionId) {
-    if (!regionId) return;
-    clearInterval(regionFillTimer);
-    const tick = () => {
-      fetch('/api/prices/region-fill-status?region_id=' + encodeURIComponent(regionId))
-        .then(r => r.json())
-        .then(st => {
-          const phase = st.phase || 'idle';
-          if (phase === 'filling' || phase === 'starting') {
-            const have = euro(st.have || 0, false), total = euro(st.total || 0, false);
-            regionFillEl.textContent =
-              `Filling this region's 7-day volumes in the background: ${have} / ${total}. `
-              + 'The next station load here will use them.';
-            regionFillEl.classList.remove('d-none');
-          } else {
-            clearInterval(regionFillTimer);
-            regionFillEl.classList.add('d-none');
-          }
-        })
-        .catch(() => clearInterval(regionFillTimer));
-    };
-    tick();
-    regionFillTimer = setInterval(tick, 5000);
+  function stationNote(text, warn) {
+    stationStatus.textContent = text;
+    stationStatus.className = 'small mt-2 ' + (warn ? 'text-warning' : 'text-muted');
   }
 
   let stationDebounce = null;
 
   stationDisplay && stationDisplay.addEventListener('input', () => {
     stationId.value = '';
-    stationLoad.disabled = true;
+    stationAdd.disabled = true;
     clearTimeout(stationDebounce);
     const q = stationDisplay.value.trim();
     if (q.length < 2) { stationBox.style.display = 'none'; return; }
@@ -907,7 +877,7 @@
           stationDisplay.value = el.dataset.name;
           stationId.value = el.dataset.id;
           stationBox.style.display = 'none';
-          stationLoad.disabled = downloadBusy;
+          stationAdd.disabled = downloadBusy;
         });
       });
     }, 250);
@@ -917,107 +887,94 @@
     setTimeout(() => { stationBox.style.display = 'none'; }, 150);
   });
 
-  // Apply a loaded custom station's data to the table + freshness chip + chart region.
-  function applyStationResult(data, regionId, cached, shortName, locId) {
-    document.querySelectorAll('.stn-name').forEach(el => el.textContent = shortName);
-    document.querySelectorAll('.station-col').forEach(el => el.style.display = '');
-    const stnChip = document.getElementById('freshness-station');
-    if (stnChip) {
-      stnChip.querySelector('.stn-fresh-label').textContent = shortName;
-      stnChip.querySelector('.stn-fresh-age').textContent = cached ? '<30m' : 'now';
-      stnChip.classList.remove('d-none');
-    }
-    loadedStationData = data;
-    if (regionId) histCustomStation = { id: regionId, name: shortName, location_id: parseInt(locId) };
-    try {
-      localStorage.setItem('eveCustomStation', JSON.stringify({
-        location_id: parseInt(locId), name: shortName, region_id: regionId || null,
-      }));
-    } catch {}
-    const liveTbody = document.getElementById('price-table')?.querySelector('tbody');
-    if (!liveTbody) {
-      stationStatus.textContent = `Loaded ${Object.keys(data || {}).length} items. Refresh the page to see station prices.`;
-      stationStatus.classList.remove('d-none');
-    } else {
-      applyStationDataToTbody();
-    }
-  }
-
-  stationLoad && stationLoad.addEventListener('click', () => {
-    const locId = stationId.value;
-    if (!locId || downloadBusy) return;
+  // Follow the refresh that prices a station: the Jita sweep for one in The
+  // Forge, a hub's for one in a downloaded hub's region, otherwise its own. The
+  // work belongs to the background scheduler, so leaving the page loses nothing.
+  function followStation(locId, label, onDone) {
     dlLock(true);
-    stationLoad.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Loading…';
-    stationStatus.classList.add('d-none');
-    dlStart('Connecting…');
-    const shortName = stationDisplay.value.split(' - ')[0];
-
-    function endBtn() { stationLoad.innerHTML = '<i class="bi bi-download me-1"></i>Load'; dlLock(false); }
-
-    // Streamed load with real progress - the volume phase fetches 7-day region
-    // history for every cached type (thousands), so it can take a few minutes.
+    dlStart('Connecting… (' + label + ')');
     const es = new EventSource('/prices/refresh/station/stream?location_id=' + encodeURIComponent(locId));
     es.onmessage = (e) => {
       let d; try { d = JSON.parse(e.data); } catch { return; }
       if (d.error) {
-        es.close(); dlFinish('error', 'Error: ' + d.error); endBtn(); dlHide(4000); return;
+        es.close(); dlFinish('error', label + ': ' + d.error); dlLock(false); dlHide(8000); return;
       }
       if (d.done) {
-        es.close(); dlSet(100, 'Loading data…');
-        fetch('/api/prices/station-volume/cached?location_id=' + encodeURIComponent(locId))
-          .then(r => r.json())
-          .then(j => {
-            if (!j.ok) { dlFinish('error', 'Loaded, but no data returned.'); endBtn(); dlHide(3000); return; }
-            applyStationResult(j.data, d.region_id, d.cached, shortName, locId);
-            dlFinish('done', d.cached ? 'Data from cache (< 30 min).' : 'Done.');
-            pollRegionFill(d.region_id);
-            endBtn(); dlHide(2500);
-          })
-          .catch(() => { dlFinish('error', 'Loaded, but failed to read data.'); endBtn(); dlHide(3000); });
+        es.close(); dlFinish('done', label + ': done.');
+        setTimeout(() => (onDone ? onDone() : window.location.reload()), 900);
         return;
       }
-      const txt = (d.phase === 'volumes' && (d.vol_done || 0) > 0)
-        ? `Fetching 7-day volume… ${euro(d.vol_done || 0, false)} / ${euro(d.vol_total || 0, false)}${throttleNote(d)}`
-        : 'Fetching market orders…';
-      dlSet(d.pct || 0, txt);
+      if (d.note) { dlSet(d.pct || 0, label + ': ' + d.note); return; }
+      dlSet(d.pct || 0, d.phase === 'volumes'
+        ? `${label}: 7-day volume ${euro(d.vol_done || 0, false)} / ${euro(d.vol_total || 0, false)}${throttleNote(d)}`
+        : `${label}: market orders${d.total ? ' ' + d.current + ' / ' + d.total + ' pages' : ''}…`);
     };
     es.onerror = () => {
       if (es.readyState === EventSource.CLOSED) return;
-      es.close(); dlFinish('error', 'Connection error.'); endBtn(); dlHide(3000);
+      es.close(); dlFinish('error', 'Connection error.'); dlLock(false); dlHide(4000);
     };
+  }
+
+  async function addStation(locId, name, refresh) {
+    const r = await fetch('/api/prices/stations', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({location_id: +locId, name: name, refresh: refresh}),
+    });
+    let d = {};
+    try { d = await r.json(); } catch {}
+    if (!r.ok || !d.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    return d.station;
+  }
+
+  stationAdd && stationAdd.addEventListener('click', async () => {
+    const locId = stationId.value;
+    if (!locId || downloadBusy) return;
+    if (DL_STATIONS.includes(+locId)) {
+      stationNote('That station is already on your list.', false);
+      stationStatus.classList.remove('d-none');
+      return;
+    }
+    stationAdd.disabled = true;
+    try {
+      const st = await addStation(locId, stationDisplay.value, true);
+      stationDisplay.value = ''; stationId.value = '';
+      followStation(st.location_id, st.label);
+    } catch (e) {
+      stationNote('Could not add it: ' + e.message, true);
+      stationStatus.classList.remove('d-none');
+      stationAdd.disabled = false;
+    }
   });
 
-  // --- Restore the last custom station from a previous session (cache, any age) ---
-  function ageShort(ts) {
-    if (!ts) return '-';
-    const d = Math.max(0, Math.floor(Date.now() / 1000 - ts));
-    if (d < 60) return 'now';
-    if (d < 3600) return Math.floor(d / 60) + 'm';
-    if (d < 86400) return Math.floor(d / 3600) + 'h';
-    return Math.floor(d / 86400) + 'd';
-  }
-  (function restoreCustomStation() {
-    let saved;
+  document.getElementById('station-list')?.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button');
+    if (!btn || downloadBusy) return;
+    const chip = btn.closest('.stn-chip');
+    if (btn.classList.contains('stn-refresh')) {
+      followStation(btn.dataset.loc, chip.dataset.label);
+    } else if (btn.classList.contains('stn-remove')) {
+      btn.disabled = true;
+      try {
+        await fetch('/api/prices/stations/' + encodeURIComponent(btn.dataset.loc), {method: 'DELETE'});
+        // Forget its column choices too, so a re-added station starts visible.
+        ['sell', 'vol', 'avail'].forEach(m => delete colPrefs.cells['s' + btn.dataset.loc + ':' + m]);
+        localStorage.setItem('priceColPrefs', JSON.stringify(colPrefs));
+      } catch {}
+      window.location.reload();
+    }
+  });
+
+  // Older versions kept ONE custom station in this browser only. Take it over
+  // once - recorded without a refresh, because its prices are already stored -
+  // and forget the browser copy.
+  (function adoptBrowserStation() {
+    let saved = null;
     try { saved = JSON.parse(localStorage.getItem('eveCustomStation')); } catch {}
     if (!saved || !saved.location_id) return;
-    fetch('/api/prices/station-volume/cached?location_id=' + saved.location_id)
-      .then(r => r.json())
-      .then(j => {
-        if (!j.ok || !j.data) return;
-        loadedStationData = j.data;
-        const shortName = saved.name || 'Station';
-        document.querySelectorAll('.stn-name').forEach(el => el.textContent = shortName);
-        document.querySelectorAll('.station-col').forEach(el => el.style.display = '');
-        applyStationDataToTbody();
-        if (saved.region_id) histCustomStation = { id: saved.region_id, name: shortName, location_id: saved.location_id };
-        const chip = document.getElementById('freshness-station');
-        if (chip) {
-          chip.querySelector('.stn-fresh-label').textContent = shortName;
-          chip.querySelector('.stn-fresh-age').textContent = ageShort(j.cached_at);
-          chip.classList.remove('d-none');
-        }
-        if (stationDisplay) stationDisplay.value = shortName;
-      })
+    const forget = () => { try { localStorage.removeItem('eveCustomStation'); } catch {} };
+    if (DL_STATIONS.includes(+saved.location_id)) { forget(); return; }
+    addStation(saved.location_id, saved.name || String(saved.location_id), false)
+      .then(() => { forget(); window.location.reload(); })
       .catch(() => {});
   })();
 
@@ -1073,16 +1030,16 @@
     const marketSel = document.getElementById('hist-market');
     let series = [], days = 90, hover = null, geom = null, curType = null, histRefSell = {}, curRefSell = null;
 
-    const allMarkets = () => histCustomStation ? HIST_MARKETS.concat([histCustomStation]) : HIST_MARKETS;
+    const allMarkets = () => HIST_MARKETS;
     const marketName = id => { const m = allMarkets().find(x => x.id === id); return m ? m.name : ('Region ' + id); };
     function populateMarkets() {
       marketSel.innerHTML = '';
       allMarkets().forEach(m => {
         const o = document.createElement('option');
         o.value = m.id; o.textContent = m.name;
-        if (histCustomStation && m === histCustomStation) {
+        if (m.location_id) {
           o.dataset.station = '1';
-          if (m.location_id) o.dataset.loc = m.location_id;
+          o.dataset.loc = m.location_id;
         }
         marketSel.appendChild(o);
       });
@@ -1090,21 +1047,24 @@
     function saveLastMarket() {
       const o = marketSel.selectedOptions[0];
       if (!o) return;
-      try { localStorage.setItem('histMarket', JSON.stringify({ region: +o.value, station: o.dataset.station === '1' })); } catch {}
+      try { localStorage.setItem('histMarket', JSON.stringify({ region: +o.value, loc: o.dataset.loc ? +o.dataset.loc : null })); } catch {}
     }
     function selectMarket() {   // restore the last-used market (persisted across opens)
       let pref = null;
       try { pref = JSON.parse(localStorage.getItem('histMarket')); } catch {}
       const opts = [...marketSel.options];
       let target = null;
-      if (pref && pref.station) target = opts.find(o => o.dataset.station === '1');
+      if (pref && pref.loc) target = opts.find(o => +o.dataset.loc === pref.loc);
+      else if (pref && pref.station) target = opts.find(o => o.dataset.station === '1');   // older pref
       else if (pref) target = opts.find(o => !o.dataset.station && +o.value === pref.region);
       if (!target) target = opts.find(o => +o.value === 10000002 && !o.dataset.station) || opts[0];
       if (target) target.selected = true;
     }
     function loadSeries() {
       const rid = +marketSel.value;
-      document.getElementById('hist-sub').textContent = marketName(rid) + ' · region-wide daily history';
+      // A station's region can be a hub's too, so name it by the option, not the id.
+      const label = marketSel.selectedOptions[0]?.textContent || marketName(rid);
+      document.getElementById('hist-sub').textContent = label + ' · region-wide daily history';
       series = []; hover = null; htip.style.opacity = '0';
       hloading.textContent = 'Loading…'; hloading.style.display = 'flex';
       fetch('/api/prices/history?type_id=' + encodeURIComponent(curType) + '&region_id=' + rid)
@@ -1178,7 +1138,7 @@
       const key = curType + '|' + rid + '|' + loc;
       // Set before the cache short-circuit: coming back from the Contracts tab
       // reuses the rendered order book, and the subtitle still has to say so.
-      document.getElementById('hist-sub').textContent = marketName(rid)
+      document.getElementById('hist-sub').textContent = (opt?.textContent || marketName(rid))
         + (loc ? ' · orders at this station' : ' · live regional market orders');
       if (key === marketKey) return;   // already rendered for this type+market
       marketKey = key;
@@ -1218,7 +1178,7 @@
       // Current sell price for the selected market (from the table row) - drawn
       // as a reference line so history can be compared to today's asking price.
       const opt = marketSel.selectedOptions[0];
-      let refSell = (opt && opt.dataset.station === '1') ? histRefSell['station'] : histRefSell[String(+marketSel.value)];
+      let refSell = (opt && opt.dataset.loc) ? histRefSell['loc:' + opt.dataset.loc] : histRefSell[String(+marketSel.value)];
       if (refSell == null || isNaN(refSell) || refSell <= 0) refSell = null;
       curRefSell = refSell;
       let lo = Math.min(...v.map(p => p.low ?? p.avg)), hi = Math.max(...v.map(p => p.high ?? p.avg));
@@ -1302,8 +1262,10 @@
           const c = rowEl.querySelector('.pm-sell.ph-' + h.id);
           if (c && c.dataset.v) histRefSell[String(h.id)] = parseFloat(c.dataset.v);
         });
-        const st = rowEl.querySelector('.station-sell-cell');
-        if (st && st.dataset.v) histRefSell['station'] = parseFloat(st.dataset.v);
+        DL_STATIONS.forEach(id => {
+          const c = rowEl.querySelector('.pm-sell.ph-s' + id);
+          if (c && c.dataset.v) histRefSell['loc:' + id] = parseFloat(c.dataset.v);
+        });
       }
       document.getElementById('hist-title').textContent = name || ('Type #' + typeId);
       days = 90;

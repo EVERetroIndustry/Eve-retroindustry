@@ -701,6 +701,54 @@ async def fetch_station_orders_bulk(
     return agg
 
 
+def _aggregate_book(pages_data: list[list[dict]], station_id: int,
+                    locations=()) -> tuple[dict[int, dict], dict[int, dict[int, tuple[int, float]]]]:
+    """One pass over a region's order book.
+
+    Returns the region aggregate {type_id: {sell, buy, available}} (`available` =
+    units on sell orders at `station_id`) and, for every id in `locations`,
+    {location_id: {type_id: (units_on_sell_orders, best_sell)}} - so one sweep
+    can price a hub and every tracked station in its region at once.
+    """
+    locs = set(locations or ())
+    agg: dict[int, dict] = {}
+    per_loc: dict[int, dict[int, tuple[int, float]]] = {lid: {} for lid in locs}
+    for page_orders in pages_data:
+        for o in page_orders:
+            tid = o.get("type_id")
+            price = o.get("price")
+            if tid is None or price is None:
+                continue
+            entry = agg.setdefault(tid, {"sell": None, "buy": None, "available": 0})
+            if o.get("is_buy_order"):
+                if entry["buy"] is None or price > entry["buy"]:
+                    entry["buy"] = price
+                continue
+            if entry["sell"] is None or price < entry["sell"]:
+                entry["sell"] = price
+            loc = o.get("location_id")
+            vol = int(o.get("volume_remain", 0))
+            if loc == station_id:
+                entry["available"] += vol
+            if loc in locs:
+                cur = per_loc[loc].get(tid)
+                per_loc[loc][tid] = (vol, price) if cur is None else (cur[0] + vol, min(cur[1], price))
+    return agg, per_loc
+
+
+async def fetch_region_book(
+    client: httpx.AsyncClient,
+    region_id: int,
+    progress_cb=None,
+    station_id: int = JITA_STATION,
+    locations=(),
+) -> tuple[dict[int, dict], dict[int, dict[int, tuple[int, float]]]]:
+    """The whole order book of a region, read once: the region aggregate plus the
+    sell side of every station in `locations`. All pages or IncompleteOrderBook."""
+    pages_data = await _fetch_all_region_orders(client, region_id, progress_cb)
+    return _aggregate_book(pages_data, station_id, locations)
+
+
 async def fetch_region_orders_bulk(
     client: httpx.AsyncClient,
     region_id: int = JITA_REGION,
@@ -714,28 +762,62 @@ async def fetch_region_orders_bulk(
     This is orders of magnitude more efficient than a per-type call: ~500 pages vs. 19k calls.
     progress_cb(page, total_pages) is called after each page (if provided).
     """
-    pages_data = await _fetch_all_region_orders(client, region_id, progress_cb)
-    if not pages_data:
-        return {}
-
-    # Aggregate per type_id
-    agg: dict[int, dict] = {}
-    for page_orders in pages_data:
-        for o in page_orders:
-            tid = o.get("type_id")
-            price = o.get("price")
-            if tid is None or price is None:
-                continue
-            entry = agg.setdefault(tid, {"sell": None, "buy": None, "available": 0})
-            if o.get("is_buy_order"):
-                if entry["buy"] is None or price > entry["buy"]:
-                    entry["buy"] = price
-            else:
-                if entry["sell"] is None or price < entry["sell"]:
-                    entry["sell"] = price
-                if o.get("location_id") == station_id:
-                    entry["available"] += int(o.get("volume_remain", 0))
+    agg, _ = await fetch_region_book(client, region_id, progress_cb, station_id)
     return agg
+
+
+def persist_station_book(conn: sqlite3.Connection, location_id: int,
+                         sold: dict[int, tuple[int, float]], type_ids,
+                         traded: dict[int, int] | None = None) -> int:
+    """Store one station's side of an order book, for every type in `type_ids`.
+
+    A type with no sell order here is stored as (0, None): the station sells none
+    of it, which is an answer - this is only ever called with a whole book (see
+    IncompleteOrderBook). The 7-day regional volume goes only to types that are
+    on sale here, the rule fetch_station_volumes has always followed.
+    Returns how many types the station sells.
+    """
+    traded = traded or {}
+    now = time.time()
+    rows = []
+    for tid in set(type_ids) | set(sold):
+        vol, best = sold.get(tid, (0, None))
+        rows.append((location_id, tid, vol, best,
+                     traded.get(tid) if best is not None else None, now))
+    conn.executemany(
+        "INSERT OR REPLACE INTO station_volume_cache (location_id, type_id, volume,"
+        " best_sell, traded_volume, cached_at) VALUES (?,?,?,?,?,?)", rows)
+    conn.commit()
+    return sum(1 for v in sold.values() if v[1] is not None)
+
+
+async def region_volumes_for(conn: sqlite3.Connection, region_id: int, type_ids,
+                             progress_cb=None) -> dict[int, int]:
+    """7-day region volume for `type_ids`: whatever the region already answered
+    (Jita, a hub, an earlier station load) is reused, the rest is asked - through
+    the ETag layer, so a type asked today answers again for free."""
+    load_hist_etags(conn, region_id)
+    reuse = _cached_region_volume(conn, region_id) or {}
+    out = {t: reuse[t] for t in type_ids if t in reuse}
+    askable = _types_with_market_history(conn, [t for t in type_ids if t not in reuse])
+    total, done = len(askable), 0
+    _BATCH = 300
+    if askable:
+        async with esi_client() as client:
+            for start in range(0, total, _BATCH):
+                batch = askable[start:start + _BATCH]
+                res = await asyncio.gather(
+                    *[_fetch_region_volume(client, region_id, t) for t in batch],
+                    return_exceptions=True)
+                for tid, r in zip(batch, res):
+                    if isinstance(r, int):
+                        out[tid] = r
+                flush_hist_etags(conn, clear=False)
+                done += len(batch)
+                if progress_cb:
+                    await _maybe_call(progress_cb, done, total)
+    flush_hist_etags(conn)
+    return out
 
 
 async def _maybe_call(cb, *args):

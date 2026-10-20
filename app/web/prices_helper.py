@@ -16,6 +16,10 @@ from app.market.prices import (
     fetch_jita_price,
     fetch_jita_prices_bulk,
     fetch_region_orders_bulk,
+    fetch_region_book,
+    persist_station_book,
+    region_volumes_for,
+    _cached_region_volume,
     ensure_price_table,
     PRICE_CACHE_TTL,
     JITA_REGION,
@@ -568,12 +572,17 @@ async def _report(report, payload: dict) -> None:
         report(**payload)
 
 
-async def refresh_jita(conn: sqlite3.Connection, type_ids: list[int], report=None) -> dict:
+async def refresh_jita(conn: sqlite3.Connection, type_ids: list[int], report=None,
+                       stations=()) -> dict:
     """The full Jita refresh: every order in The Forge, then 7-day volumes.
 
     `report(**payload)` receives the same payloads the progress stream sends, so
     the background scheduler and the Prices page see one run the same way. Raises
     IncompleteOrderBook (and writes nothing) when the order book is not whole.
+
+    `stations` are tracked NPC stations in The Forge. They are priced from this
+    same pass - the order book they need is the one just read - so a station in
+    The Forge never costs a sweep of its own.
     """
     ensure_price_table(conn)
     wanted = set(type_ids)
@@ -584,7 +593,8 @@ async def refresh_jita(conn: sqlite3.Connection, type_ids: list[int], report=Non
                                'pct': int(done * 80 / total) if total else 0})
 
     async with esi_client() as client:
-        bulk = await fetch_region_orders_bulk(client, JITA_REGION, progress_cb=_progress)
+        bulk, per_station = await fetch_region_book(client, JITA_REGION, progress_cb=_progress,
+                                                    locations=stations)
 
     # Anything on the order book that the static data has never heard of is
     # learned here and priced in this same pass - its orders are already in hand.
@@ -600,7 +610,52 @@ async def refresh_jita(conn: sqlite3.Connection, type_ids: list[int], report=Non
                                'pct': 80 + int(done * 20 / vol_total) if vol_total else 100})
 
     updated_vol = await _fill_volumes(conn, traded, progress_cb=_vol_progress)
-    return {'refreshed': refreshed, 'total': len(wanted), 'volume_updated': updated_vol}
+    _persist_covered_stations(conn, JITA_REGION, per_station, wanted)
+    return {'refreshed': refreshed, 'total': len(wanted), 'volume_updated': updated_vol,
+            'stations': len(per_station)}
+
+
+def _persist_covered_stations(conn, region_id: int, per_station: dict, type_ids) -> None:
+    """Write the stations a hub sweep priced on the way. Their regional 7-day
+    volume is the one the sweep has just refreshed for the hub."""
+    if not per_station:
+        return
+    region_vol = _cached_region_volume(conn, region_id) or {}
+    for lid, sold in per_station.items():
+        persist_station_book(conn, lid, sold, type_ids, region_vol)
+
+
+async def refresh_region_stations(conn: sqlite3.Connection, region_id: int, locations,
+                                  type_ids: list[int], report=None) -> dict:
+    """Tracked NPC stations in a region no hub refresh covers: one sweep of that
+    region's order book for all of them, then the 7-day volume of whatever they
+    sell. Same all-or-nothing rule as every other sweep."""
+    ensure_price_table(conn)
+    locations = list(locations)
+
+    async def _progress(done: int, total: int):
+        await _report(report, {'current': done, 'total': total, 'phase': 'orders',
+                               'pct': int(done * 70 / total) if total else 0})
+
+    async with esi_client() as client:
+        _agg, per_station = await fetch_region_book(client, region_id, progress_cb=_progress,
+                                                    station_id=0, locations=locations)
+    # Prices first: if the slow volume phase is interrupted, these stay.
+    for lid in locations:
+        persist_station_book(conn, lid, per_station.get(lid, {}), type_ids)
+
+    sold = sorted({t for book in per_station.values() for t, v in book.items()
+                   if v[1] is not None})
+    await _report(report, {'pct': 70, 'phase': 'volumes', 'vol_done': 0, 'vol_total': len(sold)})
+
+    async def _vol_progress(done: int, total: int):
+        await _report(report, {'phase': 'volumes', 'vol_done': done, 'vol_total': total,
+                               'pct': 70 + int(done * 30 / total) if total else 100})
+
+    volumes = await region_volumes_for(conn, region_id, sold, progress_cb=_vol_progress)
+    for lid in locations:
+        persist_station_book(conn, lid, per_station.get(lid, {}), type_ids, volumes)
+    return {'stations': len(locations), 'sold': len(sold)}
 
 
 async def stream_refresh(work):
@@ -740,9 +795,10 @@ async def _fill_hub_volumes(
 
 
 async def refresh_hub(conn: sqlite3.Connection, type_ids: list[int], region_id: int,
-                      report=None) -> dict:
+                      report=None, stations=()) -> dict:
     """One secondary trade hub. Same two phases as Jita (region orders, then
-    7-day volumes), writing to hub_price_cache. Same all-or-nothing rule."""
+    7-day volumes), writing to hub_price_cache. Same all-or-nothing rule, and
+    tracked NPC stations in the hub's region are priced from the same pass."""
     ensure_price_table(conn)
     wanted = set(type_ids)
     station = TRADE_HUBS.get(region_id, {}).get("station", 0)
@@ -752,8 +808,8 @@ async def refresh_hub(conn: sqlite3.Connection, type_ids: list[int], region_id: 
                                'pct': int(done * 80 / total) if total else 0})
 
     async with esi_client() as client:
-        bulk = await fetch_region_orders_bulk(client, region_id, progress_cb=_progress,
-                                              station_id=station)
+        bulk, per_station = await fetch_region_book(client, region_id, progress_cb=_progress,
+                                                    station_id=station, locations=stations)
 
     refreshed, traded = _persist_hub_bulk_orders(conn, region_id, bulk, wanted)
 
@@ -765,7 +821,9 @@ async def refresh_hub(conn: sqlite3.Connection, type_ids: list[int], region_id: 
                                'pct': 80 + int(done * 20 / vol_total) if vol_total else 100})
 
     updated_vol = await _fill_hub_volumes(conn, region_id, traded, progress_cb=_vol_progress)
-    return {'refreshed': refreshed, 'total': len(wanted), 'volume_updated': updated_vol}
+    _persist_covered_stations(conn, region_id, per_station, wanted)
+    return {'refreshed': refreshed, 'total': len(wanted), 'volume_updated': updated_vol,
+            'stations': len(per_station)}
 
 
 async def stream_hub_refresh(conn: sqlite3.Connection, type_ids: list[int], region_id: int):
@@ -810,6 +868,30 @@ def get_all_hub_prices(
         if sell is None and buy is None and vol is None and avail is None:
             continue
         out.setdefault(tid, {})[rid] = {"sell": sell, "buy": buy, "volume": vol, "available": avail}
+    return out
+
+
+def get_station_prices(conn: sqlite3.Connection, type_ids, location_ids
+                       ) -> dict[int, dict[int, dict]]:
+    """{type_id: {location_id: {sell, volume, available}}} for the tracked
+    stations - the station columns, shaped like the hub ones. `volume` is the
+    regional 7-day volume, `available` the units on sale at the station."""
+    type_ids, location_ids = list(type_ids), list(location_ids)
+    if not type_ids or not location_ids:
+        return {}
+    out: dict[int, dict[int, dict]] = {}
+    lph = ",".join("?" * len(location_ids))
+    for start in range(0, len(type_ids), 400):
+        chunk = type_ids[start:start + 400]
+        tph = ",".join("?" * len(chunk))
+        for tid, lid, avail, sell, traded in conn.execute(
+                f"SELECT type_id, location_id, volume, best_sell, traded_volume"
+                f" FROM station_volume_cache WHERE location_id IN ({lph})"
+                f" AND type_id IN ({tph})", location_ids + chunk):
+            if sell is None and not avail and not traded:
+                continue
+            out.setdefault(tid, {})[lid] = {"sell": sell, "volume": traded or None,
+                                            "available": avail or None}
     return out
 
 

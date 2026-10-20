@@ -80,6 +80,8 @@ from app.web.prices_helper import (
     refresh_jita,
     refresh_hub,
     sweep_error_message,
+    refresh_region_stations,
+    get_station_prices,
     get_hub_cache_stats,
     get_all_hub_prices,
     get_price_history,
@@ -4505,6 +4507,12 @@ async def prices_page(request: Request):
         hub_prices = get_all_hub_prices(conn, [i["type_id"] for i in items])
         for it in items:
             it["hubs"] = hub_prices.get(it["type_id"], {})
+    stations = _station_columns(conn)
+    if stations:
+        stn_prices = get_station_prices(conn, [i["type_id"] for i in items],
+                                        [s["location_id"] for s in stations])
+        for it in items:
+            it["stations"] = stn_prices.get(it["type_id"], {})
     conn.close()
     return _tr("prices.html", request, {
         "stats": stats,
@@ -4513,7 +4521,19 @@ async def prices_page(request: Request):
         "items": items,
         "hubs": hubs,
         "downloaded_hubs": downloaded_hubs,
+        "stations": stations,
     })
+
+
+def _station_columns(conn: sqlite3.Connection) -> list[dict]:
+    """The tracked stations as the Prices page shows them, with their age."""
+    out = []
+    for st in _tracked_stations(conn):
+        row = conn.execute("SELECT MAX(cached_at) FROM station_volume_cache"
+                           " WHERE location_id=?", (st["location_id"],)).fetchone()
+        out.append({**st, "last_update": row[0] if row else None,
+                    "job": _covering_key(conn, st)})
+    return out
 
 
 @app.get("/api/station-industry-info")
@@ -5711,6 +5731,8 @@ async def prices_search(q: str = ""):
             _asyncio.create_task(_bg_fetch_prices(uncached))
 
         hub_prices = get_all_hub_prices(conn, [r[0] for r in rows])
+        stn_prices = get_station_prices(conn, [r[0] for r in rows],
+                                        [st["location_id"] for st in _tracked_stations(conn)])
         items = [
             {
                 "type_id":       r[0],
@@ -5722,6 +5744,7 @@ async def prices_search(q: str = ""):
                 "volume":        r[6],
                 "jita_available": r[7],
                 "hubs":          hub_prices.get(r[0], {}),
+                "stations":      stn_prices.get(r[0], {}),
             }
             for r in rows
         ]
@@ -5762,6 +5785,8 @@ async def prices_search(q: str = ""):
         import asyncio as _asyncio
         _asyncio.create_task(_bg_fetch_prices(uncached))
     hub_prices = get_all_hub_prices(conn, [r[0] for r in rows])
+    stn_prices = get_station_prices(conn, [r[0] for r in rows],
+                                    [st["location_id"] for st in _tracked_stations(conn)])
     items = [
         {
             "type_id":       r[0],
@@ -5773,6 +5798,7 @@ async def prices_search(q: str = ""):
             "volume":        r[6],
             "jita_available": r[7],
             "hubs":          hub_prices.get(r[0], {}),
+            "stations":      stn_prices.get(r[0], {}),
         }
         for r in rows
     ]
@@ -5813,83 +5839,22 @@ async def api_station_volume_cached(location_id: int):
 
 @app.get("/prices/refresh/station/stream")
 async def prices_station_stream(request: Request, location_id: int):
-    """Streamed custom-station load with real progress. The volume phase fetches
-    7-day region history for every cached type (thousands), which is slow - the
-    old fixed 90% fake bar looked frozen. Streams orders/volume progress; on done
-    the client reads the now-cached data via /api/prices/station-volume/cached."""
-    import json as _json
+    """Progress of the refresh that prices a tracked station - the Jita sweep for
+    one in The Forge, a hub's for one in its region, otherwise the region's or
+    the structure's own job. Watching only: leaving the page stops nothing."""
     conn = get_conn()
-    token = get_active_token(request, conn)
-    ensure_price_table(conn)
     try:
-        region_id = await get_region_for_location(conn, location_id, token)
-    except Exception:
-        region_id = None
-
-    async def gen():
-        task = None
-        try:
-            # Explicit "Load" always fetches fresh - never serve the 30-min cache
-            # here (a previous partial/failed fetch could otherwise be replayed,
-            # e.g. blank sell/available with only 7d volume). The cache still backs
-            # the silent restore-on-page-load path (/station-volume/cached).
-            type_ids = _priceable_type_ids(conn)
-            total = len(type_ids) or 1
-            holder = [0]
-            def _prog(done, _tot):
-                holder[0] = done
-            yield f"data: {_json.dumps({'phase': 'orders', 'pct': 4})}\n\n"
-
-            if location_id >= 1_000_000_000:
-                if not token:
-                    yield f"data: {_json.dumps({'error': 'Sign-in is required to access the structure market.'})}\n\n"
-                    return
-                task = asyncio.create_task(fetch_structure_market(
-                    conn, location_id, token, set(type_ids), region_id, progress_cb=_prog))
-            else:
-                task = asyncio.create_task(fetch_station_volumes(
-                    conn, location_id, region_id, type_ids, progress_cb=_prog))
-
-            while not task.done():
-                await asyncio.sleep(0.5)
-                pct = min(98, 8 + int(holder[0] * 90 / total))
-                payload = {'phase': 'volumes', 'vol_done': holder[0], 'vol_total': total, 'pct': pct}
-                # A long region-history sweep goes quiet for a while whenever ESI
-                # is rate-limiting it, which reads exactly like a hang without
-                # this - so say so, with an ETA, instead of letting the bar just
-                # sit there.
-                throttle = esi_throttle_status(HISTORY_ENDPOINT_URL)
-                if throttle["paused"]:
-                    payload["throttled"] = True
-                    payload["wait_s"] = throttle["seconds"]
-                yield f"data: {_json.dumps(payload)}\n\n"
-
-            exc = task.exception()
-            if exc is not None:
-                yield f"data: {_json.dumps({'error': sweep_error_message(exc)})}\n\n"
-                return
-            task = None   # completed cleanly - don't cancel in finally
-            # The sweep above only asked about what this station sells. Top the
-            # rest of the region up in the background so the next load here (or
-            # at any other station in the region) is served from cache with full
-            # coverage instead of sweeping again.
-            ensure_region_filler(region_id)
-            yield f"data: {_json.dumps({'done': True, 'cached': False, 'region_id': region_id, 'pct': 100})}\n\n"
-        except Exception as e:
-            yield f"data: {_json.dumps({'error': str(e)})}\n\n"
-        finally:
-            # If the client disconnected mid-load, cancel the background fetch so it
-            # doesn't keep writing to the connection we're about to close.
-            if task is not None and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
-            conn.close()
-
-    return StreamingResponse(gen(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        st = next((t for t in _tracked_stations(conn) if t["location_id"] == location_id), None)
+        key = _covering_key(conn, st) if st else None
+    finally:
+        conn.close()
+    if key is None:
+        async def _nope():
+            yield f"data: {json.dumps({'error': 'Add the station first.'})}\n\n"
+        return StreamingResponse(_nope(), media_type="text/event-stream", headers=_SSE_HEADERS)
+    _sync_station_jobs()
+    return StreamingResponse(_follow_job(key, HISTORY_ENDPOINT_URL),
+                             media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @app.get("/api/prices/region-fill-status")
@@ -9518,7 +9483,8 @@ _ORDERS_URL = "https://esi.evetech.net/latest/markets/10000002/orders/"
 async def _job_jita(report) -> dict:
     conn = get_conn()
     try:
-        res = await refresh_jita(conn, _refresh_type_ids(conn), report)
+        res = await refresh_jita(conn, _refresh_type_ids(conn), report,
+                                 stations=_covered_station_ids(conn, "jita"))
         _mark_ok(conn, "jita")
         return res
     finally:
@@ -9529,11 +9495,15 @@ def _hub_job(region_id: int):
     async def run(report) -> dict:
         conn = get_conn()
         try:
-            res = await refresh_hub(conn, _refresh_type_ids(conn), region_id, report)
+            res = await refresh_hub(conn, _refresh_type_ids(conn), region_id, report,
+                                    stations=_covered_station_ids(conn, f"hub:{region_id}"))
             _mark_ok(conn, f"hub:{region_id}")
-            return res
         finally:
             conn.close()
+        # The first download of a hub makes it the one that prices the stations
+        # in its region; their own sweep is no longer needed.
+        _sync_station_jobs()
+        return res
 
     def stats() -> dict:
         conn = get_conn()
@@ -9719,6 +9689,199 @@ def _structures_apply() -> str | None:
     return "no character can read structures"
 
 
+# ── Tracked custom stations ──────────────────────────────────────────────────
+# Any number of stations or structures whose prices the Prices page shows next
+# to Jita and the hubs. Kept here, not in the browser, so the scheduler can keep
+# them current. One order book per region: an NPC station in The Forge is priced
+# by the Jita sweep, one in a downloaded hub's region by that hub's sweep, the
+# rest share one sweep per region. A structure has its own market endpoint.
+
+def _ensure_tracked_stations(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS tracked_stations (
+        location_id  INTEGER PRIMARY KEY,
+        name         TEXT NOT NULL,
+        region_id    INTEGER,
+        character_id INTEGER,
+        added_at     REAL NOT NULL)""")
+
+
+def _tracked_stations(conn: sqlite3.Connection) -> list[dict]:
+    _ensure_tracked_stations(conn)
+    rows = conn.execute("SELECT location_id, name, region_id, character_id"
+                        " FROM tracked_stations ORDER BY added_at").fetchall()
+    out = [{"location_id": r[0], "name": r[1], "region_id": r[2], "character_id": r[3]}
+           for r in rows]
+    # Column headers want something short. The first part of the name is the
+    # system (and planet) for both stations and structures; two of them in one
+    # system would then read the same, so those keep their full name.
+    first = [st["name"].split(" - ")[0] for st in out]
+    for st, short in zip(out, first):
+        st["label"] = short if first.count(short) == 1 else st["name"]
+    return out
+
+
+def _hub_has_data(conn: sqlite3.Connection, region_id: int) -> bool:
+    return bool(get_hub_cache_stats(conn, region_id)["has_data"])
+
+
+def _covering_key(conn: sqlite3.Connection, st: dict) -> str:
+    """The scheduler job that prices this station."""
+    if st["location_id"] >= 1_000_000_000:
+        return f"structure:{st['location_id']}"
+    rid = st.get("region_id")
+    if rid == JITA_REGION:
+        return "jita"
+    if rid in TRADE_HUBS and _hub_has_data(conn, rid):
+        return f"hub:{rid}"
+    return f"stations:{rid}"
+
+
+def _covered_station_ids(conn: sqlite3.Connection, key: str) -> list[int]:
+    return [st["location_id"] for st in _tracked_stations(conn)
+            if _covering_key(conn, st) == key]
+
+
+def _station_last_ok(location_ids) -> float | None:
+    """The oldest of the stations' newest rows: the age of the stalest one."""
+    conn = get_conn()
+    try:
+        ages = [conn.execute("SELECT MAX(cached_at) FROM station_volume_cache"
+                             " WHERE location_id=?", (lid,)).fetchone()[0]
+                for lid in location_ids]
+    finally:
+        conn.close()
+    return None if not ages or any(a is None for a in ages) else min(ages)
+
+
+def _with_stations(base: str, key: str):
+    def title() -> str:
+        conn = get_conn()
+        try:
+            n = len(_covered_station_ids(conn, key))
+        finally:
+            conn.close()
+        return base + (f" + {n} station{'s' if n != 1 else ''}" if n else "")
+    return title
+
+
+def _region_stations_job(region_id: int):
+    key = f"stations:{region_id}"
+
+    def ids() -> list[int]:
+        conn = get_conn()
+        try:
+            return _covered_station_ids(conn, key)
+        finally:
+            conn.close()
+
+    async def run(report) -> dict:
+        conn = get_conn()
+        try:
+            res = await refresh_region_stations(conn, region_id, _covered_station_ids(conn, key),
+                                                _priceable_type_ids(conn), report)
+            _mark_ok(conn, key)
+        finally:
+            conn.close()
+        # What the stations sell is in; the rest of the region's 7-day volumes
+        # are topped up slowly, as after any station load.
+        ensure_region_filler(region_id)
+        return res
+
+    def title() -> str:
+        conn = get_conn()
+        try:
+            names = [st["label"] for st in _tracked_stations(conn)
+                     if _covering_key(conn, st) == key]
+        finally:
+            conn.close()
+        return "Station prices - " + ", ".join(names)
+
+    return bg.Job(key=key, title=title, group="market", every=PRICE_CACHE_TTL, run=run,
+                  last_ok=lambda: _station_last_ok(ids()), describe=_describe_sweep,
+                  throttle_url=_ORDERS_URL, href="/prices")
+
+
+async def _structure_token(character_id: int | None) -> str | None:
+    """The character who added the structure first (docking access is per
+    character), then anyone who may read structure markets at all."""
+    if character_id:
+        tok = await _valid_token_async(character_id)
+        if tok and token_has_scope(tok, "esi-markets.structure_markets.v1"):
+            return tok
+    conn = get_conn()
+    try:
+        chars = [cid for cid, _n in list_characters(conn) if cid != character_id]
+    finally:
+        conn.close()
+    for cid in chars:
+        tok = await _valid_token_async(cid)
+        if tok and token_has_scope(tok, "esi-markets.structure_markets.v1"):
+            return tok
+    return None
+
+
+def _structure_job(st: dict):
+    sid, key = st["location_id"], f"structure:{st['location_id']}"
+
+    async def run(report) -> dict:
+        token = await _structure_token(st.get("character_id"))
+        if not token:
+            raise RuntimeError("No character with a working login may read this "
+                               "structure's market.")
+        conn = get_conn()
+        try:
+            def _p(done, total):
+                report(phase="volumes", vol_done=done, vol_total=total,
+                       pct=10 + int(done * 90 / total) if total else 100)
+            report(phase="orders", pct=5, current=0, total=0)
+            await fetch_structure_market(conn, sid, token, set(_priceable_type_ids(conn)),
+                                         st.get("region_id"), progress_cb=_p)
+            _mark_ok(conn, key)
+        finally:
+            conn.close()
+        ensure_region_filler(st.get("region_id"))
+        return {"stations": 1}
+
+    def title() -> str:
+        conn = get_conn()
+        try:
+            for t in _tracked_stations(conn):
+                if t["location_id"] == sid:
+                    return t["label"]
+        finally:
+            conn.close()
+        return st["name"]
+
+    return bg.Job(key=key, title=title, group="structure-market", every=PRICE_CACHE_TTL,
+                  run=run, last_ok=lambda: _station_last_ok([sid]),
+                  describe=_describe_sweep, href="/prices")
+
+
+def _sync_station_jobs() -> None:
+    """Register a job for every region or structure that needs its own sweep,
+    and drop the ones nothing needs any more. Cheap; called whenever the list
+    of stations or the set of downloaded hubs may have changed."""
+    conn = get_conn()
+    try:
+        wanted: dict[str, object] = {}
+        for st in _tracked_stations(conn):
+            key = _covering_key(conn, st)
+            if key.startswith("structure:"):
+                wanted[key] = st
+            elif key.startswith("stations:"):
+                wanted[key] = st["region_id"]
+    finally:
+        conn.close()
+    for key in bg.keys("stations:") + bg.keys("structure:"):
+        if key not in wanted:
+            bg.unregister(key)
+    registered = set(bg.keys())
+    for key, spec in wanted.items():
+        if key not in registered:
+            bg.register(_structure_job(spec) if key.startswith("structure:")
+                        else _region_stations_job(spec))
+
+
 def _register_background() -> None:
     bg.GATE.sde_ready = lambda: bool(_SDE_READY[0])
     bg.GATE.sync_running = lambda: bool(_sync_state["running"])
@@ -9736,14 +9899,16 @@ def _register_background() -> None:
         last_ok=_characters_last_ok, applies=_characters_apply,
         describe=lambda p: (p.get("pct"), p.get("detail") or ""), href="/assets"))
     bg.register(bg.Job(
-        key="jita", title="Jita prices", group="market", every=PRICE_CACHE_TTL,
+        key="jita", title=_with_stations("Jita prices", "jita"), group="market",
+        every=PRICE_CACHE_TTL,
         run=_job_jita, describe=_describe_sweep, throttle_url=_ORDERS_URL, href="/prices",
         last_ok=lambda: _recorded_ok(
             "jita", lambda c: get_price_cache_stats(c)["last_update"])))
     for rid, info in TRADE_HUBS.items():
         run, applies, last_ok = _hub_job(rid)
         bg.register(bg.Job(
-            key=f"hub:{rid}", title=f"{info['name']} prices", group="market",
+            key=f"hub:{rid}", title=_with_stations(f"{info['name']} prices", f"hub:{rid}"),
+            group="market",
             every=PRICE_CACHE_TTL, run=run, applies=applies, last_ok=last_ok,
             describe=_describe_sweep, throttle_url=_ORDERS_URL, href="/prices"))
     bg.register(bg.Job(
@@ -9751,6 +9916,8 @@ def _register_background() -> None:
         every=24 * 3600, run=_job_public_structures, is_due=_structures_due,
         last_ok=_structures_last_ok, applies=_structures_apply, in_run_all=False,
         describe=lambda p: (p.get("pct"), f"{p.get('named') or 0} / {p.get('total') or 0}")))
+
+    _sync_station_jobs()
 
     bg.register_filler(bg.Filler(
         key="public", title="Public contracts", start=ensure_public_filler,
@@ -9797,6 +9964,82 @@ async def api_activity_run(request: Request):
 async def api_activity_run_all():
     """Refresh everything now - what Sync All always meant, and a bit more."""
     return {"ok": True, "started": bg.run_all()}
+
+
+@app.get("/api/prices/stations")
+async def api_tracked_stations():
+    conn = get_conn()
+    try:
+        out = []
+        for st in _tracked_stations(conn):
+            row = conn.execute("SELECT MAX(cached_at) FROM station_volume_cache"
+                               " WHERE location_id=?", (st["location_id"],)).fetchone()
+            out.append({**st, "last_update": row[0] if row else None,
+                        "job": _covering_key(conn, st)})
+        return {"stations": out}
+    finally:
+        conn.close()
+
+
+@app.post("/api/prices/stations")
+async def api_add_tracked_station(request: Request):
+    """Add a station to the Prices page and start pricing it.
+
+    `refresh: false` only records it - used once, to take over the single
+    station older versions kept in the browser, whose prices are already here.
+    """
+    from fastapi.responses import JSONResponse
+    body = await request.json()
+    try:
+        location_id = int(body.get("location_id"))
+    except (TypeError, ValueError):
+        return JSONResponse({"ok": False, "error": "No station chosen."}, status_code=400)
+    name = str(body.get("name") or "").strip() or str(location_id)
+    conn = get_conn()
+    try:
+        token = get_active_token(request, conn)
+        if location_id >= 1_000_000_000 and not token:
+            return JSONResponse({"ok": False, "error": "Sign-in is required to read a "
+                                 "structure's market."}, status_code=400)
+        try:
+            region_id = await get_region_for_location(conn, location_id, token)
+        except Exception:
+            region_id = None
+        if not region_id:
+            return JSONResponse({"ok": False, "error": "Could not determine the region "
+                                 "of this location."}, status_code=400)
+        char_id = get_active_character_id(request, conn) if location_id >= 1_000_000_000 else None
+        _ensure_tracked_stations(conn)
+        conn.execute(
+            "INSERT INTO tracked_stations (location_id, name, region_id, character_id, added_at)"
+            " VALUES (?,?,?,?,?) ON CONFLICT(location_id) DO UPDATE SET name=excluded.name,"
+            " region_id=excluded.region_id, character_id=COALESCE(excluded.character_id,"
+            " tracked_stations.character_id)",
+            (location_id, name, region_id, char_id, _time.time()))
+        conn.commit()
+        st = next(t for t in _tracked_stations(conn) if t["location_id"] == location_id)
+        key = _covering_key(conn, st)
+    finally:
+        conn.close()
+    _sync_station_jobs()
+    if body.get("refresh", True):
+        bg.run_now(key)
+    return {"ok": True, "station": st, "job": key}
+
+
+@app.delete("/api/prices/stations/{location_id}")
+async def api_remove_tracked_station(location_id: int):
+    """Stop showing and refreshing a station. Its stored prices are kept: they
+    are a cache Plan reads too, and adding the station again is then instant."""
+    conn = get_conn()
+    try:
+        _ensure_tracked_stations(conn)
+        conn.execute("DELETE FROM tracked_stations WHERE location_id=?", (location_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    _sync_station_jobs()
+    return {"ok": True}
 
 
 @app.post("/api/activity/auto")
