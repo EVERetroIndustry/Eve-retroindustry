@@ -155,5 +155,11 @@ def test_sync_all_is_the_panel_on_every_page(client, m):
     html = client.get("/").text
     assert html.count('id="act-btn"') == 1 and 'id="act-menu"' in html
     assert "syncAll(" not in html, "the old blind-reload Sync All is gone"
+    # The navbar button only opens the panel; Sync All lives inside it.
+    nav_btn = html[html.index('id="act-btn"'):html.index('id="act-menu"')]
+    assert 'data-bs-toggle="dropdown"' in html[html.index('id="act-btn"') - 200:html.index('id="act-btn"')]
+    assert '<span class="nav-label">Sync</span>' in nav_btn
+    runall = html[html.index('id="act-runall"'):]
+    assert runall[:runall.index("</button>")].rstrip().endswith("Sync All")
     # The poll must not light the busy bar on every page every two seconds.
     assert "rawFetch('/api/activity')" in html

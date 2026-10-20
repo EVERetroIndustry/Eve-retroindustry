@@ -9455,7 +9455,7 @@ async def api_version_apply():
 
 
 # ---------------------------------------------------------------------------
-# Background refresh: the jobs, the fillers, and the panel behind Sync All
+# Background refresh: the jobs, the fillers, and the panel behind Sync
 # ---------------------------------------------------------------------------
 # The scheduler itself is app/web/background.py; this is where the app's own
 # work is described to it. Order here is the order of the panel.
@@ -10011,7 +10011,7 @@ async def _start_background() -> None:
 
 @app.get("/api/activity")
 async def api_activity():
-    """Everything the panel behind Sync All shows, in one answer."""
+    """Everything the panel behind the Sync button shows, in one answer."""
     return bg.snapshot()
 
 
@@ -10028,7 +10028,8 @@ async def api_activity_run(request: Request):
 
 @app.post("/api/activity/run-all")
 async def api_activity_run_all():
-    """Refresh everything now - what Sync All always meant, and a bit more."""
+    """The panel's Sync All: refresh everything now - characters, Jita, the
+    downloaded hubs and the tracked stations."""
     return {"ok": True, "started": bg.run_all()}
 
 

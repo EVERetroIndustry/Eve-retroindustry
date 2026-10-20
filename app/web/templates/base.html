@@ -203,8 +203,8 @@
   @media (prefers-reduced-motion: reduce) {
     .nav-update-pill { animation: none; }
   }
-  /* Background updates: the Sync All button doubles as the indicator. Idle it is
-     the old button; while something refreshes its icon turns inside a ring that
+  /* Background updates: the Sync button doubles as the indicator. Idle it is a
+     plain button; while something refreshes its icon turns inside a ring that
      fills with the overall percentage - no extra width, so the navbar's
      labels-or-icons threshold does not move. */
   .act-btn { position: relative; }
@@ -523,13 +523,14 @@ window.renderContractItems = function (box, data, price) {
         </li>
 
         {% if all_characters %}
-        {# Sync All is also the background-updates indicator: one control for
-           "refresh my data", whether the app does it or the user asks. #}
+        {# Sync opens the background-updates panel - it starts nothing by itself.
+           Sync All inside the panel is what refreshes everything now: one place
+           for "refresh my data", whether the app does it or the user asks. #}
         <li class="nav-item dropdown">
           <button type="button" class="btn btn-sm btn-outline-secondary d-flex align-items-center act-btn"
                   data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false"
                   id="act-btn" title="Background updates - what is being refreshed">
-            <span class="act-ring" id="act-ring"><i class="bi bi-arrow-clockwise"></i></span><span class="nav-label">Sync All</span>
+            <span class="act-ring" id="act-ring"><i class="bi bi-arrow-clockwise"></i></span><span class="nav-label">Sync</span>
             <span class="act-dot d-none" id="act-dot"></span>
           </button>
           <div class="dropdown-menu dropdown-menu-end shadow act-menu" id="act-menu">
@@ -542,8 +543,9 @@ window.renderContractItems = function (box, data, price) {
               </div>
             </div>
             <div class="act-note" id="act-note"></div>
-            <button type="button" class="btn btn-sm btn-outline-primary w-100 my-2" id="act-runall">
-              <i class="bi bi-arrow-clockwise me-1"></i>Refresh everything now
+            <button type="button" class="btn btn-sm btn-outline-primary w-100 my-2" id="act-runall"
+                    title="Refresh characters, Jita, your hubs and stations now">
+              <i class="bi bi-arrow-clockwise me-1"></i>Sync All
             </button>
             <div id="act-list"></div>
             <div class="act-foot d-none" id="act-reload">
@@ -680,7 +682,7 @@ window.addEventListener('resize', scheduleNavFit);
 window.addEventListener('load', fitNavbar);
 document.addEventListener('DOMContentLoaded', fitNavbar);
 
-// Background updates panel (the Sync All button). Polls /api/activity: every
+// Background updates panel (the Sync button). Polls /api/activity: every
 // 2 s while open or while something is refreshing, otherwise every 20 s, which is
 // enough to start the ring when the scheduler picks up work by itself.
 (function () {
@@ -760,7 +762,7 @@ document.addEventListener('DOMContentLoaded', fitNavbar);
                   : 'Background updates - what is being refreshed');
     auto.checked = !!d.auto;
     note.textContent = !d.auto
-      ? 'Automatic updates are off: nothing refreshes by itself. Run a source here or refresh everything.'
+      ? 'Automatic updates are off: nothing refreshes by itself. Run a source here, or Sync All.'
       : (!d.ready ? `Background updates start once ${d.waiting_for} has loaded.` : '');
     list.innerHTML = d.jobs.map(row).join('');
     // A refresh that finished while this page was open changed data the page

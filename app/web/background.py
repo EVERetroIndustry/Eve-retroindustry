@@ -122,7 +122,7 @@ class Job:
     describe: Callable[[dict], tuple[Optional[int], str]] = (
         lambda p: (p.get("pct"), p.get("detail") or ""))
     throttle_url: Optional[str] = None           # to report an ESI pause while it runs
-    in_run_all: bool = True                      # part of "Refresh everything"
+    in_run_all: bool = True                      # part of "Sync All"
     href: Optional[str] = None                   # page where its data is shown
 
 
