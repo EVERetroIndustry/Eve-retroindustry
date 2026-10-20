@@ -156,6 +156,10 @@ class Filler:
 
 
 _JOBS: dict[str, Job] = {}
+# One-off work the app starts outside the scheduler (a page reading what it needs
+# behind the response). Shown while it runs; see track().
+_TRACKED: dict[str, dict] = {}
+_TRACK_SEQ = [0]
 _STATE: dict[str, _State] = {}
 _FILLERS: dict[str, Filler] = {}
 _LOOP: dict[str, object] = {}
@@ -175,6 +179,29 @@ foreground_active: Callable[[], bool] = lambda: False
 def register(job: Job) -> None:
     _JOBS[job.key] = job
     _STATE.setdefault(job.key, _State())
+
+
+def track(task: asyncio.Task, title: str, detail: str = "", href: Optional[str] = None,
+          key: Optional[str] = None) -> dict:
+    """Show a task that runs outside the scheduler in the panel while it runs.
+
+    Without this the panel could only speak for its own jobs: the Deals tab
+    reading daily history for a hundred types said so on its own page while the
+    panel showed every source as done. Returns a dict the task may update with
+    `pct` / `detail` as it goes.
+    """
+    if key is None:
+        _TRACK_SEQ[0] += 1
+        key = f"task:{_TRACK_SEQ[0]}"
+    entry = {"key": key, "title": title, "detail": detail, "href": href,
+             "progress": {}, "started": _clock()}
+    _TRACKED[key] = entry
+
+    def _done(_t) -> None:
+        if _TRACKED.get(key) is entry:
+            _TRACKED.pop(key, None)
+    task.add_done_callback(_done)
+    return entry["progress"]
 
 
 def unregister(key: str) -> None:
@@ -199,6 +226,7 @@ def reset_for_tests() -> None:
     _JOBS.clear()
     _STATE.clear()
     _FILLERS.clear()
+    _TRACKED.clear()
     _LOOP.clear()
     GATE._delivered = False
     GATE._opened = False
@@ -413,6 +441,12 @@ def snapshot(now: Optional[float] = None) -> dict:
         except Exception as exc:                  # noqa: BLE001
             rows.append({"key": filler.key, "title": filler.title, "kind": "filler",
                          "state": "error", "error": str(exc)[:200]})
+    for t in list(_TRACKED.values()):
+        p = t["progress"]
+        rows.append({"key": t["key"], "title": t["title"], "kind": "task", "href": t["href"],
+                     "state": "running", "pct": p.get("pct"),
+                     "detail": p.get("detail") or t["detail"], "reason": None,
+                     "error": None, "next_in": None, "can_run": False, "last_ok": None})
     running = [r for r in rows if r.get("state") == "running"]
     pcts = [r["pct"] for r in running if isinstance(r.get("pct"), (int, float))]
     return {

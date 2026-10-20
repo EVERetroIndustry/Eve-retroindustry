@@ -1527,6 +1527,11 @@ def _fmt_remaining(finish_iso: str, now) -> str:
 _BG_REFRESH: set = set()
 
 
+# What a page's behind-the-response refresh is called in the panel.
+_REFRESH_TITLES = {"jobs_page": ("Industry jobs", "/jobs"),
+                   "planets_page": ("Planets", "/planets")}
+
+
 def _schedule_refresh(keys, worker) -> None:
     """Refresh stale page data AFTER the response has been sent.
 
@@ -1543,6 +1548,9 @@ def _schedule_refresh(keys, worker) -> None:
             task = asyncio.create_task(worker(key))
         except RuntimeError:
             return                      # no running loop (CLI/tests)
+        page = tag[0].split(".")[0]
+        title, href = _REFRESH_TITLES.get(page, ("Page data", None))
+        bg.track(task, title, "one character", href)
         _BG_REFRESH.add(tag)
         task.add_done_callback(lambda _t, tag=tag: _BG_REFRESH.discard(tag))
 
@@ -5728,7 +5736,8 @@ async def prices_search(q: str = ""):
             )
             conn.commit()
             import asyncio as _asyncio
-            _asyncio.create_task(_bg_fetch_prices(uncached))
+            bg.track(_asyncio.create_task(_bg_fetch_prices(uncached)),
+                     "Prices for searched items", f"{len(uncached)} types", "/prices")
 
         hub_prices = get_all_hub_prices(conn, [r[0] for r in rows])
         stn_prices = get_station_prices(conn, [r[0] for r in rows],
@@ -5783,7 +5792,8 @@ async def prices_search(q: str = ""):
         )
         conn.commit()
         import asyncio as _asyncio
-        _asyncio.create_task(_bg_fetch_prices(uncached))
+        bg.track(_asyncio.create_task(_bg_fetch_prices(uncached)),
+                     "Prices for searched items", f"{len(uncached)} types", "/prices")
     hub_prices = get_all_hub_prices(conn, [r[0] for r in rows])
     stn_prices = get_station_prices(conn, [r[0] for r in rows],
                                     [st["location_id"] for st in _tracked_stations(conn)])
@@ -7277,10 +7287,16 @@ def _start_deals_history(type_ids: list[int]) -> None:
     if task is not None and not task.done():
         return
 
+    progress: dict = {}
+
+    def _p(done, total):
+        progress.update(pct=int(done * 100 / total) if total else 100,
+                        detail=f"{_count_eu(done)} / {_count_eu(total)} types")
+
     async def build():
         conn = get_conn()
         try:
-            await worth_api.fetch_index_histories(conn, type_ids)
+            await worth_api.fetch_index_histories(conn, type_ids, progress_cb=_p)
             deals_api.drop_cache()        # the scan can now trust more types
         except Exception:
             pass
@@ -7290,7 +7306,9 @@ def _start_deals_history(type_ids: list[int]) -> None:
     try:
         _DEALS_HISTORY_FLIGHT[0] = asyncio.create_task(build())
     except RuntimeError:
-        pass                              # no loop; the next request tries again
+        return                            # no loop; the next request tries again
+    progress = bg.track(_DEALS_HISTORY_FLIGHT[0], "Market history for Deals",
+                        f"{_count_eu(len(type_ids))} types", "/contracts/deals")
 
 
 @app.get("/contracts/deals", response_class=HTMLResponse)
@@ -9112,7 +9130,9 @@ def _start_history_topup(char_ids: list[int]) -> None:
     try:
         _HISTORY_TOPUP_FLIGHT[0] = asyncio.create_task(run())
     except RuntimeError:
-        pass
+        return
+    bg.track(_HISTORY_TOPUP_FLIGHT[0], "Wallet and industry history",
+             f"{len(char_ids)} character{'s' if len(char_ids) != 1 else ''}", "/")
 
 
 def _start_index_build(type_ids: list[int]) -> None:
@@ -9120,10 +9140,16 @@ def _start_index_build(type_ids: list[int]) -> None:
     if task is not None and not task.done():
         return
 
+    progress: dict = {}
+
+    def _p(done, total):
+        progress.update(pct=int(done * 100 / total) if total else 100,
+                        detail=f"{_count_eu(done)} / {_count_eu(total)} types")
+
     async def build():
         conn = get_conn()
         try:
-            await worth_api.fetch_index_histories(conn, type_ids)
+            await worth_api.fetch_index_histories(conn, type_ids, progress_cb=_p)
         except Exception:
             pass
         finally:
@@ -9132,7 +9158,9 @@ def _start_index_build(type_ids: list[int]) -> None:
     try:
         _WORTH_INDEX_FLIGHT[0] = asyncio.create_task(build())
     except RuntimeError:
-        pass                      # no loop (a sync caller); the next request retries
+        return                    # no loop (a sync caller); the next request retries
+    progress = bg.track(_WORTH_INDEX_FLIGHT[0], "Price history for net worth",
+                        f"{_count_eu(len(type_ids))} types", "/")
 
 
 @app.get("/api/income")

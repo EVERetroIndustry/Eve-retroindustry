@@ -533,7 +533,7 @@ def estimate_series(conn: sqlite3.Connection, days: float, histories: dict) -> d
 
 
 async def fetch_index_histories(conn: sqlite3.Connection, type_ids: list[int],
-                                concurrency: int = 20) -> int:
+                                concurrency: int = 20, progress_cb=None) -> int:
     """Daily prices for the types the estimate needs, fetched once and cached.
 
     `/markets/{region}/history/` is public and carries no token-bucket limit, and
@@ -556,15 +556,19 @@ async def fetch_index_histories(conn: sqlite3.Connection, type_ids: list[int],
 
     sem = _asyncio.Semaphore(concurrency)
     got: list[tuple] = []
+    done = [0]
 
     async def one(client, tid):
         async with sem:
             try:
                 series = await fetch_region_history(client, JITA_REGION, tid)
             except Exception:
-                return
+                series = None
             if series is not None:
                 got.append((JITA_REGION, tid, json.dumps(series), time.time()))
+            done[0] += 1
+            if progress_cb:
+                progress_cb(done[0], len(todo))
 
     async with esi_client() as client:
         await _asyncio.gather(*[one(client, t) for t in todo])

@@ -745,7 +745,8 @@ document.addEventListener('DOMContentLoaded', fitNavbar);
       ? `<div class="act-bar"><span style="width:${Math.min(100, j.pct)}%"></span></div>` : '';
     return `<div class="act-row" data-key="${esc(j.key)}" data-state="${esc(j.state)}">`
       + `<span class="act-ico">${ICON[j.state] || ''}</span>${name}`
-      + `<span class="act-age">${esc(age(j.last_ok))}${run}</span>`
+      // A one-off task has no stored age - it is the thing producing one.
+      + `<span class="act-age">${j.kind === 'task' ? '' : esc(age(j.last_ok))}${run}</span>`
       + (text ? `<div class="act-meta${warn ? ' err' : ''}">${esc(text)}</div>` : '')
       + bar + '</div>';
   }

@@ -163,3 +163,53 @@ def test_sync_all_is_the_panel_on_every_page(client, m):
     assert runall[:runall.index("</button>")].rstrip().endswith("Sync All")
     # The poll must not light the busy bar on every page every two seconds.
     assert "rawFetch('/api/activity')" in html
+
+
+def test_the_deals_history_read_is_in_the_panel_with_its_progress(m, monkeypatch):
+    release = asyncio.Event()
+
+    async def fake_histories(conn, type_ids, concurrency=20, progress_cb=None):
+        progress_cb(1, len(type_ids))
+        await release.wait()
+        return 0
+    monkeypatch.setattr(m.worth_api, "fetch_index_histories", fake_histories)
+    m._DEALS_HISTORY_FLIGHT[0] = None
+
+    async def go():
+        m._start_deals_history([34, 35, 36, 37])
+        await asyncio.sleep(0)
+        rows = [r for r in bg.snapshot()["jobs"] if r["kind"] == "task"]
+        release.set()
+        await m._DEALS_HISTORY_FLIGHT[0]
+        await asyncio.sleep(0)
+        return rows, [r for r in bg.snapshot()["jobs"] if r["kind"] == "task"]
+    during, after = asyncio.run(go())
+    assert [(r["title"], r["pct"], r["detail"]) for r in during] == [
+        ("Market history for Deals", 25, "1 / 4 types")]
+    assert after == []
+
+
+def test_the_history_read_reports_every_type_it_finishes(monkeypatch):
+    import sqlite3
+    import app.esi.client as esi
+    import app.market.prices as P
+    from app.character import worth
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    async def fake_history(client, region, tid):
+        if tid == 36:
+            raise RuntimeError("one failed")      # a failure still counts as done
+        return [{"date": "2026-10-19", "average": 5.0, "volume": 1}]
+    monkeypatch.setattr(esi, "esi_client", lambda **kw: _Client())
+    monkeypatch.setattr(P, "fetch_region_history", fake_history)
+    conn = sqlite3.connect(":memory:")
+    seen = []
+    asyncio.run(worth.fetch_index_histories(conn, [34, 35, 36],
+                                            progress_cb=lambda d, t: seen.append((d, t))))
+    assert sorted(seen) == [(1, 3), (2, 3), (3, 3)]

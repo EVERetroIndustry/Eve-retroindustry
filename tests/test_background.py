@@ -327,3 +327,30 @@ def test_the_panel_reports_progress_and_an_overall_percentage():
         assert snap["jobs"][0]["detail"] == "working"
         body.release.set()
     run(go())
+
+
+# ── Work started outside the scheduler ───────────────────────────────────────
+
+def test_a_task_started_elsewhere_shows_while_it_runs_and_goes_when_done():
+    # The Deals tab read history for 103 types and said so on its own page,
+    # while the panel showed every source as done.
+    async def go():
+        release = asyncio.Event()
+
+        async def work():
+            await release.wait()
+        task = asyncio.create_task(work())
+        progress = bg.track(task, "Market history for Deals", "103 types", "/contracts/deals")
+        snap = bg.snapshot()
+        row = next(r for r in snap["jobs"] if r["kind"] == "task")
+        assert row["title"] == "Market history for Deals" and row["state"] == "running"
+        assert row["detail"] == "103 types" and snap["running"] == 1
+        progress.update(pct=40, detail="41 / 103 types")
+        row = next(r for r in bg.snapshot()["jobs"] if r["kind"] == "task")
+        assert (row["pct"], row["detail"]) == (40, "41 / 103 types")
+        release.set()
+        await task
+        await _settle()
+        snap = bg.snapshot()
+        assert not [r for r in snap["jobs"] if r["kind"] == "task"] and snap["running"] == 0
+    run(go())
