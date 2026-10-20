@@ -207,13 +207,21 @@ def test_the_history_read_reports_every_type_it_finishes(monkeypatch):
         if tid == 36:
             raise RuntimeError("one failed")      # a failure still counts as done
         return [{"date": "2026-10-19", "average": 5.0, "volume": 1}]
+    real_sleep = asyncio.sleep
+
+    async def no_wait(_s, *a, **k):              # the pause before the retry
+        await real_sleep(0)
     monkeypatch.setattr(esi, "esi_client", lambda **kw: _Client())
     monkeypatch.setattr(P, "fetch_region_history", fake_history)
+    monkeypatch.setattr(asyncio, "sleep", no_wait)
     conn = sqlite3.connect(":memory:")
     seen = []
     asyncio.run(worth.fetch_index_histories(conn, [34, 35, 36],
                                             progress_cb=lambda d, t: seen.append((d, t))))
-    assert sorted(seen) == [(1, 3), (2, 3), (3, 3)]
+    # Every type reports; the one that failed is retried once and reports again,
+    # never past the total.
+    assert sorted(set(seen)) == [(1, 3), (2, 3), (3, 3)]
+    assert all(d <= t for d, t in seen)
 
 
 # ── Deals: a type ESI keeps no history for is an answer, asked once ──────────

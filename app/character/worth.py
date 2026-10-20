@@ -568,10 +568,21 @@ async def fetch_index_histories(conn: sqlite3.Connection, type_ids: list[int],
                 got.append((JITA_REGION, tid, json.dumps(series), time.time()))
             done[0] += 1
             if progress_cb:
-                progress_cb(done[0], len(todo))
+                progress_cb(min(done[0], len(todo)), len(todo))   # retries count again
 
     async with esi_client() as client:
         await _asyncio.gather(*[one(client, t) for t in todo])
+        # A failed read is usually ESI shedding load while several refreshes run
+        # at once (92 of ~1 900 on a real start-up, every one of them answering
+        # 200 a minute later). One calmer retry here; what still fails is left
+        # for the caller to see - it stays "needed", and the scheduler's job
+        # reports it instead of calling the run a success.
+        done_ids = {g[1] for g in got}
+        failed = [t for t in todo if t not in done_ids]
+        if failed:
+            await _asyncio.sleep(5)
+            sem = _asyncio.Semaphore(5)
+            await _asyncio.gather(*[one(client, t) for t in failed])
 
     if got:
         conn.executemany(

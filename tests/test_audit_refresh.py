@@ -199,3 +199,59 @@ def test_the_market_popup_says_when_the_book_is_not_whole(client, app_module, mo
                     "location_id": 60003760}]), 2: (503, {})}))
     d = client.get("/api/prices/orders?type_id=34&region_id=10000002").json()
     assert d["ok"] is False and "whole order book" in d["error"]
+
+
+# ── A history read that fails is retried, then reported ────────────────────
+
+def _history_world(monkeypatch, fail_first: set):
+    """ESI where the types in `fail_first` fail their first read only."""
+    import app.esi.client as esi
+    import app.market.prices as P
+    seen: dict[int, int] = {}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    async def history(client, region, tid):
+        seen[tid] = seen.get(tid, 0) + 1
+        if tid in fail_first and seen[tid] == 1:
+            return None                          # ESI shedding load
+        return [{"d": "2026-10-19", "avg": 5.0, "vol": 1}]
+
+    real_sleep = asyncio.sleep
+
+    async def no_wait(_s, *a, **k):              # the 5 s pause before the retry
+        await real_sleep(0)
+    monkeypatch.setattr(esi, "esi_client", lambda **kw: _Client())
+    monkeypatch.setattr(P, "fetch_region_history", history)
+    monkeypatch.setattr(asyncio, "sleep", no_wait)
+    return seen
+
+
+def test_a_failed_history_read_is_retried_once(monkeypatch):
+    from app.character import worth
+    seen = _history_world(monkeypatch, fail_first={35})
+    conn = sqlite3.connect(":memory:")
+    progress = []
+    got = asyncio.run(worth.fetch_index_histories(
+        conn, [34, 35], progress_cb=lambda d, t: progress.append((d, t))))
+    assert got == 2 and seen == {34: 1, 35: 2}
+    assert max(progress) == (2, 2), "a retry does not count past the total"
+
+
+def test_the_deals_job_does_not_call_a_run_with_holes_a_success(app_module, monkeypatch):
+    m = app_module
+    calls = {"n": 0}
+
+    async def fetch(conn, todo, progress_cb=None):
+        return 0                                  # nothing could be read
+
+    monkeypatch.setattr(m.worth_api, "fetch_index_histories", fetch)
+    monkeypatch.setattr(m.deals_api, "types_needing_history", lambda conn: [34, 35])
+    with pytest.raises(RuntimeError) as err:
+        asyncio.run(m._job_deals_history(lambda **kw: None))
+    assert "2 of 2 types" in str(err.value)

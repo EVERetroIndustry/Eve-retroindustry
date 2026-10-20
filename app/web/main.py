@@ -9957,6 +9957,13 @@ async def _job_deals_history(report) -> dict:
         got = await worth_api.fetch_index_histories(conn, todo, progress_cb=_p) if todo else 0
         if todo:
             deals_api.drop_cache()        # the scan can now trust more types
+        # What was read is stored either way. What could not be read is still
+        # needed - say so, so the panel does not call the run done (and the
+        # scheduler retries it in five minutes rather than an hour).
+        left = deals_api.types_needing_history(conn) if todo else []
+        if left:
+            raise RuntimeError(f"ESI did not return the history of {len(left)} of "
+                               f"{len(todo)} types; the rest is stored.")
         _mark_ok(conn, "deals-history")
         return {"types": len(todo), "fetched": got}
     finally:
