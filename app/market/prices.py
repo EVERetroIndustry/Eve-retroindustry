@@ -245,7 +245,17 @@ def _save_cached_price(
 async def fetch_region_history(client: httpx.AsyncClient, region_id: int, type_id: int) -> list[dict] | None:
     """Full daily market history (~1 year) for a type in a region. Returns a list
     of {d, avg, low, high, vol} oldest→newest, or None on error. Same ESI endpoint
-    the 7-day volume already uses - we just keep the whole series."""
+    the 7-day volume already uses - we just keep the whole series.
+
+    404 ("Type not found!") and 400 ("Type not tradable on market!") are answers,
+    not errors: there is no history and there will not be one. They come back as
+    an empty series so the caller can store it. Returned as None they were never
+    stored, and Deals asked again on every visit - measured on a real index: five
+    types with sell orders but no history (expired boosters, an event crate, an
+    unpublished type) kept "Reading daily market history for 5 more types" on
+    the page for good. Only a failure that may pass (timeout, 5xx, rate limit)
+    is None.
+    """
     async with _HIST_SEM:
         try:
             r = await client.get(
@@ -253,6 +263,8 @@ async def fetch_region_history(client: httpx.AsyncClient, region_id: int, type_i
                 params={"type_id": type_id, "datasource": "tranquility"},
                 timeout=20,
             )
+            if r.status_code in (400, 404):
+                return []
             if r.status_code != 200:
                 return None
             hist = r.json()

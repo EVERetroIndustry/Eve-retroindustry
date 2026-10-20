@@ -213,3 +213,60 @@ def test_the_history_read_reports_every_type_it_finishes(monkeypatch):
     asyncio.run(worth.fetch_index_histories(conn, [34, 35, 36],
                                             progress_cb=lambda d, t: seen.append((d, t))))
     assert sorted(seen) == [(1, 3), (2, 3), (3, 3)]
+
+
+# ── Deals: a type ESI keeps no history for is an answer, asked once ──────────
+
+def _history_client(status, body):
+    import httpx
+
+    def handler(req):
+        return httpx.Response(status, json=body)
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+@pytest.mark.parametrize("status, body", [
+    (404, {"error": "Type not found!"}),
+    (400, {"error": "Type not tradable on market!"}),
+])
+def test_no_history_is_an_empty_history(status, body):
+    import app.market.prices as P
+
+    async def go():
+        async with _history_client(status, body) as c:
+            return await P.fetch_region_history(c, 10000002, 93778)
+    assert asyncio.run(go()) == []
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 504, 420, 429])
+def test_a_failure_that_may_pass_is_still_a_failure(status):
+    import app.market.prices as P
+
+    async def go():
+        async with _history_client(status, {"error": "x"}) as c:
+            return await P.fetch_region_history(c, 10000002, 34)
+    assert asyncio.run(go()) is None
+
+
+def test_deals_stops_asking_for_a_type_with_no_history(monkeypatch):
+    # Reported: "Reading daily market history for 5 more types" after every
+    # reload. All five answered 404 Type not found! and were never stored.
+    import sqlite3
+    import app.esi.client as esi
+    from app.character import worth
+    from app.market import prices as P
+    from app.web import deals as deals_api
+
+    conn = sqlite3.connect(":memory:")
+    P.ensure_price_table(conn)
+    conn.execute("CREATE TABLE public_contract_items (contract_id INTEGER, type_id INTEGER)")
+    conn.execute("CREATE TABLE alliance_contract_items (contract_id INTEGER, type_id INTEGER)")
+    conn.execute("INSERT INTO public_contract_items VALUES (1, 93778)")
+    conn.execute("INSERT INTO market_price_cache (type_id, sell_price, cached_at)"
+                 " VALUES (93778, 42880.0, 1)")
+    conn.commit()
+    assert deals_api.types_needing_history(conn) == [93778]
+    monkeypatch.setattr(esi, "esi_client",
+                        lambda **kw: _history_client(404, {"error": "Type not found!"}))
+    asyncio.run(worth.fetch_index_histories(conn, [93778]))
+    assert deals_api.types_needing_history(conn) == [], "answered once, not on every visit"
