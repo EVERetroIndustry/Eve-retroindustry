@@ -1,0 +1,18 @@
+{# How old the data on a cache-first page is, a way to get it fresh, and - when
+   ESI could not answer - why the stored copy is what is shown. A stored copy is
+   only honest if it says so. #}
+{% macro data_age_bar(data_age, refresh_url) %}
+<div class="d-flex align-items-center gap-2">
+  {% if data_age %}<span class="text-muted small">updated {{ data_age }}</span>{% endif %}
+  <a href="{{ refresh_url }}" class="btn btn-sm btn-outline-secondary">
+    <i class="bi bi-arrow-clockwise me-1"></i>Refresh</a>
+</div>
+{% endmacro %}
+
+{% macro stale_alert(stale_note, data_age) %}
+{% if stale_note %}
+<div class="alert alert-warning py-2">
+  <i class="bi bi-clock-history me-2"></i>{{ stale_note }} - showing the copy stored {{ data_age }}.
+</div>
+{% endif %}
+{% endmacro %}

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_data_age.html" import data_age_bar, stale_alert %}
 {% block title %}Market Orders - EVE Retroindustry{% endblock %}
 {% block content %}
 
@@ -8,8 +9,10 @@
 </style>
 
 <div class="row mb-3 align-items-center">
-  <div class="col">
+  <div class="col d-flex align-items-center gap-3 flex-wrap">
     <h4 class="mb-0"><i class="bi bi-bag me-2 text-primary"></i>Market Orders</h4>
+    {{ data_age_bar(data_age, "/orders?char=" ~ ('all' if all_chars else (orders_char_id or ''))
+                    ~ "&scope=" ~ scope ~ "&state=" ~ state ~ "&refresh=1") }}
   </div>
   {% if all_characters %}
   <div class="col-auto d-flex align-items-center gap-2">
@@ -38,6 +41,8 @@
 {% if error %}
 <div class="alert alert-danger"><i class="bi bi-exclamation-circle me-2"></i>{{ error }}</div>
 {% endif %}
+
+{{ stale_alert(stale_note, data_age) }}
 
 {% set char_param = 'all' if all_chars else orders_char_id %}
 <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">

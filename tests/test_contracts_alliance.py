@@ -94,8 +94,13 @@ def _corp_page(client, app_module, fetch, party_names=None):
         return {i: base.get(i, str(i)) for i in ids}
 
     app_module._resolve_party_names = _names
+    # The page is cache-first: without this, a test gets the copy the previous
+    # one stored instead of what its own stub answers.
+    conn = app_module.get_conn()
+    app_module.drop_cached(conn, "contracts")
+    conn.close()
     try:
-        return client.get("/contracts?char=all&scope=corp").text
+        return client.get("/contracts?char=all&scope=corp&refresh=1").text
     finally:
         (app_module.contracts_api.fetch_corp_contracts,
          app_module._resolve_party_names) = real

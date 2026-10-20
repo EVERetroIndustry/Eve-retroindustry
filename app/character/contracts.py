@@ -18,6 +18,8 @@ from typing import NamedTuple
 
 import httpx
 
+from app.esi.client import IncompleteAnswer
+
 ESI_BASE = "https://esi.evetech.net/latest"
 
 CONTRACT_TYPE_LABELS: dict[str, str] = {
@@ -58,15 +60,16 @@ def _auth(token: str) -> dict:
 
 async def _get_all_pages(client: httpx.AsyncClient, url: str, token: str | None = None,
                          max_pages: int = 30) -> list[dict]:
+    """Every page, or IncompleteAnswer - never the pages before a failure."""
     out: list[dict] = []
     headers = _auth(token) if token else {"Accept": "application/json"}
     for page in range(1, max_pages + 1):
         try:
             r = await client.get(url, params={"page": page}, headers=headers, timeout=20)
-        except Exception:
-            break
+        except Exception as exc:
+            raise IncompleteAnswer(f"ESI did not answer ({type(exc).__name__}).") from exc
         if r.status_code != 200:
-            break
+            raise IncompleteAnswer(f"ESI returned HTTP {r.status_code}.")
         batch = r.json()
         if not batch:
             break
@@ -93,13 +96,16 @@ async def fetch_corp_contracts(client, corp_id: int, token: str
         return None, f"ESI returned HTTP {r.status_code}."
     out = r.json()
     for page in range(2, int(r.headers.get("x-pages", 1)) + 1):
+        # A page that fails makes the whole list unknown. The pages before it
+        # used to come back as the list, and the alliance index then dropped
+        # every contract that sat further on until the next listing.
         try:
             rp = await client.get(f"{ESI_BASE}/corporations/{corp_id}/contracts/",
                                  params={"page": page}, headers=_auth(token), timeout=20)
-        except Exception:
-            break
+        except Exception as exc:
+            return None, f"ESI did not answer page {page} ({type(exc).__name__})."
         if rp.status_code != 200:
-            break
+            return None, f"ESI returned HTTP {rp.status_code} for page {page}."
         out.extend(rp.json())
     return out, None
 

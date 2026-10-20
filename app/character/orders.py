@@ -14,6 +14,8 @@ Scope: esi-markets.read_character_orders.v1 / esi-markets.read_corporation_order
 from __future__ import annotations
 import httpx
 
+from app.esi.client import IncompleteAnswer
+
 ESI_BASE = "https://esi.evetech.net/latest"
 
 
@@ -22,14 +24,15 @@ def _auth(token: str) -> dict:
 
 
 async def _get_all(client: httpx.AsyncClient, url: str, token: str, pages: int = 5) -> list[dict]:
+    """Every page, or IncompleteAnswer - never the pages before a failure."""
     out: list[dict] = []
     for page in range(1, pages + 1):
         try:
             r = await client.get(url, params={"page": page}, headers=_auth(token), timeout=15)
-        except Exception:
-            break
+        except Exception as exc:
+            raise IncompleteAnswer(f"ESI did not answer ({type(exc).__name__}).") from exc
         if r.status_code != 200:
-            break
+            raise IncompleteAnswer(f"ESI returned HTTP {r.status_code}.")
         batch = r.json()
         if not batch:
             break
@@ -40,15 +43,16 @@ async def _get_all(client: httpx.AsyncClient, url: str, token: str, pages: int =
 
 
 async def fetch_orders(client, char_id: int, token: str) -> list[dict]:
-    """Active orders of a character (single page)."""
+    """Active orders of a character (single page). IncompleteAnswer on failure:
+    an empty list is a character with no orders, nothing else."""
     try:
         r = await client.get(f"{ESI_BASE}/characters/{char_id}/orders/",
                              headers=_auth(token), timeout=15)
-        if r.status_code == 200:
-            return r.json()
-    except Exception:
-        pass
-    return []
+    except Exception as exc:
+        raise IncompleteAnswer(f"ESI did not answer ({type(exc).__name__}).") from exc
+    if r.status_code != 200:
+        raise IncompleteAnswer(f"ESI returned HTTP {r.status_code}.")
+    return r.json()
 
 
 async def fetch_orders_history(client, char_id: int, token: str) -> list[dict]:
@@ -66,7 +70,8 @@ async def fetch_corp_orders(client, corp_id: int, token: str
                 rp = await client.get(f"{ESI_BASE}/corporations/{corp_id}/orders/",
                                      params={"page": page}, headers=_auth(token), timeout=15)
                 if rp.status_code != 200:
-                    break
+                    # Not the pages so far: those would read as the whole list.
+                    return None, f"ESI returned HTTP {rp.status_code} for page {page}."
                 out.extend(rp.json())
             return out, None
         if r.status_code == 403:

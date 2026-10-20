@@ -6602,9 +6602,77 @@ def _decorate_orders(orders: list[dict], type_names: dict[int, str],
     return out
 
 
+# ── Cache-first Orders and Contracts ─────────────────────────────────────────
+# Both pages were purely live: every visit asked ESI for every character, and
+# during downtime they came up empty - the fetchers returned [] on failure, which
+# read as "no orders". Same pattern as the wallet: a copy younger than this is
+# shown straight from SQLite, Refresh asks ESI, and when ESI cannot answer the
+# stored copy is shown with the reason instead of an empty page.
+_LIVE_PAGE_TTL = 5 * 60
+
+
+def _page_who(request: Request, char: str) -> str:
+    """The character a page is about, as part of its cache key."""
+    if char == "all":
+        return "all"
+    conn = get_conn()
+    try:
+        if char.isdigit() and get_character_row(conn, int(char)):
+            return char
+        return str(get_active_character_id(request, conn) or 0)
+    finally:
+        conn.close()
+
+
+async def _cache_first(kind: str, key: str, refresh: bool, rows_key: str, live) -> dict:
+    conn = get_conn()
+    try:
+        stored = get_cached(conn, kind, key)
+    finally:
+        conn.close()
+    stored_ok = bool(stored) and isinstance(stored[0], dict)
+    if stored_ok and not refresh and stored[1] < _LIVE_PAGE_TTL:
+        return {**stored[0], "data_age": age_label(stored[1]), "stale_note": None}
+
+    ctx = await live()
+    # A corporation error with rows beside it is part of the answer (one corp of
+    # several could not be read); with nothing beside it, it is a failed answer.
+    problem = ctx.get("error") or (ctx.get("corp_error") if not ctx.get(rows_key) else None)
+    if problem:
+        if stored_ok:
+            return {**stored[0], "data_age": age_label(stored[1]), "stale_note": problem}
+        return {**ctx, "data_age": None, "stale_note": None}
+    conn = get_conn()
+    try:
+        put_cached(conn, kind, key, ctx)
+    except (TypeError, ValueError) as exc:          # not JSON - serve it, just not again
+        print(f"[page-cache] {kind} not stored: {exc}", flush=True)
+    finally:
+        conn.close()
+    return {**ctx, "data_age": age_label(0), "stale_note": None}
+
+
 @app.get("/orders", response_class=HTMLResponse)
 async def orders_page(request: Request, char: str = "", scope: str = "personal",
-                      state: str = "active"):
+                      state: str = "active", refresh: int = 0):
+    key = f"{_page_who(request, char)}:{scope}:{state}"
+    ctx = await _cache_first("orders", key, bool(refresh), "orders",
+                             lambda: _orders_live(request, char, scope, state))
+    return _tr("orders.html", request, ctx)
+
+
+@app.get("/contracts", response_class=HTMLResponse)
+async def contracts_page(request: Request, char: str = "", scope: str = "personal",
+                         status: str = "open", refresh: int = 0):
+    if status not in ("open", "finished", "any"):
+        status = "open"
+    key = f"{_page_who(request, char)}:{scope}:{status}"
+    ctx = await _cache_first("contracts", key, bool(refresh), "contracts",
+                             lambda: _contracts_live(request, char, scope, status))
+    return _tr("contracts.html", request, ctx)
+
+
+async def _orders_live(request: Request, char: str, scope: str, state: str) -> dict:
     conn = get_conn()
     all_chars = (char == "all")
 
@@ -6633,7 +6701,7 @@ async def orders_page(request: Request, char: str = "", scope: str = "personal",
         if not chars:
             ctx["error"] = "You are not signed in."
             conn.close()
-            return _tr("orders.html", request, ctx)
+            return ctx
 
         async def _char_orders(cid: int, cname: str) -> list[dict]:
             tok = await _valid_token_async(cid)
@@ -6699,7 +6767,7 @@ async def orders_page(request: Request, char: str = "", scope: str = "personal",
         except Exception as exc:
             ctx["error"] = f"Error loading orders: {exc}"
         conn.close()
-        return _tr("orders.html", request, ctx)
+        return ctx
 
     plan_char_id: int | None = None
     if char.isdigit() and get_character_row(conn, int(char)):
@@ -6716,13 +6784,13 @@ async def orders_page(request: Request, char: str = "", scope: str = "personal",
     if not plan_char_id:
         ctx["error"] = "You are not signed in."
         conn.close()
-        return _tr("orders.html", request, ctx)
+        return ctx
     token = await _valid_token_async(plan_char_id)
     row = get_character_row(conn, plan_char_id)
     if not token or not row:
         ctx["error"] = "The character token expired - sign in again."
         conn.close()
-        return _tr("orders.html", request, ctx)
+        return ctx
 
     try:
         async with esi_client() as client:
@@ -6759,7 +6827,7 @@ async def orders_page(request: Request, char: str = "", scope: str = "personal",
         ctx["error"] = f"Error loading orders: {exc}"
 
     conn.close()
-    return _tr("orders.html", request, ctx)
+    return ctx
 
 
 async def _finalize_orders(conn, raw_orders: list[dict], type_names_fn, token: str,
@@ -6977,9 +7045,7 @@ def _apply_contract_view(rows: list[dict], status: str, own_ids: tuple[int, ...]
     return rows[:_CONTRACT_ROW_CAP], total, total > _CONTRACT_ROW_CAP
 
 
-@app.get("/contracts", response_class=HTMLResponse)
-async def contracts_page(request: Request, char: str = "", scope: str = "personal",
-                         status: str = "open"):
+async def _contracts_live(request: Request, char: str, scope: str, status: str) -> dict:
     conn = get_conn()
     all_chars = (char == "all")
     if status not in ("open", "finished", "any"):
@@ -6994,7 +7060,7 @@ async def contracts_page(request: Request, char: str = "", scope: str = "persona
     if not chars:
         ctx["error"] = "You are not signed in."
         conn.close()
-        return _tr("contracts.html", request, ctx)
+        return ctx
 
     try:
         if all_chars:
@@ -7046,7 +7112,7 @@ async def contracts_page(request: Request, char: str = "", scope: str = "persona
                 _apply_contract_view(await _finalize_contracts(conn, raw, any_tok),
                                      status, _own_party_ids(conn))
             conn.close()
-            return _tr("contracts.html", request, ctx)
+            return ctx
 
         # single character
         plan_char_id = int(char) if char.isdigit() and get_character_row(conn, int(char)) else None
@@ -7058,7 +7124,7 @@ async def contracts_page(request: Request, char: str = "", scope: str = "persona
         if not token or not row:
             ctx["error"] = "The character token expired - sign in again."
             conn.close()
-            return _tr("contracts.html", request, ctx)
+            return ctx
 
         async with esi_client() as client:
             if scope == "corp":
@@ -7098,7 +7164,7 @@ async def contracts_page(request: Request, char: str = "", scope: str = "persona
         ctx["error"] = f"Error loading contracts: {exc}"
 
     conn.close()
-    return _tr("contracts.html", request, ctx)
+    return ctx
 
 
 @app.get("/api/contracts/items")

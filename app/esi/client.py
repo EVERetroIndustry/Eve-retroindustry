@@ -21,6 +21,18 @@ ESI_COMPAT_DATE = "2026-07-17"
 _ESI_LIMITS = httpx.Limits(max_connections=50, max_keepalive_connections=50)
 
 
+class IncompleteAnswer(RuntimeError):
+    """ESI did not give a whole answer - a request failed, or a page of a paged
+    list did.
+
+    The fetchers used to return [] (or the pages before the failure) instead,
+    which reads exactly like "nothing there": a character with forty orders
+    showed none during downtime, with no word about why, and a cache would
+    have stored that over the real list. Raising makes the caller choose
+    between saying so and showing what it stored.
+    """
+
+
 class ESIErrorLimited(httpx.HTTPStatusError):
     """Raised (via raise_for_status) when ESI returns HTTP 420 - the whole
     client is error-limited and no request will succeed until the window resets."""
