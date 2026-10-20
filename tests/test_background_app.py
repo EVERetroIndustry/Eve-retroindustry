@@ -270,3 +270,22 @@ def test_deals_stops_asking_for_a_type_with_no_history(monkeypatch):
                         lambda **kw: _history_client(404, {"error": "Type not found!"}))
     asyncio.run(worth.fetch_index_histories(conn, [93778]))
     assert deals_api.types_needing_history(conn) == [], "answered once, not on every visit"
+
+
+def test_a_source_can_be_switched_to_manual_from_the_panel(client, m):
+    assert client.post("/api/activity/job-auto",
+                       json={"key": "jita", "enabled": False}).json()["ok"]
+    row = next(j for j in client.get("/api/activity").json()["jobs"] if j["key"] == "jita")
+    assert row["auto"] is False and row["state"] in ("manual", "running", "queued", "error")
+    client.post("/api/activity/job-auto", json={"key": "jita", "enabled": True})
+    row = next(j for j in client.get("/api/activity").json()["jobs"] if j["key"] == "jita")
+    assert row["auto"] is True
+    assert client.post("/api/activity/job-auto",
+                       json={"key": "nope", "enabled": False}).status_code == 404
+
+
+def test_the_panel_draws_a_switch_for_each_scheduled_source(client, m):
+    html = client.get("/").text
+    script = html[html.index("function row(j)"):]
+    assert "j.kind === 'job'" in script and "act-auto" in script
+    assert "'/api/activity/job-auto'" in html

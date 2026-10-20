@@ -354,3 +354,40 @@ def test_a_task_started_elsewhere_shows_while_it_runs_and_goes_when_done():
         snap = bg.snapshot()
         assert not [r for r in snap["jobs"] if r["kind"] == "task"] and snap["running"] == 0
     run(go())
+
+
+# ── One source switched to manual ────────────────────────────────────────────
+
+def test_a_source_switched_to_manual_refreshes_only_when_asked():
+    # Asked for: "I don't want Rens, Amarr, Hek and Dodixie pulled every time."
+    async def go():
+        jita, rens = Fake(), Fake()
+        jita.release.set()
+        rens.release.set()
+        _job("jita", jita, group="market")
+        _job("hub:rens", rens, group="hubs")
+        bg.set_job_auto("hub:rens", False)
+        bg.tick(NOON)
+        await _settle()
+        assert (jita.starts, rens.starts) == (1, 0)
+        row = next(r for r in bg.snapshot(NOON)["jobs"] if r["key"] == "hub:rens")
+        assert row["state"] == "manual" and row["auto"] is False
+        assert bg.run_all() == ["jita"], "Sync All leaves a manual source out too"
+        bg.run_now("hub:rens")                     # Run now still works
+        await _settle()
+        assert rens.starts == 1
+    run(go())
+
+
+def test_switching_a_source_back_on_schedules_it_again():
+    async def go():
+        body = Fake()
+        body.release.set()
+        _job("hub:rens", body)
+        bg.set_job_auto("hub:rens", False)
+        bg.set_job_auto("hub:rens", True)
+        assert bg.manual_only() == set()
+        bg.tick(NOON)
+        await _settle()
+        assert body.starts == 1
+    run(go())

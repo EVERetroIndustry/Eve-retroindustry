@@ -234,21 +234,28 @@
   .act-title { font-size: .7rem; letter-spacing: .06em; text-transform: uppercase; color: #8b949e; }
   .act-note { font-size: .74rem; color: #d29922; margin-top: .35rem; }
   .act-note:empty { display: none; }
-  .act-row { display: grid; grid-template-columns: 1rem 1fr auto; gap: .1rem .5rem;
+  .act-row { display: grid; grid-template-columns: 1rem 1fr auto 2.2rem; gap: .1rem .5rem;
              padding: .45rem 0; border-top: 1px solid #21262d; align-items: baseline; }
   .act-row .act-ico { font-size: .8rem; text-align: center; }
   .act-row .act-name { font-size: .82rem; color: #e6edf3; text-decoration: none;
                        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .act-row .act-auto { margin: 0; padding-left: 2.1em; min-height: 0; font-size: .7rem;
+                       justify-self: end; }
+  .act-row .act-auto .form-check-input { margin-top: .05em; }
+  .act-cols { display: grid; grid-template-columns: 1fr 2.2rem; font-size: .66rem;
+              letter-spacing: .06em; text-transform: uppercase; color: #8b949e;
+              padding-bottom: .15rem; }
+  .act-cols span:last-child { text-align: right; }
   .act-row a.act-name:hover { color: var(--eve-gold); }
   .act-row .act-age { font-size: .7rem; color: #8b949e; white-space: nowrap;
                       font-variant-numeric: tabular-nums; }
-  .act-row .act-meta { grid-column: 2 / 4; font-size: .72rem; color: #8b949e;
+  .act-row .act-meta { grid-column: 2 / 5; font-size: .72rem; color: #8b949e;
                        font-variant-numeric: tabular-nums; }
   .act-row .act-meta.err { color: #d29922; }
   .act-row .act-run { font-size: .72rem; padding: 0; margin-left: .45rem; vertical-align: baseline;
                       color: var(--eve-steel); text-decoration: none; }
   .act-row .act-run:hover { color: var(--eve-steel-hi); }
-  .act-bar { grid-column: 2 / 4; height: 3px; background: #21262d; border-radius: 2px; overflow: hidden; }
+  .act-bar { grid-column: 2 / 5; height: 3px; background: #21262d; border-radius: 2px; overflow: hidden; }
   .act-bar > span { display: block; height: 100%; background: var(--eve-steel); transition: width .4s; }
   .act-foot { font-size: .74rem; padding-top: .45rem; border-top: 1px solid #21262d; }
   @media (prefers-reduced-motion: reduce) {
@@ -547,6 +554,9 @@ window.renderContractItems = function (box, data, price) {
                     title="Refresh characters, Jita, your hubs and stations now">
               <i class="bi bi-arrow-clockwise me-1"></i>Sync All
             </button>
+            <div class="act-cols" title="Off: that source refreshes only when you ask (Run now), and Sync All skips it">
+              <span></span><span>Auto</span>
+            </div>
             <div id="act-list"></div>
             <div class="act-foot d-none" id="act-reload">
               <i class="bi bi-arrow-repeat me-1"></i>New data arrived -
@@ -716,6 +726,7 @@ document.addEventListener('DOMContentLoaded', fitNavbar);
     waiting: '<i class="bi bi-hourglass-split" style="color:#d29922"></i>',
     error:   '<i class="bi bi-exclamation-triangle-fill" style="color:#d29922"></i>',
     off:     '<i class="bi bi-pause-circle text-muted"></i>',
+    manual:  '<i class="bi bi-hand-index text-muted"></i>',
     idle:    '<i class="bi bi-check2" style="color:#3fb950"></i>',
   };
 
@@ -730,6 +741,7 @@ document.addEventListener('DOMContentLoaded', fitNavbar);
     }
     if (j.state === 'queued' || j.state === 'waiting') return [j.reason || j.detail || 'waiting', j.state === 'waiting'];
     if (j.state === 'off') return ['', false];      // the note at the top says it once
+    if (j.state === 'manual') return ['refreshes only when you ask', false];
     if (j.next_in == null) return ['', false];
     return [j.next_in === 0 ? 'due now' : 'next in ' + span(j.next_in), false];
   }
@@ -741,12 +753,20 @@ document.addEventListener('DOMContentLoaded', fitNavbar);
     const [text, warn] = meta(j);
     const run = (j.can_run && j.state !== 'running' && j.state !== 'queued')
       ? `<button type="button" class="btn btn-link act-run" data-key="${esc(j.key)}">Run now</button>` : '';
+    // Scheduled sources only: a contract index or a one-off task has no
+    // schedule of its own to switch.
+    const sw = j.kind === 'job'
+      ? `<span class="form-check form-switch act-auto" title="Refresh ${esc(j.title)} by itself">`
+        + `<input class="form-check-input" type="checkbox" role="switch" data-key="${esc(j.key)}"`
+        + `${j.auto === false ? '' : ' checked'} aria-label="Refresh ${esc(j.title)} by itself"></span>`
+      : '';
     const bar = j.state === 'running' && j.pct != null
       ? `<div class="act-bar"><span style="width:${Math.min(100, j.pct)}%"></span></div>` : '';
     return `<div class="act-row" data-key="${esc(j.key)}" data-state="${esc(j.state)}">`
       + `<span class="act-ico">${ICON[j.state] || ''}</span>${name}`
       // A one-off task has no stored age - it is the thing producing one.
       + `<span class="act-age">${j.kind === 'task' ? '' : esc(age(j.last_ok))}${run}</span>`
+      + (sw || '<span></span>')
       + (text ? `<div class="act-meta${warn ? ' err' : ''}">${esc(text)}</div>` : '')
       + bar + '</div>';
   }
@@ -793,6 +813,10 @@ document.addEventListener('DOMContentLoaded', fitNavbar);
   list.addEventListener('click', e => {
     const b = e.target.closest('.act-run');
     if (b) post('/api/activity/run', {key: b.dataset.key});
+  });
+  list.addEventListener('change', e => {
+    const cb = e.target.closest('.act-auto input');
+    if (cb) post('/api/activity/job-auto', {key: cb.dataset.key, enabled: cb.checked});
   });
   document.getElementById('act-runall').addEventListener('click', () => post('/api/activity/run-all'));
   auto.addEventListener('change', () => post('/api/activity/auto', {enabled: auto.checked}));

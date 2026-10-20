@@ -56,6 +56,26 @@ def set_auto_update(enabled: bool) -> None:
     _save_json(data)
 
 
+# Per source: someone who never looks at Rens should not pay a region sweep for
+# it every half hour. A source switched off here refreshes only when asked -
+# Run now, or its own button on its page - and Sync All leaves it out too.
+_AUTO_OFF_KEY = "auto_off"
+
+
+def manual_only() -> set[str]:
+    from app.auth.token_store import _load_json
+    return set(_load_json().get(_AUTO_OFF_KEY) or [])
+
+
+def set_job_auto(key: str, enabled: bool) -> None:
+    from app.auth.token_store import _load_json, _save_json
+    data = _load_json()
+    off = set(data.get(_AUTO_OFF_KEY) or [])
+    (off.discard if enabled else off.add)(key)
+    data[_AUTO_OFF_KEY] = sorted(off)
+    _save_json(data)
+
+
 # ── Startup gate ─────────────────────────────────────────────────────────────
 
 class StartupGate:
@@ -319,8 +339,9 @@ def run_now(key: str) -> int:
 
 def run_all() -> list[str]:
     started = []
+    manual = manual_only()
     for key, job in _JOBS.items():
-        if job.in_run_all and job.applies() is None:
+        if job.in_run_all and job.applies() is None and key not in manual:
             run_now(key)
             started.append(key)
     return started
@@ -332,6 +353,7 @@ def tick(now: Optional[float] = None) -> None:
     if not GATE.is_open():
         return
     auto = auto_update_enabled()
+    manual = manual_only()
     for filler in _FILLERS.values():
         try:
             (filler.start if auto else filler.stop)()
@@ -344,7 +366,7 @@ def tick(now: Optional[float] = None) -> None:
         if st.queued:                             # asked for by the user: no hold rules
             _start(key)
             continue
-        if not auto or job.applies() is not None or not _due(job, st, now):
+        if not auto or key in manual or job.applies() is not None or not _due(job, st, now):
             continue
         if _hold_reason(job, now):
             continue
@@ -387,12 +409,13 @@ def finished(key: str, run_id: int) -> bool:
     return st.run_id >= run_id and not st.running and not st.queued
 
 
-def _row(key: str, now: float, auto: bool) -> dict:
+def _row(key: str, now: float, auto: bool, manual: set[str] = frozenset()) -> dict:
     job, st = _JOBS[key], _STATE[key]
     last = job.last_ok()
     row = {"key": key, "title": title_of(job), "kind": "job", "href": job.href,
            "last_ok": last, "pct": None, "detail": "", "reason": None,
-           "error": None, "next_in": None, "can_run": True}
+           "error": None, "next_in": None, "can_run": True,
+           "auto": key not in manual}
     if st.running:
         pct, detail = job.describe(st.progress)
         row.update(state="running", pct=pct, detail=detail)
@@ -409,6 +432,9 @@ def _row(key: str, now: float, auto: bool) -> dict:
         return row
     if not auto:
         row.update(state="off")
+        return row
+    if key in manual:
+        row.update(state="manual")
         return row
     if not GATE.is_open():
         row.update(state="waiting", reason=f"starts after {GATE.waiting_for()} has loaded")
@@ -433,7 +459,8 @@ def _row(key: str, now: float, auto: bool) -> dict:
 def snapshot(now: Optional[float] = None) -> dict:
     now = _clock() if now is None else now
     auto = auto_update_enabled()
-    rows = [_row(k, now, auto) for k, j in _JOBS.items() if j.applies() is None
+    manual = manual_only()
+    rows = [_row(k, now, auto, manual) for k, j in _JOBS.items() if j.applies() is None
             or _STATE[k].running or _STATE[k].queued]
     for filler in _FILLERS.values():
         try:

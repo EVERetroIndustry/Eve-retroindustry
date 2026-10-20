@@ -10137,6 +10137,18 @@ async def api_remove_tracked_station(location_id: int):
     return {"ok": True}
 
 
+@app.post("/api/activity/job-auto")
+async def api_activity_job_auto(request: Request):
+    """Whether one source refreshes by itself (e.g. a hub nobody looks at)."""
+    from fastapi.responses import JSONResponse
+    body = await request.json()
+    key = str(body.get("key") or "")
+    if key not in bg.keys():
+        return JSONResponse({"ok": False, "error": "unknown job"}, status_code=404)
+    bg.set_job_auto(key, bool(body.get("enabled")))
+    return {"ok": True}
+
+
 @app.post("/api/activity/auto")
 async def api_activity_auto(request: Request):
     enabled = bool((await request.json()).get("enabled"))
