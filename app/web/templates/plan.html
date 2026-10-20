@@ -2131,13 +2131,16 @@ function indexContractRegion(regionId) {
       if (bar) bar.style.width = (d.pct || 0) + '%';
       if (pct) pct.textContent = (d.pct || 0) + '%';
       if (lbl) {
-        if (d.phase === 'list')  lbl.textContent = `Listing contracts… ${d.done}/${d.total} pages`;
-        else if (d.phase === 'items') lbl.textContent = `Reading items… ${d.done}/${d.total} contracts`;
+        if (d.phase === 'list')  lbl.textContent = 'Listing contracts…';
+        else if (d.phase === 'items') lbl.textContent = d.total
+          ? `Reading new contracts… ${d.done}/${d.total}` : 'Reading new contracts…';
       }
       if (d.done) {
         es.close();
-        if (lbl) lbl.textContent = 'Done - loading price…';
-        setTimeout(() => { if (prog) prog.classList.add('d-none'); resolve(true); }, 400);
+        // A failed refresh keeps the stored index, which still answers.
+        if (lbl) lbl.textContent = d.error ? (d.error + ' Using the stored contracts…')
+                                           : 'Done - loading price…';
+        setTimeout(() => { if (prog) prog.classList.add('d-none'); resolve(true); }, d.error ? 1800 : 400);
       }
     };
     es.onerror = () => {

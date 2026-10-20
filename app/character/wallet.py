@@ -21,6 +21,8 @@ Scopes: esi-wallet.read_character_wallet.v1, esi-wallet.read_corporation_wallets
 from __future__ import annotations
 import httpx
 
+from app.esi.client import IncompleteAnswer
+
 ESI_BASE = "https://esi.evetech.net/latest"
 
 
@@ -61,10 +63,13 @@ async def fetch_journal(client: httpx.AsyncClient, char_id: int, token: str,
                 f"{ESI_BASE}/characters/{char_id}/wallet/journal/",
                 params={"page": page}, headers=_auth(token), timeout=15,
             )
-        except Exception:
-            break
+        except Exception as exc:
+            # Not the pages so far: a journal cut short reads as a quiet wallet,
+            # and the wallet page would store it as its copy. Callers show the
+            # stored one with the reason instead.
+            raise IncompleteAnswer(f"ESI did not answer ({type(exc).__name__}).") from exc
         if r.status_code != 200:
-            break
+            raise IncompleteAnswer(f"ESI returned HTTP {r.status_code} for journal page {page}.")
         batch = r.json()
         if not batch:
             break
@@ -178,10 +183,13 @@ async def fetch_corp_journal(client: httpx.AsyncClient, corp_id: int, division: 
                 f"{ESI_BASE}/corporations/{corp_id}/wallets/{division}/journal/",
                 params={"page": page}, headers=_auth(token), timeout=15,
             )
-        except Exception:
-            break
+        except Exception as exc:
+            # Not the pages so far: a journal cut short reads as a quiet wallet,
+            # and the wallet page would store it as its copy. Callers show the
+            # stored one with the reason instead.
+            raise IncompleteAnswer(f"ESI did not answer ({type(exc).__name__}).") from exc
         if r.status_code != 200:
-            break
+            raise IncompleteAnswer(f"ESI returned HTTP {r.status_code} for journal page {page}.")
         batch = r.json()
         if not batch:
             break

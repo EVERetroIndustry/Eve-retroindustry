@@ -295,6 +295,10 @@ async def fetch_region_history(client: httpx.AsyncClient, region_id: int, type_i
 _ETAG_KEEP_DAYS = 12          # > 7, so the window can always be recomputed
 _HIST_WINDOW_DAYS = 7
 
+# Stored in place of an ETag for a type ESI keeps no history for (404/400). Never
+# equal to a real ETag, so asking again after it expires gets a fresh answer.
+_NO_HISTORY = '"no-history"'
+
 # (region_id, type_id) -> (etag, {date: volume}, expires_at epoch)
 _hist_etags: dict[tuple[int, int], tuple[str, dict[str, int], float]] = {}
 _hist_etags_dirty: set[tuple[int, int]] = set()
@@ -508,10 +512,21 @@ async def _fetch_region_volume(client: httpx.AsyncClient, region_id: int, type_i
             # (a 404/400 means it never will). Worth one more try rather than
             # quietly recording "no data" for something we simply haven't asked
             # about successfully yet.
+            # 404 "Type not found!" / 400 "Type not tradable on market!": ESI
+            # keeps no history for it, which is "nothing traded", the same answer
+            # as an empty list above. As None it stayed a dash in the 7-day column
+            # - indistinguishable from "not loaded" - and was asked again on every
+            # refresh (a SKIN and an event crate with sell orders, on a real cache).
+            # Remembered for a day like any other answer, so the region top-up
+            # counts the type as covered instead of asking about it on every pass.
+            if r.status_code in (400, 404):
+                _hist_etags[key] = (_NO_HISTORY, {}, time.time() + 86400)
+                _hist_etags_dirty.add(key)
+                return 0
             if (r.status_code in (420, 429) or r.status_code >= 500) and attempt == 0:
                 await asyncio.sleep(0.6)
                 continue
-            return None   # 400/404/… → no usable data
+            return None   # anything else: no usable data, ask again next time
     return None
 
 

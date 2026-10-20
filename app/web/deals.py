@@ -157,8 +157,12 @@ def _contract_traded_types(conn: sqlite3.Connection, days: int) -> set[int]:
         return set()               # alliance sales have never been recorded
 
 
+# ESI rebuilds market history once a day, so a day is how old a series may get.
+HISTORY_MAX_AGE = 86400.0
+
+
 def types_needing_history(conn: sqlite3.Connection,
-                          days: int = LIQUIDITY_DAYS) -> list[int]:
+                          max_age: float = HISTORY_MAX_AGE) -> list[int]:
     """Contracted types whose daily history is missing OR too old to answer.
 
     Measured: 6659 missing ones on a real index, fetched in 12.2 s at 544
@@ -175,8 +179,14 @@ def types_needing_history(conn: sqlite3.Connection,
         illiquid;
       * it looked only at public contract items, so a type that appears solely
         in alliance contracts never had its history fetched even once.
+
+    And a third, found in the audit of 2026-10-20: "too old" meant older than
+    the 30-day liquidity window itself, so a series fetched 20 days ago passed as
+    current while covering only the first 10 days of the window it was judged
+    by. On a real index 1 831 contracted types were 7-14 days old and 34 were
+    14-30 days old. A day is the limit now - ESI rebuilds the history daily.
     """
-    stale_before = time.time() - days * 86400
+    stale_before = time.time() - max_age
     try:
         return [r[0] for r in conn.execute("""
             SELECT DISTINCT i.type_id FROM (

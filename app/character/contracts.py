@@ -193,53 +193,6 @@ async def fetch_corp_contract_items(client, corp_id: int, contract_id: int,
 _PUB_SEM = asyncio.Semaphore(30)   # below the ESI rate-limit cliff (~45)
 
 
-async def _fetch_public_page(client, region_id: int, page: int) -> tuple[list[dict], int]:
-    async with _PUB_SEM:
-        for attempt in range(3):
-            try:
-                r = await client.get(f"{ESI_BASE}/contracts/public/{region_id}/",
-                                     params={"page": page}, timeout=25)
-            except Exception:
-                if attempt < 2:
-                    await asyncio.sleep(2)
-                    continue
-                return [], 0
-            if r.status_code in (420, 429):
-                await asyncio.sleep(min(int(r.headers.get("Retry-After", 30)), 60))
-                continue
-            if r.status_code != 200:
-                return [], 0
-            return r.json(), int(r.headers.get("x-pages", 1))
-        return [], 0
-
-
-async def fetch_public_contracts(client, region_id: int, progress_cb=None) -> list[dict]:
-    """All public contracts in the region (metadata only, no items)."""
-    first, total_pages = await _fetch_public_page(client, region_id, 1)
-    if not first and total_pages == 0:
-        return []
-    pages: list[list[dict]] = [first]
-    done = [1]
-    lock = asyncio.Lock()
-
-    async def _one(p: int):
-        data, _ = await _fetch_public_page(client, region_id, p)
-        async with lock:
-            pages.append(data)
-            done[0] += 1
-            if progress_cb:
-                res = progress_cb(done[0], total_pages)
-                if asyncio.iscoroutine(res):
-                    await res
-
-    if progress_cb:
-        res = progress_cb(1, total_pages)
-        if asyncio.iscoroutine(res):
-            await res
-    await asyncio.gather(*[_one(p) for p in range(2, total_pages + 1)], return_exceptions=True)
-    return [c for page in pages for c in page]
-
-
 async def fetch_public_contract_items(client, contract_id: int) -> list[dict]:
     """Items of a public contract. 204/403/404 → empty list (courier with no
     items, expired, etc.)."""

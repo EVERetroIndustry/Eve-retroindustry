@@ -582,6 +582,23 @@ def test_history_older_than_the_window_is_fetched_again():
     assert ORE in deals.types_needing_history(conn)
 
 
+def test_history_a_few_days_old_is_fetched_again_not_after_a_month():
+    """"Too old" used to mean older than the 30-day window, so a series fetched
+    20 days ago passed as current while covering 10 days of the window it was
+    judged by (1 831 contracted types were 7-14 days old on a real index). ESI
+    rebuilds history daily, so a day is the limit."""
+    conn = _db()
+    _price(conn, ORE, 10.0)
+    _public(conn, 7201, 1.0, [(ORE, 1)])
+    _traded(conn, ORE)
+    conn.execute("UPDATE price_history_cache SET cached_at = ?", (time.time() - 2 * 86400,))
+    conn.commit()
+    assert ORE in deals.types_needing_history(conn)
+    conn.execute("UPDATE price_history_cache SET cached_at = ?", (time.time() - 3600,))
+    conn.commit()
+    assert ORE not in deals.types_needing_history(conn)
+
+
 def test_a_type_seen_only_in_alliance_contracts_gets_its_history_fetched():
     """It looked at public contract items alone, so a type that appears solely
     in alliance contracts never had its history fetched even once."""

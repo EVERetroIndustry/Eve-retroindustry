@@ -1149,7 +1149,7 @@
       fetch(url)
         .then(r => r.json())
         .then(d => {
-          if (!d || !d.ok) { mktLoading.textContent = 'Failed to load market orders.'; return; }
+          if (!d || !d.ok) { mktLoading.textContent = (d && d.error) || 'Failed to load market orders.'; return; }
           sellBody.innerHTML = mktRows(d.sell);
           buyBody.innerHTML  = mktRows(d.buy);
           sellCount.textContent = (d.sell_count || 0) + (d.sell_count > 150 ? ' · top 150' : '');

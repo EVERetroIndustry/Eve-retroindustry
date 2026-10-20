@@ -129,3 +129,42 @@ def test_settled_contracts_do_not_count_as_outstanding():
     assert st["with_items"] == 1
     assert st["absent"] == 3
     assert st["priced"] - st["with_items"] - st["absent"] == 0
+
+
+def test_a_contract_asking_nothing_is_read_too_after_the_priced_ones():
+    """Found in the 2026-10-20 audit: 731 public contracts asking 0 ISK (want-to-
+    buy paid by reward, giveaways) were never read, so item search on the Public
+    tab could not find what was in them - while the tab said it covered every
+    contract. Nothing is priced from them (every price query wants price > 0),
+    so they are read last, after everything that does need a price."""
+    conn = _conn()
+    conn.execute("INSERT INTO public_contracts (contract_id, type, price, volume, region_id)"
+                 " VALUES (5, 'item_exchange', 0, 9999.0, 10000002)")
+    conn.commit()
+    order: list[int] = []
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url, **kw):
+            cid = int(url.rstrip("/").split("/")[-1])
+            order.append(cid)
+            return _Resp(200, [{"type_id": 34, "quantity": 1, "is_included": True}])
+
+    with mock.patch.object(CH, "esi_client", lambda **kw: Client()):
+        res = asyncio.run(CH.fill_public_items(conn, budget=100))
+    assert 5 in order and res["remaining"] == 0
+    st = CH.public_index_status(conn)
+    assert st["priced"] == 5 and st["with_items"] == 5
+    # Biggest-volume-first still holds among the priced ones, and the zero-price
+    # contract - the biggest of all here - is not let ahead of them.
+    with mock.patch.object(CH, "esi_client", lambda **kw: Client()):
+        conn.execute("DELETE FROM public_contract_items")
+        conn.commit()
+        order.clear()
+        asyncio.run(CH.fill_public_items(conn, budget=4))
+    assert 5 not in order, "with room for four, the four priced ones go first"

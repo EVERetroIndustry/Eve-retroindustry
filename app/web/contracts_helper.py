@@ -281,8 +281,13 @@ async def refresh_public_listings(conn: sqlite3.Connection, region_ids,
                        params={"page": p}, timeout=20) for p in range(2, pages + 1)
         ], return_exceptions=True)
         for rr in rest:
-            if not isinstance(rr, Exception) and rr.status_code == 200:
-                out.extend(rr.json() or [])
+            # A page that failed makes this region's listing unknown, and storing
+            # it would REPLACE the region: every contract on the missing page
+            # dropped out of search and pricing, and its fetched contents were
+            # deleted with it. Keep the previous listing until a whole one comes.
+            if isinstance(rr, Exception) or rr.status_code != 200:
+                return rid, None
+            out.extend(rr.json() or [])
         return rid, out
 
     async with esi_client(timeout=25) as client:
@@ -320,16 +325,22 @@ async def fill_public_items(conn: sqlite3.Connection, budget: int = 12000,
     That ordering is the whole trick: the items that need a contract price at all are
     capitals, and capitals are the biggest contracts there are. The long tail (BPCs,
     single modules - 98 % of the rows, mostly 0 m3) keeps filling afterwards.
+
+    Contracts asking nothing (price 0 - a want-to-buy paid for with a reward, or a
+    giveaway) come last. They used to be skipped outright, because nothing is
+    priced from them - every price query requires price > 0 - but the Public
+    tab's item search looks inside contents, so 731 of them on a real index could
+    not be found while the tab said its item search covered every contract.
     """
     ensure_public_contract_tables(conn)
     todo = [r[0] for r in conn.execute(
         "SELECT c.contract_id FROM public_contracts c"
-        " WHERE c.type IN ('item_exchange','auction') AND c.price > 0"
+        " WHERE c.type IN ('item_exchange','auction')"
         "   AND NOT EXISTS (SELECT 1 FROM public_contract_items i"
         "                    WHERE i.contract_id = c.contract_id)"
         "   AND NOT EXISTS (SELECT 1 FROM public_contract_items_absent a"
         "                    WHERE a.contract_id = c.contract_id)"
-        " ORDER BY c.volume DESC LIMIT ?", (budget,)).fetchall()]
+        " ORDER BY c.price > 0 DESC, c.volume DESC LIMIT ?", (budget,)).fetchall()]
     if not todo:
         return {"fetched": 0, "gone": 0, "remaining": 0}
     stored = [0]
@@ -406,7 +417,7 @@ async def fill_public_items(conn: sqlite3.Connection, budget: int = 12000,
         _mark_public_absent(conn, gone)
     remaining = conn.execute(
         "SELECT COUNT(*) FROM public_contracts c"
-        " WHERE c.type IN ('item_exchange','auction') AND c.price > 0"
+        " WHERE c.type IN ('item_exchange','auction')"
         "   AND NOT EXISTS (SELECT 1 FROM public_contract_items i"
         "                    WHERE i.contract_id = c.contract_id)"
         "   AND NOT EXISTS (SELECT 1 FROM public_contract_items_absent a"
@@ -479,9 +490,11 @@ def public_index_status(conn: sqlite3.Connection) -> dict:
     row = conn.execute(
         "SELECT COUNT(*), MIN(indexed_at), MAX(indexed_at) FROM public_contract_meta").fetchone()
     total = conn.execute("SELECT COUNT(*) FROM public_contracts").fetchone()[0]
+    # "priced" kept as the key the pages read, but it counts every contract with
+    # contents to read - including those asking nothing, which item search needs.
     priced = conn.execute(
         "SELECT COUNT(*) FROM public_contracts WHERE type IN ('item_exchange','auction')"
-        " AND price > 0").fetchone()[0]
+        ).fetchone()[0]
     with_items = conn.execute(
         "SELECT COUNT(DISTINCT contract_id) FROM public_contract_items").fetchone()[0]
     # Contracts ESI has told us have no readable contents. They are DONE, not
@@ -490,7 +503,7 @@ def public_index_status(conn: sqlite3.Connection) -> dict:
     absent = conn.execute(
         "SELECT COUNT(*) FROM public_contract_items_absent a JOIN public_contracts c"
         " ON c.contract_id = a.contract_id"
-        " WHERE c.type IN ('item_exchange','auction') AND c.price > 0").fetchone()[0]
+        " WHERE c.type IN ('item_exchange','auction')").fetchone()[0]
     return {"regions": row[0] or 0, "oldest": row[1], "newest": row[2],
             "contracts": total, "priced": priced, "with_items": with_items,
             "absent": absent}
@@ -507,92 +520,47 @@ def get_index_status(conn: sqlite3.Connection, region_id: int) -> dict | None:
     return {"indexed_at": row[0], "contract_count": row[1]}
 
 
-def _store(conn: sqlite3.Connection, region_id: int, contracts: list[dict],
-           items_by_cid: dict[int, list[dict]]) -> None:
-    ensure_public_contract_tables(conn)
-    cids = [c["contract_id"] for c in contracts if c.get("contract_id")]
-    # delete the region's old index
-    conn.execute("DELETE FROM public_contracts WHERE region_id=?", (region_id,))
-    if cids:
-        ph = ",".join("?" * len(cids))
-        conn.execute(f"DELETE FROM public_contract_items WHERE contract_id IN ({ph})", cids)
-    conn.executemany(
-        "INSERT OR REPLACE INTO public_contracts (contract_id, region_id, type, price, "
-        "reward, collateral, buyout, volume, date_expired, title, start_location_id, "
-        "end_location_id, issuer_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        [(c.get("contract_id"), region_id, c.get("type"), c.get("price") or 0,
-          c.get("reward") or 0, c.get("collateral") or 0, c.get("buyout") or 0,
-          c.get("volume") or 0, c.get("date_expired", ""), c.get("title") or "",
-          c.get("start_location_id"), c.get("end_location_id"), c.get("issuer_id"))
-         for c in contracts],
-    )
-    item_rows = [_public_item_row(cid, it)
-                 for cid, items in items_by_cid.items()
-                 for it in items or [] if it.get("type_id")]
-    if item_rows:
-        conn.executemany(
-            f"INSERT INTO public_contract_items ({_PUBLIC_ITEM_COLS}) "
-            "VALUES (?,?,?,?,?,?,?,?)", item_rows)
-    conn.execute(
-        "INSERT OR REPLACE INTO public_contract_meta (region_id, indexed_at, contract_count) "
-        "VALUES (?,?,?)", (region_id, time.time(), len(contracts)))
-    conn.commit()
-
-
 async def stream_public_index(conn: sqlite3.Connection, region_id: int):
-    """SSE generator: fetch the listing (pages) + items (per contract) and store them."""
+    """SSE generator: bring one region's public contracts up to date now (Plan's
+    "Fetch contract" asks for this).
+
+    It used to re-list the region AND re-read the contents of every contract in
+    it - ~34 000 for The Forge - on every call, although contents never change
+    and the background index already keeps every region listed. Worse, a failed
+    page or contents request was stored as empty: a failed first page wiped the
+    region, a failed contents read deleted what was stored. Now it is the same
+    machinery the background index uses: re-list the region (whole or not at
+    all), then read only contents nobody has read yet.
+    """
     ensure_public_contract_tables(conn)
-    total_pages = [0]
-    done_pages = [0]
-    holder: dict = {}
+    state = {"phase": "list", "done": 0, "total": 1, "pct": 0}
 
-    def _list_prog(done, total):
-        done_pages[0] = done
-        total_pages[0] = total
+    def _list_prog(done, total, _contracts):
+        state.update(phase="list", done=done, total=total, pct=int(done * 40 / max(1, total)))
 
-    async def _run_list():
-        async with esi_client() as client:
-            holder["list"] = await contracts_api.fetch_public_contracts(
-                client, region_id, progress_cb=_list_prog)
+    def _items_prog(done, total):
+        state.update(phase="items", done=done, total=total,
+                     pct=40 + int(done * 55 / max(1, total)))
 
-    task = asyncio.create_task(_run_list())
+    async def _run():
+        res = await refresh_public_listings(conn, [region_id], progress=_list_prog)
+        if not res["regions"]:
+            raise RuntimeError("ESI did not return the whole contract list for this "
+                               "region - the stored one was kept.")
+        state.update(phase="items", done=0, total=0, pct=40)
+        await fill_public_items(conn, progress=_items_prog)
+
+    task = asyncio.create_task(_run())
     while not task.done():
-        tp = total_pages[0]
-        pct = int(done_pages[0] * 40 / tp) if tp else 0
-        yield f"data: {_json.dumps({'phase':'list','done':done_pages[0],'total':tp,'pct':pct})}\n\n"
+        yield f"data: {_json.dumps(dict(state))}\n\n"
         await asyncio.sleep(0.4)
-    await task
-    contracts = holder.get("list", [])
-
-    # Items only for types with contents (courier/loan usually have no items).
-    item_contracts = [c for c in contracts if c.get("type") in ("item_exchange", "auction")]
-    total_items = len(item_contracts)
-    done_items = [0]
-    items_by_cid: dict[int, list[dict]] = {}
-    lock = asyncio.Lock()
-
-    async def _one(client, c):
-        its = await contracts_api.fetch_public_contract_items(client, c["contract_id"])
-        async with lock:
-            if its:
-                items_by_cid[c["contract_id"]] = its
-            done_items[0] += 1
-
-    async def _run_items():
-        async with esi_client() as client:
-            await asyncio.gather(*[_one(client, c) for c in item_contracts],
-                                 return_exceptions=True)
-
-    yield f"data: {_json.dumps({'phase':'items','done':0,'total':total_items,'pct':40})}\n\n"
-    task2 = asyncio.create_task(_run_items())
-    while not task2.done():
-        pct = 40 + (int(done_items[0] * 55 / total_items) if total_items else 55)
-        yield f"data: {_json.dumps({'phase':'items','done':done_items[0],'total':total_items,'pct':pct})}\n\n"
-        await asyncio.sleep(0.4)
-    await task2
-
-    _store(conn, region_id, contracts, items_by_cid)
-    yield f"data: {_json.dumps({'done':True,'pct':100,'contract_count':len(contracts)})}\n\n"
+    try:
+        task.result()
+    except Exception as exc:
+        yield f"data: {_json.dumps({'done': True, 'pct': 100, 'error': str(exc)})}\n\n"
+        return
+    status = get_index_status(conn, region_id) or {}
+    yield (f"data: {_json.dumps({'done': True, 'pct': 100, 'contract_count': status.get('contract_count', 0)})}\n\n")
 
 
 def search_public_contracts(conn: sqlite3.Connection, region_id: int | None = None, *,

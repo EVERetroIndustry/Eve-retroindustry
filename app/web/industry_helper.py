@@ -444,46 +444,72 @@ def _adj_is_fresh(conn: sqlite3.Connection) -> bool:
 
 
 def _sci_is_fresh(conn: sqlite3.Connection, solar_system_id: int, activity: str) -> bool:
-    row = conn.execute(
-        "SELECT cached_at FROM sci_cache WHERE solar_system_id=? AND activity=?",
-        (solar_system_id, activity),
-    ).fetchone()
-    if not row:
+    """The whole table is replaced at once, so one age answers for every system -
+    including one with no industry, which has no row and used to read as stale on
+    every call, fetching all 16 000 systems' indices again each time."""
+    row = conn.execute("SELECT MAX(cached_at) FROM sci_cache").fetchone()
+    if not row or row[0] is None:
         return False
     return (time.time() - row[0]) < 3600  # 1 h
 
 
-async def get_adjusted_prices(conn: sqlite3.Connection) -> dict[int, float]:
-    """Return {type_id: adjusted_price} from cache or ESI (GET /markets/prices/)."""
+async def refresh_adjusted_prices(conn: sqlite3.Connection) -> int:
+    """Replace the whole adjusted-price table with ESI's current list.
+
+    Replace, not upsert: a type CCP stops pricing used to keep its last price for
+    ever - 149 days old on a real cache - and be shown as an "est" value. And
+    because the freshness test reads the OLDEST row, those leftovers also made the
+    cache permanently stale, so every Plan calculation fetched the list again.
+    Raises on failure; the stored list is then left as it was.
+    """
     ensure_industry_tables(conn)
-    if _adj_is_fresh(conn):
-        rows = conn.execute("SELECT type_id, adjusted FROM adjusted_price_cache").fetchall()
-        return {r[0]: r[1] for r in rows}
-    try:
-        async with esi_client() as client:
-            r = await client.get(
-                f"{ESI_BASE}/markets/prices/",
-                params={"datasource": "tranquility"},
-                timeout=30,
-            )
-        if r.status_code == 200:
-            now = int(time.time())
-            entries = [
-                (item["type_id"], item["adjusted_price"], now)
-                for item in r.json()
-                if item.get("adjusted_price") is not None
-            ]
-            conn.executemany(
-                "INSERT OR REPLACE INTO adjusted_price_cache (type_id, adjusted, cached_at) VALUES (?,?,?)",
-                entries,
-            )
-            conn.commit()
-            return {e[0]: e[1] for e in entries}
-    except Exception:
-        pass
-    # Return stale cache if ESI fails
+    async with esi_client() as client:
+        r = await client.get(f"{ESI_BASE}/markets/prices/",
+                             params={"datasource": "tranquility"}, timeout=30)
+    r.raise_for_status()
+    now = int(time.time())
+    entries = [(item["type_id"], item["adjusted_price"], now) for item in r.json()
+               if item.get("adjusted_price") is not None]
+    if not entries:
+        raise RuntimeError("ESI returned an empty adjusted price list.")
+    conn.execute("DELETE FROM adjusted_price_cache")
+    conn.executemany("INSERT INTO adjusted_price_cache (type_id, adjusted, cached_at)"
+                     " VALUES (?,?,?)", entries)
+    conn.commit()
+    return len(entries)
+
+
+async def get_adjusted_prices(conn: sqlite3.Connection) -> dict[int, float]:
+    """Return {type_id: adjusted_price} from cache or ESI (GET /markets/prices/).
+    The background scheduler keeps the cache current, so this rarely asks."""
+    ensure_industry_tables(conn)
+    if not _adj_is_fresh(conn):
+        try:
+            await refresh_adjusted_prices(conn)
+        except Exception:
+            pass                      # serve the stored list
     rows = conn.execute("SELECT type_id, adjusted FROM adjusted_price_cache").fetchall()
     return {r[0]: r[1] for r in rows}
+
+
+async def refresh_sci(conn: sqlite3.Connection) -> int:
+    """Replace every System Cost Index with ESI's current ones (one call).
+    Raises on failure, leaving the stored indices as they were."""
+    ensure_industry_tables(conn)
+    async with esi_client() as client:
+        r = await client.get(f"{ESI_BASE}/industry/systems/",
+                             params={"datasource": "tranquility"}, timeout=30)
+    r.raise_for_status()
+    now = int(time.time())
+    entries = [(sys["solar_system_id"], idx["activity"], idx["cost_index"], now)
+               for sys in r.json() for idx in sys.get("cost_indices", [])]
+    if not entries:
+        raise RuntimeError("ESI returned no system cost indices.")
+    conn.execute("DELETE FROM sci_cache")
+    conn.executemany("INSERT INTO sci_cache (solar_system_id, activity, cost_index, cached_at)"
+                     " VALUES (?,?,?,?)", entries)
+    conn.commit()
+    return len(entries)
 
 
 async def get_sci_for_system(
@@ -494,38 +520,14 @@ async def get_sci_for_system(
     """
     Return the System Cost Index for the given system and activity.
     On a missing/expired cache it fetches the entire GET /industry/systems/ endpoint
-    and stores all values at once.
+    and stores all values at once. The background scheduler keeps it current.
     """
     ensure_industry_tables(conn)
-    if _sci_is_fresh(conn, solar_system_id, activity):
-        row = conn.execute(
-            "SELECT cost_index FROM sci_cache WHERE solar_system_id=? AND activity=?",
-            (solar_system_id, activity),
-        ).fetchone()
-        if row:
-            return row[0]
-    try:
-        async with esi_client() as client:
-            r = await client.get(
-                f"{ESI_BASE}/industry/systems/",
-                params={"datasource": "tranquility"},
-                timeout=30,
-            )
-        if r.status_code == 200:
-            now = int(time.time())
-            entries = [
-                (sys["solar_system_id"], idx["activity"], idx["cost_index"], now)
-                for sys in r.json()
-                for idx in sys.get("cost_indices", [])
-            ]
-            conn.executemany(
-                "INSERT OR REPLACE INTO sci_cache"
-                " (solar_system_id, activity, cost_index, cached_at) VALUES (?,?,?,?)",
-                entries,
-            )
-            conn.commit()
-    except Exception:
-        pass
+    if not _sci_is_fresh(conn, solar_system_id, activity):
+        try:
+            await refresh_sci(conn)
+        except Exception:
+            pass                      # serve the stored index
     row = conn.execute(
         "SELECT cost_index FROM sci_cache WHERE solar_system_id=? AND activity=?",
         (solar_system_id, activity),

@@ -99,6 +99,8 @@ from app.web.location_resolver import (
 from app.web.industry_helper import (
     ensure_industry_tables,
     get_adjusted_prices,
+    refresh_adjusted_prices,
+    refresh_sci,
     get_sci_for_system,
     get_station_me_bonus,
     save_station_me_bonus,
@@ -5543,6 +5545,12 @@ async def api_price_history(type_id: int, region_id: int = JITA_REGION):
     return {"type_id": type_id, "region_id": region_id, "series": series}
 
 
+# A page of the order book that did not come back: showing the rest would look
+# like the whole market, cheapest order and all, when it might not be.
+_INCOMPLETE_BOOK = {"ok": False, "error": "ESI did not return the whole order book - "
+                    "try again in a moment."}
+
+
 @app.get("/api/prices/orders")
 async def api_market_orders(request: Request, type_id: int, region_id: int = JITA_REGION,
                             location_id: int = 0):
@@ -5573,11 +5581,11 @@ async def api_market_orders(request: Request, type_id: int, region_id: int = JIT
                             timeout=20,
                         )
                     except Exception:
-                        break
+                        return _INCOMPLETE_BOOK
                     if r.status_code == 403:
                         return {"ok": False, "error": "No access to this structure's market."}
                     if r.status_code != 200:
-                        break
+                        return _INCOMPLETE_BOOK
                     batch = r.json()
                     if not isinstance(batch, list) or not batch:
                         break
@@ -5597,9 +5605,9 @@ async def api_market_orders(request: Request, type_id: int, region_id: int = JIT
                             timeout=20,
                         )
                     except Exception:
-                        break
+                        return _INCOMPLETE_BOOK
                     if r.status_code != 200:
-                        break
+                        return _INCOMPLETE_BOOK
                     batch = r.json()
                     if not isinstance(batch, list) or not batch:
                         break
@@ -7279,36 +7287,14 @@ async def _resolve_region_id(name_or_id: str) -> tuple[int | None, str]:
 # possible. Measured: 6659 types missing on a real index, fetched in 12.2 s at
 # 544 types/s, and the endpoint is public with no token bucket. Built once behind
 # the request and shared, like the net worth index.
-_DEALS_HISTORY_FLIGHT: list = [None]
-
-
-def _start_deals_history(type_ids: list[int]) -> None:
-    task = _DEALS_HISTORY_FLIGHT[0]
-    if task is not None and not task.done():
-        return
-
-    progress: dict = {}
-
-    def _p(done, total):
-        progress.update(pct=int(done * 100 / total) if total else 100,
-                        detail=f"{_count_eu(done)} / {_count_eu(total)} types")
-
-    async def build():
-        conn = get_conn()
-        try:
-            await worth_api.fetch_index_histories(conn, type_ids, progress_cb=_p)
-            deals_api.drop_cache()        # the scan can now trust more types
-        except Exception:
-            pass
-        finally:
-            conn.close()
-
+def _start_deals_history(type_ids: list[int] | None = None) -> None:
+    """Ask the scheduler's "deals-history" job to run now (or join it). One path
+    for the page and the hourly top-up, so they never fetch the same types twice
+    side by side."""
     try:
-        _DEALS_HISTORY_FLIGHT[0] = asyncio.create_task(build())
-    except RuntimeError:
-        return                            # no loop; the next request tries again
-    progress = bg.track(_DEALS_HISTORY_FLIGHT[0], "Market history for Deals",
-                        f"{_count_eu(len(type_ids))} types", "/contracts/deals")
+        bg.run_now("deals-history")
+    except (KeyError, RuntimeError):
+        pass                              # not registered / no loop (CLI, tests)
 
 
 @app.get("/contracts/deals", response_class=HTMLResponse)
@@ -9105,34 +9091,12 @@ def _worth_estimate(conn, days: float, isk: dict) -> dict:
     return series
 
 
-_HISTORY_TOPUP_FLIGHT: list = [None]
-
-
-def _start_history_topup(char_ids: list[int]) -> None:
-    task = _HISTORY_TOPUP_FLIGHT[0]
-    if task is not None and not task.done():
-        return
-
-    async def run():
-        conn = get_conn()
-        try:
-            async with esi_client(timeout=20) as client:
-                for cid in char_ids:
-                    token = await _valid_token_async(cid)
-                    if not token:
-                        continue
-                    await hist_api.refresh_all(client, conn, cid, token)
-        except Exception:
-            pass
-        finally:
-            conn.close()
-
+def _start_history_topup(char_ids: list[int] | None = None) -> None:
+    """Ask the scheduler's "char-history" job to run now (or join it)."""
     try:
-        _HISTORY_TOPUP_FLIGHT[0] = asyncio.create_task(run())
-    except RuntimeError:
-        return
-    bg.track(_HISTORY_TOPUP_FLIGHT[0], "Wallet and industry history",
-             f"{len(char_ids)} character{'s' if len(char_ids) != 1 else ''}", "/")
+        bg.run_now("char-history")
+    except (KeyError, RuntimeError):
+        pass
 
 
 def _start_index_build(type_ids: list[int]) -> None:
@@ -9976,6 +9940,95 @@ def _sync_station_jobs() -> None:
                         else _region_stations_job(spec))
 
 
+# ── Histories and indices that nothing used to refresh on its own ───────────
+# Found in the audit of 2026-10-20: each of these was fetched only when a page
+# needed it, so the page waited - and for the wallet history, ESI keeps only 30
+# days: a month without opening the net worth chart lost that month for good.
+
+async def _job_deals_history(report) -> dict:
+    conn = get_conn()
+    try:
+        todo = deals_api.types_needing_history(conn)
+
+        def _p(done, total):
+            report(pct=int(done * 100 / total) if total else 100,
+                   detail=f"{_count_eu(done)} / {_count_eu(total)} types")
+        report(pct=0, detail=f"{_count_eu(len(todo))} types")
+        got = await worth_api.fetch_index_histories(conn, todo, progress_cb=_p) if todo else 0
+        if todo:
+            deals_api.drop_cache()        # the scan can now trust more types
+        _mark_ok(conn, "deals-history")
+        return {"types": len(todo), "fetched": got}
+    finally:
+        conn.close()
+
+
+def _deals_history_applies() -> str | None:
+    conn = get_conn()
+    try:
+        for t in ("public_contract_items", "alliance_contract_items"):
+            try:
+                if conn.execute(f"SELECT 1 FROM {t} LIMIT 1").fetchone():
+                    return None
+            except sqlite3.OperationalError:
+                continue
+        return "no contracts indexed yet"
+    finally:
+        conn.close()
+
+
+async def _job_char_history(report) -> dict:
+    """Journal, market transactions, industry jobs and mining for every character.
+    Each source keeps its own minimum age, so a run inside it costs nothing."""
+    conn = get_conn()
+    try:
+        chars = list_characters(conn)
+        income_api.ensure_income_tables(conn)
+        done = 0
+        async with esi_client(timeout=20) as client:
+            for n, (cid, name) in enumerate(chars, start=1):
+                report(pct=int((n - 1) * 100 / len(chars)), detail=f"{name} ({n}/{len(chars)})")
+                token = await _valid_token_async(cid)
+                if not token:
+                    continue
+                try:
+                    await income_api.refresh_journal(client, conn, cid, token)
+                except Exception:
+                    pass                  # one source must not cost the others
+                await hist_api.refresh_all(client, conn, cid, token)
+                done += 1
+        if chars and not done:
+            raise RuntimeError("No character has a working login - check the dashboard.")
+        _mark_ok(conn, "char-history")
+        return {"characters": done}
+    finally:
+        conn.close()
+
+
+async def _job_industry(report) -> dict:
+    conn = get_conn()
+    try:
+        report(pct=10, detail="adjusted prices")
+        adj = await refresh_adjusted_prices(conn)
+        report(pct=60, detail="system cost indices")
+        sci = await refresh_sci(conn)
+        _mark_ok(conn, "industry")
+        return {"adjusted": adj, "sci": sci}
+    finally:
+        conn.close()
+
+
+def _industry_last_ok() -> float | None:
+    conn = get_conn()
+    try:
+        ensure_industry_tables(conn)
+        a = conn.execute("SELECT MIN(cached_at) FROM adjusted_price_cache").fetchone()[0]
+        b = conn.execute("SELECT MIN(cached_at) FROM sci_cache").fetchone()[0]
+    finally:
+        conn.close()
+    return None if a is None or b is None else min(a, b)
+
+
 def _register_background() -> None:
     bg.GATE.sde_ready = lambda: bool(_SDE_READY[0])
     bg.GATE.sync_running = lambda: bool(_sync_state["running"])
@@ -10012,6 +10065,19 @@ def _register_background() -> None:
         describe=lambda p: (p.get("pct"), f"{p.get('named') or 0} / {p.get('total') or 0}")))
 
     _sync_station_jobs()
+
+    bg.register(bg.Job(
+        key="deals-history", title="Market history for Deals", group="market",
+        every=60 * 60, run=_job_deals_history, applies=_deals_history_applies,
+        last_ok=lambda: _recorded_ok("deals-history", lambda c: None),
+        href="/contracts/deals"))
+    bg.register(bg.Job(
+        key="char-history", title="Wallet and industry history", group="character",
+        every=60 * 60, run=_job_char_history, applies=_characters_apply,
+        last_ok=lambda: _recorded_ok("char-history", lambda c: None), href="/"))
+    bg.register(bg.Job(
+        key="industry", title="Industry indices and adjusted prices", group="industry",
+        every=60 * 60, run=_job_industry, last_ok=_industry_last_ok, href="/plan"))
 
     bg.register_filler(bg.Filler(
         key="public", title="Public contracts", start=ensure_public_filler,

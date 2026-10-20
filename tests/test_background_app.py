@@ -166,6 +166,8 @@ def test_sync_all_is_the_panel_on_every_page(client, m):
 
 
 def test_the_deals_history_read_is_in_the_panel_with_its_progress(m, monkeypatch):
+    # Reported: the Deals tab read history for 103 types while the panel showed
+    # every source as done. The read is a scheduler job now, page or no page.
     release = asyncio.Event()
 
     async def fake_histories(conn, type_ids, concurrency=20, progress_cb=None):
@@ -173,20 +175,19 @@ def test_the_deals_history_read_is_in_the_panel_with_its_progress(m, monkeypatch
         await release.wait()
         return 0
     monkeypatch.setattr(m.worth_api, "fetch_index_histories", fake_histories)
-    m._DEALS_HISTORY_FLIGHT[0] = None
+    monkeypatch.setattr(m.deals_api, "types_needing_history", lambda conn: [34, 35, 36, 37])
 
     async def go():
-        m._start_deals_history([34, 35, 36, 37])
-        await asyncio.sleep(0)
-        rows = [r for r in bg.snapshot()["jobs"] if r["kind"] == "task"]
+        m._start_deals_history()                 # what the Deals page calls
+        for _ in range(5):
+            await asyncio.sleep(0)
+        row = next(r for r in bg.snapshot()["jobs"] if r["key"] == "deals-history")
         release.set()
-        await m._DEALS_HISTORY_FLIGHT[0]
-        await asyncio.sleep(0)
-        return rows, [r for r in bg.snapshot()["jobs"] if r["kind"] == "task"]
-    during, after = asyncio.run(go())
-    assert [(r["title"], r["pct"], r["detail"]) for r in during] == [
-        ("Market history for Deals", 25, "1 / 4 types")]
-    assert after == []
+        await bg.job_state("deals-history").task
+        return row
+    row = asyncio.run(go())
+    assert (row["state"], row["pct"], row["detail"]) == ("running", 25, "1 / 4 types")
+    _settle_job("deals-history")
 
 
 def test_the_history_read_reports_every_type_it_finishes(monkeypatch):
