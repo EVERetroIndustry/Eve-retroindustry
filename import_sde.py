@@ -343,7 +343,10 @@ def _map_tables(conn: sqlite3.Connection) -> None:
             region_id        INTEGER
         );
         -- security: the raw securityStatus, not the rounded figure the client
-        -- shows. star_class: the spectral class ("A0", "K2 V" ...). x2d/y2d: the
+        -- shows. star_class: the spectral class in the star's statistics
+        -- ("F9 V"). star_type_id: the star's type ("Sun A0 (Blue Small)") -
+        -- what the client shows, and NOT the same thing: 122 null-sec systems
+        -- have an A0 type whose statistics say F or G. x2d/y2d: the
         -- flattened map position CCP ships for drawing; x/y/z: the real position,
         -- for systems that have no 2D one. belts: asteroid belts at a planet.
         CREATE TABLE sde_map_systems (
@@ -352,6 +355,7 @@ def _map_tables(conn: sqlite3.Connection) -> None:
             region_id        INTEGER,
             security         REAL,
             star_class       TEXT,
+            star_type_id     INTEGER,
             x2d REAL, y2d REAL,
             x REAL, y REAL, z REAL,
             belts            INTEGER
@@ -435,9 +439,10 @@ def import_map(conn: sqlite3.Connection, zip_path: str | None = None) -> str | N
         rows.append((int(sid), s.get("constellationID"), s.get("regionID"),
                      s.get("securityStatus"),
                      (star.get("statistics") or {}).get("spectralClass"),
+                     star.get("typeID"),
                      p2.get("x"), p2.get("y"), p3.get("x"), p3.get("y"), p3.get("z"),
                      belt_count.get(int(sid), 0)))
-    conn.executemany("INSERT INTO sde_map_systems VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
+    conn.executemany("INSERT INTO sde_map_systems VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
 
     links = set()
     for g in gates.values():

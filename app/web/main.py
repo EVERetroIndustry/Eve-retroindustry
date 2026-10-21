@@ -10294,6 +10294,21 @@ async def api_sov_system(system_id: int):
         conn.close()
 
 
+@app.get("/api/sov/universe-map")
+async def api_sov_universe_map():
+    """The whole of known space for the map: systems, gates, overlay values."""
+    conn = get_conn()
+    try:
+        d = sov_api.universe_map(conn)
+        d["overlays"] = sov_api.region_overlays(conn, [x["id"] for x in d["systems"]])
+        names = await sov_api.alliance_names(
+            conn, {x["alliance_id"] for x in d["systems"] if x["alliance_id"]})
+        d["names"] = {str(k): v for k, v in names.items()}
+        return d
+    finally:
+        conn.close()
+
+
 @app.get("/api/sov/region-map")
 async def api_sov_region_map(region_id: int):
     conn = get_conn()

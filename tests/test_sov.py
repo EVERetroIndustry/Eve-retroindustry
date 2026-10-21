@@ -35,7 +35,7 @@ def _sde_zip(tmp_path) -> str:
                        "securityStatus": 0.02, "starID": 40000002,
                        "position": {"x": 4, "y": 5, "z": 6}},
         },
-        "mapStars.yaml": {40000001: {"solarSystemID": 30000001,
+        "mapStars.yaml": {40000001: {"solarSystemID": 30000001, "typeID": 3802,
                                      "statistics": {"spectralClass": "A0IV"}},
                           40000002: {"solarSystemID": 30000002,
                                      "statistics": {"spectralClass": "K2 V"}}},
@@ -81,6 +81,8 @@ def test_the_map_is_imported_from_the_sde(tmp_path):
         " FROM sde_map_systems")}
     assert rows[30000001] == (20000001, 10000001, -0.3, "A0IV", 1.0, 2.0, 2)
     assert rows[30000002][3] == "K2 V" and rows[30000002][4] is None and rows[30000002][6] == 0
+    assert conn.execute("SELECT star_type_id FROM sde_map_systems WHERE system_id=30000001"
+                        ).fetchone() == (3802,)
     # One link for the pair, none for a gate to itself.
     assert conn.execute("SELECT a, b FROM sde_stargate_links").fetchall() == [(30000001, 30000002)]
     # Kinds by the type's name: both Temperate type ids count as one kind.
@@ -506,7 +508,7 @@ def test_the_list_and_the_map_lead_to_each_other(client, held):
     row = row[:row.index("</tr>")]
     assert "sovShowOnMap(%d," % held in row and "sovDetail(%d)" % held in row
     assert 'id="det-map"' in html and "window.sovShowOnMap" in html
-    script = html[html.index("function drawRegion"):]
+    script = html[html.index("async function drawUniverse"):]
     click = script[script.index("addEventListener('click'"):][:200]
     assert "sovDetail(s.id)" in click, "a dot on the map opens the system's detail"
 
@@ -590,3 +592,54 @@ def test_ice_is_where_your_characters_mined_ice():
     ])
     assert SOV.ice_last_mined(conn, [a, b]) == {a: 200.0}
     assert SOV.region_overlays(conn, [a, b])["values"][str(a)]["ice_last"] == 200.0
+
+
+def test_the_region_map_knows_each_star(client, held):
+    rid = client.get(f"/api/sov/system/{held}").json()["region_id"]
+    d = client.get(f"/api/sov/region-map?region_id={rid}").json()
+    assert all("star_class" in s for s in d["systems"])
+    assert any(s["star_class"] for s in d["systems"])
+    assert 'value="a0"' in client.get("/sov").text
+
+
+
+def test_a0_is_the_star_type_the_client_shows_not_the_spectral_class():
+    # Reported: "A0 stars certainly exist in null". They do - 122 systems whose
+    # star TYPE is "Sun A0 (Blue Small)" while its statistics say F or G.
+    conn = _bundle_db()
+    held = conn.execute("""SELECT ms.system_id FROM sde_map_systems ms
+                             JOIN sde_types t ON t.type_id = ms.star_type_id
+                            WHERE t.name LIKE 'Sun A0%' AND ms.security <= 0
+                              AND ms.region_id < 11000000 LIMIT 1""").fetchone()[0]
+    conn.execute("INSERT INTO sov_map_cache VALUES (?,?,NULL,1)", (held, ALLY))
+    row = SOV.systems_for(conn, [ALLY])[0]
+    assert row["a0"] and row["star_class"].startswith("A0 (")
+    assert not row["spectral"].startswith("A0"), "the statistics disagree, and lose"
+    rid = row["region_id"]
+    me = next(x for x in SOV.region_map(conn, rid)["systems"] if x["id"] == held)
+    assert me["a0"] is True
+
+
+
+def test_the_map_is_all_of_known_space(client, held, app_module, monkeypatch):
+    async def names(conn, ids):
+        return {i: {"name": f"Alliance {i}", "ticker": "T"} for i in ids}
+    monkeypatch.setattr(app_module.sov_api, "alliance_names", names)
+    d = client.get("/api/sov/universe-map").json()
+    ids = {s["id"] for s in d["systems"]}
+    assert len(ids) > 5000 and 30000142 in ids and held in ids
+    assert all(s["region_id"] < 11000000 for s in d["systems"]), "no wormhole space"
+    assert len(d["regions"]) > 60 and d["regions"]["10000002"] == "The Forge"
+    assert all(a in ids and b in ids for a, b in d["links"])
+    assert d["overlays"]["values"][str(held)]["adm"] == 4.5
+    assert d["names"][str(ALLY)]["name"] == f"Alliance {ALLY}"
+
+
+def test_overlays_do_not_bind_one_parameter_per_system():
+    # ~5 500 systems at once: past the 999 bound parameters some SQLite builds
+    # (Android's among them) allow in one statement.
+    conn = _bundle_db()
+    conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+    ids = [r[0] for r in conn.execute("SELECT system_id FROM sde_map_systems")]
+    assert len(ids) > 999
+    SOV.region_overlays(conn, ids)          # must not raise "too many SQL variables"

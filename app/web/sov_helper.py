@@ -167,10 +167,17 @@ async def alliance_names(conn: sqlite3.Connection, ids) -> dict[int, dict]:
             miss.append(aid)
     if miss:
         try:
+            import asyncio
+            sem = asyncio.Semaphore(20)
             async with esi_client(timeout=10) as client:
-                for aid in miss:
-                    r = await client.get(f"{_BASE}/latest/alliances/{aid}/")
-                    if r.status_code != 200:
+                async def one(aid):
+                    async with sem:
+                        try:
+                            return aid, await client.get(f"{_BASE}/latest/alliances/{aid}/")
+                        except Exception:
+                            return aid, None
+                for aid, r in await asyncio.gather(*[one(a) for a in miss]):
+                    if r is None or r.status_code != 200:
                         continue
                     d = r.json()
                     out[aid] = {"name": d.get("name") or str(aid), "ticker": d.get("ticker") or ""}
@@ -252,6 +259,19 @@ def set_manual_upgrades(conn: sqlite3.Connection, system_id: int, type_ids) -> l
     return keep
 
 
+def star_label(type_name: str | None) -> str:
+    """'Sun A0 (Blue Small)' -> 'A0 (Blue Small)', as the client names the star."""
+    if not type_name:
+        return ""
+    return type_name[4:] if type_name.startswith("Sun ") else type_name
+
+
+def is_a0(type_name: str | None) -> bool:
+    """An A0 star by its TYPE, which is what the client shows. The spectral class
+    in the star's statistics disagrees for 122 null-sec systems (F or G)."""
+    return star_label(type_name).startswith("A0")
+
+
 def security_display(sec: float | None) -> float | None:
     """The security status as the client shows it: rounded to one decimal,
     except that anything above 0.0 and below 0.05 shows as 0.1 - otherwise a
@@ -275,10 +295,11 @@ def systems_for(conn: sqlite3.Connection, alliance_ids) -> list[dict]:
 def _systems(conn: sqlite3.Connection, where: str, params) -> list[dict]:
     ensure_sov_tables(conn)
     rows = conn.execute(f"""
-        SELECT ms.system_id, m.alliance_id, s.name, ms.security, ms.star_class,
+        SELECT ms.system_id, m.alliance_id, s.name, ms.security, st.name,
                ms.belts, ms.x2d, ms.y2d, c.name, r.name, ms.region_id,
-               ms.constellation_id
+               ms.constellation_id, ms.star_class
           FROM sde_map_systems ms
+          LEFT JOIN sde_types st ON st.type_id = ms.star_type_id
           LEFT JOIN sov_map_cache m ON m.system_id = ms.system_id
           LEFT JOIN sde_systems s ON s.system_id = ms.system_id
           LEFT JOIN sde_constellations c ON c.constellation_id = ms.constellation_id
@@ -326,12 +347,12 @@ def _systems(conn: sqlite3.Connection, where: str, params) -> list[dict]:
         pass                              # no ledger read yet
 
     out = []
-    for (sid, aid, name, sec, star, belts, x, y, const, region, rid, cid) in rows:
+    for (sid, aid, name, sec, star, belts, x, y, const, region, rid, cid, spectral) in rows:
         hub = hubs.get(sid)
         out.append({
             "system_id": sid, "alliance_id": aid, "name": name or str(sid),
             "security": sec, "security_shown": security_display(sec),
-            "star_class": star or "", "a0": bool(star and star.startswith("A0")),
+            "star_class": star_label(star), "spectral": spectral or "", "a0": is_a0(star),
             "belts": belts or 0, "x": x, "y": y,
             "constellation": const or "", "constellation_id": cid,
             "region": region or "", "region_id": rid,
@@ -354,10 +375,11 @@ def region_map(conn: sqlite3.Connection, region_id: int) -> dict:
     ensure_sov_tables(conn)
     systems = [
         {"id": sid, "name": name or str(sid), "x": x, "y": y, "alliance_id": aid,
-         "faction_id": fid, "security": security_display(sec)}
-        for sid, name, x, y, aid, fid, sec in conn.execute("""
+         "faction_id": fid, "security": security_display(sec), "star_class": star_label(star),
+         "a0": is_a0(star)}
+        for sid, name, x, y, aid, fid, sec, star in conn.execute("""
             SELECT ms.system_id, s.name, ms.x2d, ms.y2d, m.alliance_id, m.faction_id,
-                   ms.security
+                   ms.security, (SELECT st.name FROM sde_types st WHERE st.type_id = ms.star_type_id)
               FROM sde_map_systems ms
               LEFT JOIN sde_systems s ON s.system_id = ms.system_id
               LEFT JOIN sov_map_cache m ON m.system_id = ms.system_id
@@ -599,45 +621,44 @@ def activity_last_ok(conn: sqlite3.Connection) -> float | None:
 
 
 def region_overlays(conn: sqlite3.Connection, system_ids) -> dict:
-    """Per system, every value the map can colour by, and when each was read."""
+    """Per system, every value the map can colour by, and when each was read.
+
+    Reads whole tables and keeps the wanted systems in Python: the whole of
+    New Eden is ~5 500 ids, past the 999 bound parameters some SQLite builds
+    (Android's among them) allow in one statement.
+    """
     ensure_activity_tables(conn)
     ensure_sov_tables(conn)
-    ids = list(system_ids)
+    ids = set(system_ids)
     if not ids:
         return {"values": {}, "meta": {}}
-    ph = ",".join("?" * len(ids))
     vals: dict[int, dict] = {sid: {} for sid in ids}
+
+    def rows(sql, *params):
+        try:
+            return [r for r in conn.execute(sql, params) if r[0] in ids]
+        except sqlite3.OperationalError:
+            return []
+
     have_activity = conn.execute("SELECT COUNT(*) FROM map_activity_meta"
                                  " WHERE kind IN ('jumps','kills')").fetchone()[0] == 2
     if have_activity:
         for sid in ids:
             vals[sid].update(jumps=0, ship_kills=0, npc_kills=0, pod_kills=0)
-        for sid, j, sk, nk, pk in conn.execute(
-                f"SELECT * FROM map_activity WHERE system_id IN ({ph})", ids):
+        for sid, j, sk, nk, pk in rows("SELECT * FROM map_activity"):
             vals[sid].update(jumps=j, ship_kills=sk, npc_kills=nk, pod_kills=pk)
-    for sid, adm in conn.execute(
-            f"SELECT system_id, adm FROM sov_hubs WHERE system_id IN ({ph})", ids):
+    for sid, adm in rows("SELECT system_id, adm FROM sov_hubs"):
         vals[sid]["adm"] = adm
-    try:
-        for sid, act, ci in conn.execute(
-                f"SELECT solar_system_id, activity, cost_index FROM sci_cache"
-                f" WHERE solar_system_id IN ({ph})"
-                f" AND activity IN ('manufacturing','reaction','invention')", ids):
-            vals[sid]["sci_" + act] = ci
-    except sqlite3.OperationalError:
-        pass
-    for sid, n in conn.execute(
-            f"SELECT system_id, COUNT(*) FROM sde_stations WHERE system_id IN ({ph})"
-            f" GROUP BY system_id", ids):
+    for sid, act, ci in rows("SELECT solar_system_id, activity, cost_index FROM sci_cache"
+                             " WHERE activity IN ('manufacturing','reaction','invention')"):
+        vals[sid]["sci_" + act] = ci
+    for sid, n in rows("SELECT system_id, COUNT(*) FROM sde_stations GROUP BY system_id"):
         vals[sid]["stations"] = n
-    for (sid,) in conn.execute(
-            f"SELECT DISTINCT system_id FROM sov_campaigns WHERE system_id IN ({ph})", ids):
+    for (sid,) in rows("SELECT DISTINCT system_id FROM sov_campaigns"):
         vals[sid]["contested"] = 1
-    for sid, state, staging in conn.execute(
-            f"SELECT system_id, state, staging FROM map_incursions WHERE system_id IN ({ph})", ids):
+    for sid, state, staging in rows("SELECT system_id, state, staging FROM map_incursions"):
         vals[sid]["incursion"] = state + (" (staging)" if staging else "")
-    for sid, belts in conn.execute(
-            f"SELECT system_id, belts FROM sde_map_systems WHERE system_id IN ({ph})", ids):
+    for sid, belts in rows("SELECT system_id, belts FROM sde_map_systems"):
         vals[sid]["belts"] = belts
     from app.character.client_logs import last_mined
     for sid, ts in last_mined(conn).items():
@@ -645,9 +666,7 @@ def region_overlays(conn: sqlite3.Connection, system_ids) -> dict:
             vals[sid]["last_mined"] = ts
     for sid, ts in ice_last_mined(conn, ids).items():
         vals[sid]["ice_last"] = ts
-    for sid, n in conn.execute(
-            f"SELECT system_id, COUNT(*) FROM sov_upgrades_manual WHERE system_id IN ({ph})"
-            f" GROUP BY system_id", ids):
+    for sid, n in rows("SELECT system_id, COUNT(*) FROM sov_upgrades_manual GROUP BY system_id"):
         vals[sid]["upgrades"] = n
     meta = {k: {"fetched_at": f, "data_time": d} for k, f, d in
             conn.execute("SELECT kind, fetched_at, data_time FROM map_activity_meta")}
@@ -656,6 +675,30 @@ def region_overlays(conn: sqlite3.Connection, system_ids) -> dict:
     except sqlite3.OperationalError:
         pass
     return {"values": {str(k): v for k, v in vals.items() if v}, "meta": meta}
+
+
+def universe_map(conn: sqlite3.Connection) -> dict:
+    """Every system of known space that has a map position, with its region,
+    who holds it and its star, and every gate between two of them."""
+    ensure_sov_tables(conn)
+    systems = [
+        {"id": sid, "name": name or str(sid), "x": x, "y": y, "region_id": rid,
+         "alliance_id": aid, "faction_id": fid, "security": security_display(sec),
+         "star_class": star_label(star), "a0": is_a0(star)}
+        for sid, name, x, y, rid, aid, fid, sec, star in conn.execute("""
+            SELECT ms.system_id, s.name, ms.x2d, ms.y2d, ms.region_id, m.alliance_id,
+                   m.faction_id, ms.security, st.name
+              FROM sde_map_systems ms
+              LEFT JOIN sde_systems s ON s.system_id = ms.system_id
+              LEFT JOIN sov_map_cache m ON m.system_id = ms.system_id
+              LEFT JOIN sde_types st ON st.type_id = ms.star_type_id
+             WHERE ms.x2d IS NOT NULL AND ms.region_id < 11000000""")]
+    ids = {s["id"] for s in systems}
+    links = [(a, b) for a, b in conn.execute("SELECT a, b FROM sde_stargate_links")
+             if a in ids and b in ids]
+    regions = {rid: name for rid, name in conn.execute("SELECT region_id, name FROM sde_regions")}
+    return {"systems": systems, "links": links,
+            "regions": {str(r): regions.get(r, str(r)) for r in {s["region_id"] for s in systems}}}
 
 
 ICE_GROUP = 465
