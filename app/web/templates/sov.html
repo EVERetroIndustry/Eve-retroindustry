@@ -14,24 +14,9 @@
   .sov-planets { font-size: .78rem; white-space: nowrap; }
   .sov-planets span + span::before { content: " \00b7 "; color: #6e7681; }
   .sov-a0 { color: #9fcbf2; font-weight: 600; }
-  #sov-map { width: 100%; height: max(640px, 78vh); background: #0b0f14; border-radius: 6px; cursor: grab; }
-  #sov-map .lnk { stroke: #5d6b7e; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
-  #sov-map .sys { cursor: pointer; }
-  #sov-map .sys .box { fill: #1a1f27; stroke: #3b4452; stroke-width: 1; vector-effect: non-scaling-stroke; }
-  #sov-map .sys.own .box { stroke: #7bb8ec; stroke-width: 2.5; }
-  #sov-map .sys.sel .box { stroke: #e3b341; stroke-width: 3.5; }
-  #sov-map .sys:hover .box { stroke: #e3b341; }
-  #sov-map .sys.dim { opacity: .22; }
-  #sov-map text { pointer-events: none; fill: #e6edf3; }
-  #sov-map text.nm { font-size: 13px; font-weight: 600; }
-  #sov-map text.sc { font-size: 11px; font-weight: 700; paint-order: stroke; stroke: #0b0f14; stroke-width: 3px; }
-  #sov-map .rgn { fill: rgba(123,184,236,.035); stroke: #2a3340; stroke-width: 1; vector-effect: non-scaling-stroke; }
-  #sov-map text.rgnname { font-size: 34px; font-weight: 700; fill: #8b98a8; opacity: .9; }
-  #sov-map.far text { display: none; }
-  #sov-map .lnk.xr { stroke: #46536a; stroke-dasharray: 6 6; opacity: .45; }
-  #sov-map.far text.rgnname { display: inline; font-size: 260px; fill: #c9d1d9; paint-order: stroke; stroke: #0b0f14; stroke-width: 18px; }
-  #sov-map text.l2 { font-size: 11px; }
-  #sov-map text.l3 { font-size: 10px; opacity: .8; }
+  #sov-map { display: block; width: 100%; height: max(640px, 78vh); background: #0b0f14; border-radius: 6px; cursor: grab; }
+  #sov-map-tip { position: absolute; pointer-events: none; background: rgba(13,17,23,.95); border: 1px solid #3b4452;
+                 color: #e6edf3; font-size: .8rem; padding: 3px 7px; border-radius: 4px; white-space: nowrap; z-index: 5; }
   .sov-ramp { display: inline-block; width: 120px; height: 10px; border-radius: 2px;
               background: linear-gradient(90deg, #2b3442, #e3b341); vertical-align: middle; }
   .sov-chip { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; }
@@ -220,7 +205,8 @@
   <div class="small text-muted mb-1">Scroll to zoom, drag to move. <span id="help-sov"></span> Hover a system for who holds it, click it for its detail.{% if systems %} This alliance's systems outside the filter are dimmed.{% endif %}</div>
   <div class="small mb-1" id="sov-map-summary"></div>
   <div class="small mb-1 d-flex align-items-center gap-2 flex-wrap" id="sov-map-legend"></div>
-  <svg id="sov-map" xmlns="http://www.w3.org/2000/svg"></svg>
+  <div class="position-relative"><canvas id="sov-map"></canvas>
+    <div id="sov-map-tip" class="d-none"></div></div>
 </div>
 
 {% if systems %}
@@ -339,7 +325,7 @@
       if (ok) { n++; shown.add(tr.dataset.id); }
     }
     $('f-count').textContent = n === rows.length ? rows.length + ' systems' : n + ' of ' + rows.length + ' shown';
-    document.querySelectorAll('#sov-map .sys.own').forEach(c => c.classList.toggle('dim', !shown.has(c.dataset.id)));
+    setMapDim(shown);
   }
   if (table) ['f-q', 'f-region', 'f-up', 'f-planet', 'f-a0', 'f-hub', 'f-camp', 'f-mined'].forEach(id => {
     $(id).addEventListener(id === 'f-q' ? 'input' : 'change', apply);
@@ -373,25 +359,25 @@
     document.querySelectorAll('#sov-tabs .nav-link').forEach(x => x.classList.toggle('active', x === b));
     $('tab-list').classList.toggle('d-none', b.dataset.tab !== 'list');
     $('tab-map').classList.toggle('d-none', b.dataset.tab !== 'map');
-    if (b.dataset.tab === 'map') drawMap();
+    if (b.dataset.tab === 'map') drawMap().then(requestRender);
   });
 
   // Map: all of known space, DOTLAN-style. Each region is laid out on its
   // own from CCP's flattened positions (boxes pushed apart until none
   // overlap), then the regions are placed where they lie in New Eden and
   // pushed apart the same way. Picking a region only moves the view.
+  //
+  // Drawn on a canvas, not as SVG: 5 500 systems as SVG elements were ~40 000
+  // nodes, and every pan re-laid them all out - the map stuttered. The canvas
+  // draws only what is in view, at most once per frame.
   const OWN = {{ selected | tojson }};
   const REGIONS = {{ systems | map(attribute='region_id') | list | tojson if systems else '[]' }};
   const REGION_NAMES = {{ systems | map(attribute='region') | list | tojson if systems else '[]' }};
-  let vb = null, mapPts = {}, fitVB = null, regionBox = {}, focused = null;
-  const svg = $('sov-map'), NS = 'http://www.w3.org/2000/svg';
+  const cvs = $('sov-map'), ctx = cvs.getContext('2d');
   const BW = 112, BH = 46, GAP = 14;
-  const setVB = () => {
-    svg.setAttribute('viewBox', vb.join(' '));
-    // Far out, text is unreadable and slow to draw: boxes and region names only.
-    const w = svg.getBoundingClientRect().width || 1600;
-    svg.classList.toggle('far', w / vb[2] < 0.45);
-  };
+  let SYS = [], LINKS_IN = [], LINKS_X = [], RGN = [], byId = new Map(), mapPts = {}, regionBox = {};
+  let view = {cx: 0, cy: 0, s: 1}, world = null, selected = null, dimSet = null, hover = null;
+  let lastMap = null;
 
   function regionButtons() {
     const counts = new Map();
@@ -484,7 +470,111 @@
     return {pts, boxes};
   }
 
-  let lastMap = null;
+
+  // ── View ──
+  function size() {
+    const r = cvs.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
+    if (cvs.width !== w || cvs.height !== h) { cvs.width = w; cvs.height = h; }
+    return {w: r.width, h: r.height, dpr};
+  }
+  function fitRect(x, y, w, h, pad) {
+    const {w: W, h: H} = size();
+    pad = pad == null ? 40 : pad;
+    view = {cx: x + w / 2, cy: y + h / 2, s: Math.min(W / (w + 2 * pad), H / (h + 2 * pad))};
+    requestRender();
+  }
+  const fitWorld = () => { if (world) fitRect(...world, 100); };
+  let pending = false;
+  function requestRender() {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => { pending = false; render(); });
+  }
+  const toWorld = (px, py) => {
+    const {w, h} = size();
+    return [(px - w / 2) / view.s + view.cx, (py - h / 2) / view.s + view.cy];
+  };
+
+  // ── Drawing ──
+  function render() {
+    const {w, h, dpr} = size();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#0b0f14';
+    ctx.fillRect(0, 0, cvs.width, cvs.height);
+    if (!SYS.length) return;
+    const s = view.s;
+    ctx.setTransform(dpr * s, 0, 0, dpr * s, dpr * (w / 2 - view.cx * s), dpr * (h / 2 - view.cy * s));
+    const x0 = view.cx - w / 2 / s, x1 = view.cx + w / 2 / s, y0 = view.cy - h / 2 / s, y1 = view.cy + h / 2 / s;
+    const inView = (x, y, mw, mh) => x + mw > x0 && x < x1 && y + mh > y0 && y < y1;
+    const near = s > 0.45;                       // close enough to read text
+    // regions
+    ctx.lineWidth = 1 / s;
+    for (const r of RGN) {
+      if (!inView(r.x, r.y, r.w, r.h)) continue;
+      ctx.fillStyle = 'rgba(123,184,236,0.035)';
+      ctx.strokeStyle = '#2a3340';
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+      ctx.strokeRect(r.x, r.y, r.w, r.h);
+    }
+    // gates: one path per kind
+    const lines = (list, style, width, dash) => {
+      ctx.beginPath();
+      for (const l of list) {
+        if (Math.max(l[0], l[2]) < x0 || Math.min(l[0], l[2]) > x1 || Math.max(l[1], l[3]) < y0 || Math.min(l[1], l[3]) > y1) continue;
+        ctx.moveTo(l[0], l[1]); ctx.lineTo(l[2], l[3]);
+      }
+      ctx.strokeStyle = style; ctx.lineWidth = width / s; ctx.setLineDash(dash.map(d => d / s));
+      ctx.stroke();
+      ctx.setLineDash([]);
+    };
+    lines(LINKS_X, 'rgba(70,83,106,0.45)', 1, [6, 6]);
+    lines(LINKS_IN, '#5d6b7e', 1.5, []);
+    // systems
+    for (const b of SYS) {
+      if (!inView(b.x, b.y, BW, BH)) continue;
+      ctx.globalAlpha = dimSet && b.own && !dimSet.has(String(b.id)) ? 0.22 : 1;
+      ctx.fillStyle = b.fill;
+      ctx.fillRect(b.x, b.y, BW, BH);
+      const sel = b.id === selected, hov = hover && b.id === hover.id;
+      ctx.strokeStyle = sel || hov ? '#e3b341' : b.own ? '#7bb8ec' : '#3b4452';
+      ctx.lineWidth = (sel ? 3.5 : b.own ? 2.5 : 1) / s;
+      ctx.strokeRect(b.x, b.y, BW, BH);
+      if (near) {
+        ctx.fillStyle = b.ink;
+        ctx.font = '600 13px system-ui, sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText(b.name, b.x + 6, b.y + 15, BW - 40);
+        ctx.font = '11px system-ui, sans-serif';
+        if (b.t2) ctx.fillText(b.t2, b.x + 6, b.y + 29, BW - 10);
+        ctx.font = '10px system-ui, sans-serif';
+        if (b.t3) { ctx.globalAlpha *= 0.8; ctx.fillText(b.t3, b.x + 6, b.y + 41, BW - 10); }
+        ctx.globalAlpha = dimSet && b.own && !dimSet.has(String(b.id)) ? 0.22 : 1;
+        if (b.secText) {
+          ctx.font = '700 11px system-ui, sans-serif';
+          ctx.textAlign = 'right';
+          ctx.lineWidth = 3; ctx.strokeStyle = '#0b0f14'; ctx.lineJoin = 'round';
+          ctx.strokeText(b.secText, b.x + BW - 5, b.y + 15);
+          ctx.fillStyle = b.secCol;
+          ctx.fillText(b.secText, b.x + BW - 5, b.y + 15);
+        }
+      }
+    }
+    ctx.globalAlpha = 1;
+    // region names
+    ctx.textAlign = 'left';
+    for (const r of RGN) {
+      if (!inView(r.x, r.y - 300, r.w, r.h + 300)) continue;
+      const fs = near ? 34 : Math.max(34, 13 / s);
+      ctx.font = '700 ' + fs + 'px system-ui, sans-serif';
+      ctx.lineWidth = fs / 7; ctx.strokeStyle = '#0b0f14'; ctx.lineJoin = 'round';
+      ctx.strokeText(r.name, r.x + 16, r.y + 12 + fs);
+      ctx.fillStyle = near ? '#8b98a8' : '#c9d1d9';
+      ctx.fillText(r.name, r.x + 16, r.y + 12 + fs);
+    }
+  }
+
+  // ── Data ──
   async function drawUniverse() {
     $('sov-map-summary').textContent = 'Loading the map of New Eden...';
     const d = await fetch('/api/sov/universe-map').then(r => r.json());
@@ -492,93 +582,42 @@
     mapPts = pts; regionBox = boxes;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const r of Object.values(boxes)) { x0 = Math.min(x0, r[0]); y0 = Math.min(y0, r[1]); x1 = Math.max(x1, r[0] + r[2]); y1 = Math.max(y1, r[1] + r[3]); }
-    fitVB = [x0 - 100, y0 - 100, x1 - x0 + 200, y1 - y0 + 200];
-    vb = fitVB.slice();
-    svg.innerHTML = '';
-    const g = document.createElementNS(NS, 'g');
-    for (const [rid, r] of Object.entries(boxes)) {
-      const bg = document.createElementNS(NS, 'rect');
-      bg.setAttribute('class', 'rgn'); bg.setAttribute('x', r[0]); bg.setAttribute('y', r[1]);
-      bg.setAttribute('width', r[2]); bg.setAttribute('height', r[3]); bg.setAttribute('rx', 12);
-      g.appendChild(bg);
-    }
-    const regionOf = new Map(d.systems.map(s => [s.id, s.region_id]));
+    world = [x0, y0, x1 - x0, y1 - y0];
+    RGN = Object.entries(boxes).map(([rid, r]) => ({rid: +rid, x: r[0], y: r[1], w: r[2], h: r[3], name: d.regions[rid] || rid}));
+    const regionOf = new Map(d.systems.map(x => [x.id, x.region_id]));
+    LINKS_IN = []; LINKS_X = [];
     for (const [a, b] of d.links) {
       if (!pts[a] || !pts[b]) continue;
-      const l = document.createElementNS(NS, 'line');
-      l.setAttribute('x1', pts[a][0]); l.setAttribute('y1', pts[a][1]);
-      l.setAttribute('x2', pts[b][0]); l.setAttribute('y2', pts[b][1]);
-      // Gates between regions cross the map once regions are spread apart:
-      // drawn faint so the region's own network stays readable.
-      l.setAttribute('class', regionOf.get(a) === regionOf.get(b) ? 'lnk' : 'lnk xr');
-      g.appendChild(l);
+      (regionOf.get(a) === regionOf.get(b) ? LINKS_IN : LINKS_X).push([pts[a][0], pts[a][1], pts[b][0], pts[b][1]]);
     }
-    const txt = (cls, x, y, anchor) => {
-      const t = document.createElementNS(NS, 'text');
-      t.setAttribute('class', cls); t.setAttribute('x', x); t.setAttribute('y', y);
-      if (anchor) t.setAttribute('text-anchor', anchor);
-      return t;
-    };
-    d.systems.forEach(s => {
-      const own = s.alliance_id === OWN;
-      const box = document.createElementNS(NS, 'g');
-      box.setAttribute('class', 'sys' + (own ? ' own' : ' other'));
-      box.setAttribute('transform', 'translate(' + (pts[s.id][0] - BW / 2) + ',' + (pts[s.id][1] - BH / 2) + ')');
-      Object.assign(box.dataset, {id: s.id, own: own ? '1' : '', sec: s.security == null ? '' : s.security,
-        aid: s.alliance_id || '', fid: s.faction_id || '', star: s.star_class || '', a0: s.a0 ? '1' : '',
-        rid: s.region_id, name: s.name});
-      const r = document.createElementNS(NS, 'rect');
-      r.setAttribute('class', 'box'); r.setAttribute('width', BW); r.setAttribute('height', BH); r.setAttribute('rx', 4);
-      box.appendChild(r);
-      const nm = txt('nm', 6, 15); nm.textContent = s.name; box.appendChild(nm);
-      const sc = txt('sc', BW - 5, 15, 'end');
-      sc.textContent = s.security != null ? s.security.toFixed(1) : '';
-      sc.style.fill = s.security != null && s.security <= 0 ? '#e47aa9' : secCol(s.security);
-      box.appendChild(sc);
-      box.appendChild(txt('l2', 6, 29));
-      box.appendChild(txt('l3', 6, 41));
-      // The tooltip is built on first hover: thousands of them up front cost.
-      box.addEventListener('mouseenter', () => {
-        if (box.querySelector('title')) return;
-        const t = document.createElementNS(NS, 'title');
-        const tr = document.getElementById('sys-' + s.id);
-        t.textContent = s.name + (s.security != null ? ' (' + s.security.toFixed(1) + ')' : '')
-          + ' - ' + (d.regions[s.region_id] || '') + ' - ' + holder(s, d.names)
-          + (tr && tr.dataset.ups !== '0' ? ', ' + tr.dataset.ups + ' upgrades marked' : '');
-        box.appendChild(t);
-      }, {once: true});
-      box.addEventListener('click', () => { if (own) select(s.id, false); sovDetail(s.id); });
-      g.appendChild(box);
-    });
-    for (const [rid, r] of Object.entries(boxes)) {
-      const t = txt('rgnname', r[0] + 16, r[1] + 46);
-      t.textContent = d.regions[rid] || rid;
-      g.appendChild(t);
-    }
-    svg.appendChild(g);
+    SYS = d.systems.map(x => ({
+      id: x.id, name: x.name, x: pts[x.id][0] - BW / 2, y: pts[x.id][1] - BH / 2,
+      own: x.alliance_id === OWN, sec: x.security, aid: x.alliance_id || 0, fid: x.faction_id || 0,
+      star: x.star_class || '', a0: !!x.a0, rid: x.region_id, src: x,
+      secText: x.security != null ? x.security.toFixed(1) : '',
+      secCol: x.security != null && x.security <= 0 ? '#e47aa9' : secCol(x.security),
+      fill: '#1a1f27', ink: '#e6edf3', t2: '', t3: '',
+    }));
+    byId = new Map(SYS.map(b => [b.id, b]));
     lastMap = d;
     paint();
     apply();
-    setVB();
+    fitWorld();
     summary(d.systems, 'New Eden');
   }
 
-  // Move the view onto a region; nothing is redrawn.
+  // Move the view onto a region; nothing is re-laid out.
   function focusRegion(rid) {
     rid = +rid;
     const r = regionBox[rid];
     if (!r) return;
-    focused = rid;
     document.querySelectorAll('#sov-map-regions .btn').forEach(b => b.classList.toggle('active', b.dataset.rid === String(rid)));
     $('sov-map-pick').value = String(rid);
-    const rect = svg.getBoundingClientRect();
-    const aspect = (rect.height || 800) / (rect.width || 1600);
-    let w = r[2] + 60, h = r[3] + 60;
-    if (h / w > aspect) w = h / aspect; else h = w * aspect;
-    vb = [r[0] + r[2] / 2 - w / 2, r[1] + r[3] / 2 - h / 2, w, h];
-    setVB();
-    if (lastMap) summary(lastMap.systems.filter(s => s.region_id === rid), lastMap.regions[rid]);
+    fitRect(r[0], r[1], r[2], r[3], 30);
+    if (lastMap) summary(lastMap.systems.filter(x => x.region_id === rid), lastMap.regions[rid]);
   }
+
+  function setMapDim(shown) { dimSet = shown; requestRender(); }
 
   // Overlays: what each dot is coloured by. The values come with the region.
   const OVERLAYS = {
@@ -616,24 +655,20 @@
     const meta = (lastMap.overlays || {}).meta || {};
     const names = lastMap.names || {};
     const legend = $('sov-map-legend');
-    const boxes = Array.from(svg.querySelectorAll('g.sys'));
-    const val = b => (V[b.dataset.id] || {})[kind];
     const spec = OVERLAYS[kind];
     let max = 0, min = Infinity;
-    if (spec) boxes.forEach(b => { const v = val(b); if (v != null) { max = Math.max(max, v); min = Math.min(min, v); } });
+    if (spec) SYS.forEach(b => { const v = (V[b.id] || {})[kind]; if (v != null) { max = Math.max(max, v); min = Math.min(min, v); } });
     if (spec && spec.fixed) [min, max] = spec.fixed;
-    for (const b of boxes) {
-      const vs = V[b.dataset.id] || {};
-      const sec = b.dataset.sec === '' ? null : +b.dataset.sec;
-      const aid = +b.dataset.aid || 0;
-      const rect = b.querySelector('rect'), l2 = b.querySelector('.l2'), l3 = b.querySelector('.l3');
+    for (const b of SYS) {
+      const vs = V[b.id] || {};
+      const sec = b.sec, aid = b.aid;
       let fill = '#1a1f27', t2 = '', t3 = '';
       if (kind === 'sov') {
         if (aid) {
           const nm = names[aid];
-          fill = b.dataset.own ? '#1f3b57' : allianceFill(aid);
+          fill = b.own ? '#1f3b57' : allianceFill(aid);
           t2 = nm ? (nm.ticker ? '[' + nm.ticker + ']' : nm.name) : 'alliance ' + aid;
-        } else if (b.dataset.fid) { fill = '#2a2333'; t2 = 'NPC space'; }
+        } else if (b.fid) { fill = '#2a2333'; t2 = 'NPC space'; }
         else t2 = sec != null && sec > 0 ? '' : 'no holder';
         if (vs.adm != null) t3 = 'ADM ' + vs.adm.toFixed(1);
         if (vs.contested) { fill = '#5a1d1d'; t3 = 'contested'; }
@@ -645,12 +680,11 @@
         if (vs.incursion) { fill = '#5b3e8a'; t2 = vs.incursion; }
       } else if (kind === 'last_mined') {
         const v = vs.last_mined;
-        if (v) { const h = (Date.now() / 1000 - v) / 3600; fill = ramp(Math.max(0.15, 1 - Math.log10(1 + h) / 3)); t2 = 'mined ' + ago(v) + ' ago'; }
+        if (v) { const hh = (Date.now() / 1000 - v) / 3600; fill = ramp(Math.max(0.15, 1 - Math.log10(1 + hh) / 3)); t2 = 'mined ' + ago(v) + ' ago'; }
         if (vs.ice_last) t3 = 'ice ' + ago(vs.ice_last) + ' ago';
       } else if (kind === 'a0') {
-        const star = b.dataset.star;
-        if (b.dataset.a0 === '1') { fill = '#2c75e1'; t2 = '\u2605 ' + star; }
-        else t2 = star || 'no star';
+        if (b.a0) { fill = '#2c75e1'; t2 = '★ ' + b.star; }
+        else t2 = b.star || 'no star';
       } else if (kind === 'belts') {
         const v = vs.belts || 0;
         fill = v ? ramp(max > 0 ? Math.sqrt(v / max) : 0) : '#1a1f27';
@@ -663,13 +697,10 @@
           const t = max > min ? (v - min) / (max - min) : (v > 0 ? 1 : 0);
           fill = v === 0 && !spec.fixed ? '#1f2630' : ramp(spec.fixed ? t : Math.sqrt(t));
           t2 = spec.fmt ? spec.fmt(v) : String(v);
-          if (spec.unit) t2 += ' ' + spec.unit;
         }
       }
-      rect.style.fill = fill;
-      const dark = textOn(fill);
-      b.querySelectorAll('text.nm, text.l2, text.l3').forEach(t => { t.style.fill = dark; });
-      l2.textContent = t2; l3.textContent = t3;
+      b.fill = fill; b.t2 = t2; b.t3 = t3;
+      b.ink = textOn(fill) || '#e6edf3';
     }
     const E = escHtml;
     let h = '';
@@ -689,8 +720,8 @@
     if (kind !== 'sov') h += ' <span class="text-muted">&middot; this alliance\'s systems outlined blue</span>';
     legend.innerHTML = h;
     $('help-sov').classList.toggle('d-none', kind !== 'sov');
+    requestRender();
   }
-
 
   // From the list or the detail: open the map zoomed in on the system.
   window.sovShowOnMap = async function (id) {
@@ -698,14 +729,11 @@
     if ($('tab-list')) $('tab-list').classList.add('d-none');
     $('tab-map').classList.remove('d-none');
     await drawMap();
-    const p = mapPts[id];
-    if (!p) return;
-    const rect = svg.getBoundingClientRect();
-    const w = (rect.width || 1600) / 1.1, h = (rect.height || 800) / 1.1;
-    vb = [p[0] - w / 2, p[1] - h / 2, w, h];
-    setVB();
-    select(id, false);
-    svg.scrollIntoView({block: 'center'});
+    const b = byId.get(+id);
+    if (!b) return;
+    view = {cx: b.x + BW / 2, cy: b.y + BH / 2, s: 1.1};
+    select(+id, false);
+    cvs.scrollIntoView({block: 'center'});
   };
 
   function secColour(sec) {
@@ -754,31 +782,73 @@
     return mapReady;
   }
 
+  // ── Input ──
+  function hitTest(px, py) {
+    const [x, y] = toWorld(px, py);
+    for (let i = SYS.length - 1; i >= 0; i--) {
+      const b = SYS[i];
+      if (x >= b.x && x <= b.x + BW && y >= b.y && y <= b.y + BH) return b;
+    }
+    return null;
+  }
   function bindMapControls() {
-    svg.addEventListener('wheel', e => {
+    const tip = $('sov-map-tip');
+    cvs.addEventListener('wheel', e => {
       e.preventDefault();
-      const rect = svg.getBoundingClientRect();
-      const mx = vb[0] + (e.clientX - rect.left) / rect.width * vb[2];
-      const my = vb[1] + (e.clientY - rect.top) / rect.height * vb[3];
-      const k = e.deltaY > 0 ? 1.2 : 1 / 1.2;
-      vb = [mx - (mx - vb[0]) * k, my - (my - vb[1]) * k, vb[2] * k, vb[3] * k];
-      setVB();
+      const r = cvs.getBoundingClientRect();
+      const [mx, my] = toWorld(e.clientX - r.left, e.clientY - r.top);
+      const k = e.deltaY > 0 ? 1 / 1.2 : 1.2;
+      const s2 = Math.min(4, Math.max(0.01, view.s * k));
+      // keep the point under the cursor where it is
+      view.cx = mx - (mx - view.cx) * view.s / s2;
+      view.cy = my - (my - view.cy) * view.s / s2;
+      view.s = s2;
+      requestRender();
     }, {passive: false});
-    let drag = null;
-    svg.addEventListener('mousedown', e => { drag = [e.clientX, e.clientY, vb[0], vb[1]]; svg.style.cursor = 'grabbing'; });
-    window.addEventListener('mouseup', () => { drag = null; svg.style.cursor = ''; });
+    let drag = null, moved = false;
+    cvs.addEventListener('mousedown', e => { drag = [e.clientX, e.clientY, view.cx, view.cy]; moved = false; cvs.style.cursor = 'grabbing'; });
+    window.addEventListener('mouseup', () => { drag = null; cvs.style.cursor = ''; });
     window.addEventListener('mousemove', e => {
-      if (!drag) return;
-      const rect = svg.getBoundingClientRect();
-      vb[0] = drag[2] - (e.clientX - drag[0]) / rect.width * vb[2];
-      vb[1] = drag[3] - (e.clientY - drag[1]) / rect.height * vb[3];
-      setVB();
+      if (drag) {
+        const dx = e.clientX - drag[0], dy = e.clientY - drag[1];
+        if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
+        view.cx = drag[2] - dx / view.s;
+        view.cy = drag[3] - dy / view.s;
+        tip.classList.add('d-none');
+        requestRender();
+        return;
+      }
+      if (e.target !== cvs) return;
+      const r = cvs.getBoundingClientRect();
+      const b = hitTest(e.clientX - r.left, e.clientY - r.top);
+      if ((b && b.id) !== (hover && hover.id)) { hover = b; requestRender(); }
+      cvs.style.cursor = b ? 'pointer' : '';
+      if (b) {
+        const x = b.src, tr = document.getElementById('sys-' + b.id);
+        tip.textContent = b.name + (x.security != null ? ' (' + x.security.toFixed(1) + ')' : '')
+          + ' - ' + (lastMap.regions[b.rid] || '') + ' - ' + holder(x, lastMap.names)
+          + (tr && tr.dataset.ups !== '0' ? ', ' + tr.dataset.ups + ' upgrades marked' : '');
+        tip.style.left = (e.clientX - r.left + 14) + 'px';
+        tip.style.top = (e.clientY - r.top + 14) + 'px';
+        tip.classList.remove('d-none');
+      } else tip.classList.add('d-none');
     });
+    cvs.addEventListener('mouseleave', () => { tip.classList.add('d-none'); if (hover) { hover = null; requestRender(); } });
+    cvs.addEventListener('click', e => {
+      if (moved) return;                           // the end of a drag is not a click
+      const r = cvs.getBoundingClientRect();
+      const b = hitTest(e.clientX - r.left, e.clientY - r.top);
+      if (!b) return;
+      if (b.own) select(b.id, false);
+      sovDetail(b.id);
+    });
+    window.addEventListener('resize', requestRender);
   }
 
   function select(id, jump) {
     rows.forEach(r => r.classList.toggle('sel', r.dataset.id === String(id)));
-    document.querySelectorAll('#sov-map .sys').forEach(c => c.classList.toggle('sel', c.dataset.id === String(id)));
+    selected = +id;
+    requestRender();
     if (jump) {
       document.querySelector('#sov-tabs [data-tab="list"]').click();
       const tr = document.getElementById('sys-' + id);
@@ -986,7 +1056,7 @@
     if (!o) { try { o = localStorage.getItem('sovMapOverlay'); } catch (e) {} }
     if (o && $('sov-map-overlay').querySelector('option[value="' + o + '"]')) $('sov-map-overlay').value = o;
   }
-  $('sov-map-fit').addEventListener('click', () => { if (fitVB) { vb = fitVB.slice(); setVB(); } });
+  $('sov-map-fit').addEventListener('click', fitWorld);
   $('sov-map-overlay').addEventListener('change', () => {
     try { localStorage.setItem('sovMapOverlay', $('sov-map-overlay').value); } catch (e) {}
     paint();

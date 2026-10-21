@@ -508,9 +508,9 @@ def test_the_list_and_the_map_lead_to_each_other(client, held):
     row = row[:row.index("</tr>")]
     assert "sovShowOnMap(%d," % held in row and "sovDetail(%d)" % held in row
     assert 'id="det-map"' in html and "window.sovShowOnMap" in html
-    script = html[html.index("async function drawUniverse"):]
-    click = script[script.index("addEventListener('click'"):][:200]
-    assert "sovDetail(s.id)" in click, "a dot on the map opens the system's detail"
+    script = html[html.index("function bindMapControls"):]
+    click = script[script.index("cvs.addEventListener('click'"):][:400]
+    assert "sovDetail(b.id)" in click, "a system on the map opens its detail"
 
 
 # ── Map overlays ─────────────────────────────────────────────────────────────
