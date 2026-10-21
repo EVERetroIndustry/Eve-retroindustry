@@ -477,11 +477,15 @@
 
   // ── View ──
   // The map fills the window below its controls, whatever the window's size;
-  // never shorter than 360 px.
+  // never shorter than 280 px.
   function fitHeight() {
     const top = cvs.getBoundingClientRect().top + window.scrollY;
-    const h = Math.max(360, Math.round(window.innerHeight - top - 16));
-    if (cvs.style.height !== h + 'px') cvs.style.height = h + 'px';
+    let h = Math.max(280, Math.round(window.innerHeight - top - 16));
+    cvs.style.height = h + 'px';
+    // Whatever sits below the map (page padding, footer) is measured, not
+    // guessed: if the page still overflows, take exactly that much off.
+    const over = document.documentElement.scrollHeight - window.innerHeight;
+    if (over > 0 && h - over >= 280) cvs.style.height = (h - over) + 'px';
   }
   function size() {
     const r = cvs.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
@@ -863,6 +867,8 @@
     if (npc) parts.push(npc + ' NPC space');
     if (free) parts.push(free + ' without a holder');
     $('sov-map-summary').innerHTML = parts.join(' &middot; ');
+    fitHeight();                         // the summary may wrap onto more lines
+    requestRender();
   }
 
   let mapReady = null;
