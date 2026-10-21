@@ -39,6 +39,12 @@ SDE_TABLES = {
     "sde_stations",
     "sde_systems",
     "rig_bonuses",
+    # The map around a system (sovereignty view): import_sde.import_map.
+    "sde_regions",
+    "sde_constellations",
+    "sde_map_systems",
+    "sde_stargate_links",
+    "sde_system_planets",
     META_TABLE,
 }
 
@@ -98,6 +104,10 @@ def main() -> None:
     conn_dst.executemany(
         f"INSERT OR REPLACE INTO {META_TABLE} (key, value) VALUES (?,?)",
         [("sde_build", build),
+         # The map tables can come from a newer zip than the rest (they were
+         # first added to a bundle built from an older one); a full rebuild
+         # makes them the same build again.
+         ("map_build", build),
          ("built_at", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
          ("type_count", str(count))])
     print(f"  Stamped sde_meta: build={build or 'unknown'}, {count} types")

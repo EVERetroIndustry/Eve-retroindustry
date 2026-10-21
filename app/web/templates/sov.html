@@ -1,0 +1,434 @@
+{% extends "base.html" %}
+{% block title %}Sovereignty - EVE Retroindustry{% endblock %}
+{% block content %}
+
+<style>
+  .sov-sec { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .sov-sec.s-neg { color: #f85149; }
+  .sov-sec.s-low { color: #e6b84a; }
+  .sov-up { font-size: .72rem; font-weight: 500; margin: 1px 2px 1px 0; }
+  .sov-up.g4768 { background: rgba(123,184,236,.18); color: #9fcbf2; }
+  .sov-up.g4772 { background: rgba(227,179,65,.16); color: #e3b341; }
+  .sov-up.g4838 { background: rgba(63,185,80,.16); color: #56d364; }
+  .sov-up.g4839 { background: rgba(188,140,255,.16); color: #c9a7ff; }
+  .sov-planets { font-size: .78rem; white-space: nowrap; }
+  .sov-planets span + span::before { content: " \00b7 "; color: #6e7681; }
+  .sov-a0 { color: #9fcbf2; font-weight: 600; }
+  #sov-map { width: 100%; height: 640px; background: #0b0f14; border-radius: 6px; cursor: grab; }
+  #sov-map .lnk { stroke: #30363d; stroke-width: 1; vector-effect: non-scaling-stroke; }
+  #sov-map .sys { fill: #7bb8ec; stroke: #0b0f14; stroke-width: 1; vector-effect: non-scaling-stroke; cursor: pointer; }
+  #sov-map .sys.nohub { fill: #6e7681; }
+  #sov-map .sys.other { fill: none; stroke: #6e7681; stroke-width: 1.5; cursor: default; }
+  #sov-map text.other { fill: #6e7681; font-size: 12px; }
+  #sov-map .sys.camp { fill: #f85149; }
+  #sov-map .sys.dim { opacity: .18; }
+  #sov-map .sys.sel { stroke: #e3b341; stroke-width: 3; }
+  #sov-map text { fill: #c9d1d9; font-size: 15px; pointer-events: none; paint-order: stroke;
+                  stroke: #0b0f14; stroke-width: 3px; }
+  #sov-map text.dim { display: none; }
+  tr.sov-row.sel td { background: rgba(227,179,65,.08); }
+</style>
+
+<div class="row mb-3 align-items-center g-2">
+  <div class="col">
+    <h4 class="mb-0"><i class="bi bi-flag me-2 text-primary"></i>Sovereignty
+      {% if systems %}<span class="badge bg-secondary ms-2">{{ systems | length | plural('system') }}</span>{% endif %}
+    </h4>
+  </div>
+  {% if alliances | length > 1 %}
+  <div class="col-auto">
+    <select class="form-select form-select-sm" onchange="location.href='/sov?alliance='+this.value">
+      {% for a in alliances %}
+      <option value="{{ a.id }}" {% if a.id == selected %}selected{% endif %}>{{ a.name }}{% if a.ticker %} [{{ a.ticker }}]{% endif %}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% elif alliances %}
+  <div class="col-auto text-muted small">{{ alliances[0].name }}{% if alliances[0].ticker %} [{{ alliances[0].ticker }}]{% endif %}</div>
+  {% endif %}
+  <div class="col-auto d-flex align-items-center gap-2">
+    <span class="text-muted small" id="sov-age">
+      {% if last_ok %}{% set age = last_ok | age_short %}hubs and campaigns read {{ 'just now' if age == 'now' else age ~ ' ago' }}{% elif running %}reading hubs and campaigns...{% endif %}
+    </span>
+    <button type="button" class="btn btn-sm btn-outline-secondary" id="sov-refresh" onclick="sovRefresh()">
+      <i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+  </div>
+</div>
+
+{% if not has_map %}
+<div class="alert alert-warning py-2 small">The map data is missing from this installation's static data. Restart the app to refresh it.</div>
+{% elif not alliances %}
+<div class="alert alert-secondary py-2 small">None of the added characters is in an alliance, so there is no sovereignty to show.</div>
+{% elif not systems %}
+<div class="alert alert-secondary py-2 small">
+  {% if last_ok %}This alliance holds no systems.{% else %}Sovereignty has not been read yet{% if running %} - reading it now{% endif %}.{% endif %}
+</div>
+{% else %}
+
+<div class="small text-muted mb-2">
+  <i class="bi bi-info-circle me-1"></i>ESI does not publish which upgrades are installed in a hub.
+  Mark them per system with <i class="bi bi-pencil-square"></i>; they are kept on this computer only.
+  Planets and the star come from the static data; the power and workforce the client computes from them are not shown.
+</div>
+
+<div class="card mb-3"><div class="card-body py-2">
+  <div class="row g-2 align-items-center">
+    <div class="col-auto"><input type="search" id="f-q" class="form-control form-control-sm" placeholder="System, constellation, region" style="width:220px"></div>
+    <div class="col-auto"><select id="f-region" class="form-select form-select-sm"><option value="">All regions</option>
+      {% for r in systems | map(attribute='region') | unique | sort %}<option>{{ r }}</option>{% endfor %}</select></div>
+    <div class="col-auto"><select id="f-up" class="form-select form-select-sm" style="max-width:260px">
+      <option value="">Any upgrades</option><option value="none">No upgrades marked</option><option value="any">Some upgrade marked</option>
+      {% for gid, gname in upgrade_groups.items() %}<optgroup label="{{ gname }}">
+        {% for u in catalogue if u.group_id == gid %}<option value="{{ u.type_id }}">{{ u.name }}</option>{% endfor %}
+      </optgroup>{% endfor %}
+    </select></div>
+    <div class="col-auto"><select id="f-planet" class="form-select form-select-sm"><option value="">Any planets</option>
+      {% for k in ['Barren','Gas','Ice','Lava','Oceanic','Plasma','Storm','Temperate','Shattered'] %}<option value="{{ k }}">Has {{ k }}</option>{% endfor %}
+    </select></div>
+    <div class="col-auto form-check form-check-inline ms-2"><input class="form-check-input" type="checkbox" id="f-a0"><label class="form-check-label small" for="f-a0">A0 star</label></div>
+    <div class="col-auto form-check form-check-inline"><input class="form-check-input" type="checkbox" id="f-hub"><label class="form-check-label small" for="f-hub">Has a hub</label></div>
+    <div class="col-auto form-check form-check-inline"><input class="form-check-input" type="checkbox" id="f-camp"><label class="form-check-label small" for="f-camp">Contested</label></div>
+    <div class="col-auto form-check form-check-inline"><input class="form-check-input" type="checkbox" id="f-mined"><label class="form-check-label small" for="f-mined">Mined in (30 d)</label></div>
+    <div class="col text-end small text-muted" id="f-count"></div>
+  </div>
+</div></div>
+
+<ul class="nav nav-tabs mb-2" id="sov-tabs">
+  <li class="nav-item"><button class="nav-link active" data-tab="list" type="button">List</button></li>
+  <li class="nav-item"><button class="nav-link" data-tab="map" type="button">Map</button></li>
+</ul>
+
+<div id="tab-list">
+<div class="table-responsive">
+<table class="table table-dark table-hover tbl-compact align-middle" id="sov-table">
+  <thead><tr>
+    <th data-key="name" data-type="str" class="sortable">System</th>
+    <th data-key="sec" data-type="num" class="sortable text-end">Sec</th>
+    <th data-key="const" data-type="str" class="sortable">Constellation</th>
+    <th data-key="region" data-type="str" class="sortable">Region</th>
+    <th data-key="star" data-type="str" class="sortable" title="Spectral class of the system's star">Star</th>
+    <th data-key="adm" data-type="num" class="sortable text-end" title="Activity Defense Multiplier of the Sovereignty Hub">ADM</th>
+    <th data-key="vuln" data-type="str" class="sortable" title="The hub's current vulnerability window (UTC)">Vulnerable</th>
+    <th data-key="belts" data-type="num" class="sortable text-end" title="Asteroid belts in the static data">Belts</th>
+    <th>Planets</th>
+    <th data-key="ups" data-type="num" class="sortable">Upgrades</th>
+    <th data-key="mined" data-type="num" class="sortable text-end" title="Units your characters mined here in the last 30 days (ESI mining ledger)">Mined 30 d</th>
+    <th></th>
+  </tr></thead>
+  <tbody>
+  {% for s in systems %}
+  {% set vuln = (s.vuln_start[11:16] ~ '-' ~ s.vuln_end[11:16]) if s.vuln_start and s.vuln_end else '' %}
+  <tr class="sov-row" id="sys-{{ s.system_id }}" data-id="{{ s.system_id }}"
+      data-name="{{ s.name }}" data-sec="{{ s.security if s.security is not none else '' }}"
+      data-const="{{ s.constellation }}" data-region="{{ s.region }}" data-star="{{ s.star_class }}"
+      data-adm="{{ s.adm if s.adm is not none else '' }}" data-vuln="{{ vuln }}" data-belts="{{ s.belts }}"
+      data-ups="{{ s.upgrades | length }}" data-upids="{{ s.upgrades | map(attribute='type_id') | join(',') }}"
+      data-planets="{{ s.planets.keys() | join(',') }}" data-a0="{{ 1 if s.a0 else 0 }}"
+      data-hub="{{ 1 if s.hub else 0 }}" data-camp="{{ 1 if s.campaigns else 0 }}"
+      data-mined="{{ s.mined.units if s.mined else 0 }}">
+    <td class="fw-medium">{{ s.name }}
+      {% for c in s.campaigns %}<span class="badge bg-danger ms-1" title="{{ c.event | replace('_', ' ') }} from {{ c.start[:16] | replace('T', ' ') }} UTC, defender {{ ((c.defender or 0) * 100) | round | int }} %">contested</span>{% endfor %}
+    </td>
+    <td class="text-end"><span class="sov-sec {{ 's-neg' if (s.security_shown or 0) <= 0 else 's-low' }}">{{ '%.1f' | format(s.security_shown) if s.security_shown is not none else '-' }}</span></td>
+    <td>{{ s.constellation }}</td>
+    <td>{{ s.region }}</td>
+    <td class="{{ 'sov-a0' if s.a0 }}">{{ s.star_class or '-' }}</td>
+    <td class="text-end">{{ '%.1f' | format(s.adm) if s.adm is not none else '-' }}</td>
+    <td>{{ vuln or ('no hub' if not s.hub else '-') }}</td>
+    <td class="text-end">{{ s.belts }}</td>
+    <td class="sov-planets">{% for k, n in s.planets | dictsort %}<span>{{ k }} {{ n }}</span>{% endfor %}</td>
+    <td class="sov-ups">{% for u in s.upgrades %}<span class="badge sov-up g{{ u.group_id }}" title="{{ u.group }}">{{ u.name }}</span>{% endfor %}</td>
+    <td class="text-end">{% if s.mined %}<span title="last mined {{ s.mined.last }}">{{ s.mined.units | count_eu }}</span>{% else %}-{% endif %}</td>
+    <td class="text-end"><button type="button" class="btn btn-sm btn-link p-0" title="Mark installed upgrades" onclick="sovEdit({{ s.system_id }})"><i class="bi bi-pencil-square"></i></button></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+</div>
+
+<div id="tab-map" class="d-none">
+  <div class="d-flex flex-wrap gap-1 mb-2" id="sov-map-regions"></div>
+  <div class="small text-muted mb-1">Scroll to zoom, drag to move. Filled: this alliance (blue with a hub, grey without, red contested); hollow: held by someone else or nobody. This alliance's systems outside the filter are dimmed; click one to find it in the list.</div>
+  <svg id="sov-map" xmlns="http://www.w3.org/2000/svg"></svg>
+</div>
+
+<div class="modal fade" id="sovUpModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-scrollable"><div class="modal-content bg-dark text-light">
+    <div class="modal-header py-2"><h6 class="modal-title" id="sov-up-title">Upgrades</h6>
+      <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body" id="sov-up-body">
+      {% for gid, gname in upgrade_groups.items() %}
+      <div class="small text-muted mt-2 mb-1">{{ gname }}</div>
+      {% for u in catalogue if u.group_id == gid %}
+      <div class="form-check"><input class="form-check-input sov-up-cb" type="checkbox" value="{{ u.type_id }}" id="up-{{ u.type_id }}" data-group="{{ u.group_id }}" data-gname="{{ u.group }}">
+        <label class="form-check-label small" for="up-{{ u.type_id }}">{{ u.name }}</label></div>
+      {% endfor %}{% endfor %}
+    </div>
+    <div class="modal-footer py-2"><span class="small text-danger me-auto" id="sov-up-err"></span>
+      <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+      <button type="button" class="btn btn-sm btn-primary" onclick="sovSave()">Save</button></div>
+  </div></div>
+</div>
+
+{% endif %}
+
+<script>
+(function () {
+  window.sovRefresh = async function () {
+    const btn = document.getElementById('sov-refresh');
+    btn.disabled = true;
+    document.getElementById('sov-age').textContent = 'reading hubs and campaigns...';
+    try {
+      const r = await fetch('/api/activity/run', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                                  body: JSON.stringify({key: 'sov'})});
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      for (let i = 0; i < 60; i++) {
+        await new Promise(res => setTimeout(res, 1000));
+        const snap = await (window.rawFetch || fetch)('/api/activity').then(x => x.json());
+        const job = (snap.jobs || []).find(j => j.key === 'sov');
+        if (job && job.state !== 'running' && job.state !== 'queued') {
+          if (job.state === 'error') { document.getElementById('sov-age').textContent = job.reason || 'refresh failed'; btn.disabled = false; return; }
+          location.reload(); return;
+        }
+      }
+    } catch (e) {
+      document.getElementById('sov-age').textContent = 'refresh failed: ' + e.message;
+    }
+    btn.disabled = false;
+  };
+
+  const table = document.getElementById('sov-table');
+  if (!table) return;
+  const rows = Array.from(table.querySelectorAll('tbody tr.sov-row'));
+  const $ = id => document.getElementById(id);
+
+  function matches(tr) {
+    const d = tr.dataset;
+    const q = $('f-q').value.trim().toLowerCase();
+    if (q && !(d.name + ' ' + d.const + ' ' + d.region).toLowerCase().includes(q)) return false;
+    if ($('f-region').value && d.region !== $('f-region').value) return false;
+    const up = $('f-up').value;
+    if (up === 'none' && d.ups !== '0') return false;
+    if (up === 'any' && d.ups === '0') return false;
+    if (up && up !== 'none' && up !== 'any' && !d.upids.split(',').includes(up)) return false;
+    const pl = $('f-planet').value;
+    if (pl && !d.planets.split(',').includes(pl)) return false;
+    if ($('f-a0').checked && d.a0 !== '1') return false;
+    if ($('f-hub').checked && d.hub !== '1') return false;
+    if ($('f-camp').checked && d.camp !== '1') return false;
+    if ($('f-mined').checked && d.mined === '0') return false;
+    return true;
+  }
+
+  function apply() {
+    let n = 0;
+    const shown = new Set();
+    for (const tr of rows) {
+      const ok = matches(tr);
+      tr.classList.toggle('d-none', !ok);
+      if (ok) { n++; shown.add(tr.dataset.id); }
+    }
+    $('f-count').textContent = n === rows.length ? rows.length + ' systems' : n + ' of ' + rows.length + ' shown';
+    document.querySelectorAll('#sov-map .sys:not(.other)').forEach(c => c.classList.toggle('dim', !shown.has(c.dataset.id)));
+    document.querySelectorAll('#sov-map text.own').forEach(t => t.classList.toggle('dim', !shown.has(t.dataset.id)));
+  }
+  ['f-q', 'f-region', 'f-up', 'f-planet', 'f-a0', 'f-hub', 'f-camp', 'f-mined'].forEach(id => {
+    $(id).addEventListener(id === 'f-q' ? 'input' : 'change', apply);
+  });
+
+  // Sorting by the header's data-key over the rows' data-* values.
+  let sortKey = null, sortDir = 1;
+  table.querySelectorAll('th.sortable').forEach(th => {
+    th.style.cursor = 'pointer';
+    th.addEventListener('click', () => {
+      const key = th.dataset.key, num = th.dataset.type === 'num';
+      sortDir = sortKey === key ? -sortDir : (num ? -1 : 1);
+      sortKey = key;
+      const val = tr => {
+        const v = tr.dataset[key];
+        if (!num) return (v || '').toLowerCase();
+        return v === '' ? -Infinity : parseFloat(v);
+      };
+      rows.sort((a, b) => { const x = val(a), y = val(b); return (x < y ? -1 : x > y ? 1 : 0) * sortDir; });
+      const tb = table.querySelector('tbody');
+      rows.forEach(r => tb.appendChild(r));
+      table.querySelectorAll('th.sortable').forEach(h => h.classList.remove('text-primary'));
+      th.classList.add('text-primary');
+    });
+  });
+
+  // Tabs
+  document.getElementById('sov-tabs').addEventListener('click', e => {
+    const b = e.target.closest('[data-tab]');
+    if (!b) return;
+    document.querySelectorAll('#sov-tabs .nav-link').forEach(x => x.classList.toggle('active', x === b));
+    $('tab-list').classList.toggle('d-none', b.dataset.tab !== 'list');
+    $('tab-map').classList.toggle('d-none', b.dataset.tab !== 'map');
+    if (b.dataset.tab === 'map') drawMap();
+  });
+
+  // Map: one region at a time, as the client draws it - CCP's flattened 2D
+  // positions, every system of the region, the alliance's own ones coloured.
+  const OWN = {{ selected | tojson }};
+  const REGIONS = {{ systems | map(attribute='region_id') | list | tojson if systems else '[]' }};
+  const REGION_NAMES = {{ systems | map(attribute='region') | list | tojson if systems else '[]' }};
+  let mapRegion = null, vb = null;
+  const svg = $('sov-map'), NS = 'http://www.w3.org/2000/svg';
+  const setVB = () => svg.setAttribute('viewBox', vb.join(' '));
+
+  function regionButtons() {
+    const counts = new Map();
+    REGIONS.forEach((rid, i) => {
+      const c = counts.get(rid) || {name: REGION_NAMES[i], n: 0};
+      c.n++; counts.set(rid, c);
+    });
+    const box = $('sov-map-regions');
+    box.innerHTML = '';
+    [...counts.entries()].sort((a, b) => b[1].n - a[1].n).forEach(([rid, c]) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn btn-sm btn-outline-secondary';
+      b.dataset.rid = rid;
+      b.textContent = c.name + ' (' + c.n + ')';
+      b.addEventListener('click', () => drawRegion(rid));
+      box.appendChild(b);
+    });
+    return [...counts.entries()].sort((a, b) => b[1].n - a[1].n)[0][0];
+  }
+
+  async function drawRegion(rid) {
+    mapRegion = rid;
+    document.querySelectorAll('#sov-map-regions .btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.rid === String(rid)));
+    const d = await fetch('/api/sov/region-map?region_id=' + rid).then(r => r.json());
+    svg.innerHTML = '';
+    const pts = {};
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    d.systems.forEach(s => {
+      const x = s.x, y = -s.y;
+      pts[s.id] = [x, y];
+      minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+    });
+    const S = 1000 / (Math.max(maxX - minX, maxY - minY) || 1);
+    for (const id in pts) pts[id] = [(pts[id][0] - minX) * S, (pts[id][1] - minY) * S];
+    const pad = 60;
+    vb = [-pad, -pad, (maxX - minX) * S + 2 * pad, (maxY - minY) * S + 2 * pad];
+    setVB();
+    const g = document.createElementNS(NS, 'g');
+    for (const [a, b] of d.links) {
+      const l = document.createElementNS(NS, 'line');
+      l.setAttribute('x1', pts[a][0]); l.setAttribute('y1', pts[a][1]);
+      l.setAttribute('x2', pts[b][0]); l.setAttribute('y2', pts[b][1]);
+      l.setAttribute('class', 'lnk');
+      g.appendChild(l);
+    }
+    d.systems.forEach(s => {
+      const own = s.alliance_id === OWN;
+      const tr = own ? document.getElementById('sys-' + s.id) : null;
+      const c = document.createElementNS(NS, 'circle');
+      c.setAttribute('cx', pts[s.id][0]); c.setAttribute('cy', pts[s.id][1]);
+      c.setAttribute('r', own ? 9 : 5);
+      let cls = own ? 'sys' : 'sys other';
+      if (tr && tr.dataset.hub !== '1') cls += ' nohub';
+      if (tr && tr.dataset.camp === '1') cls += ' camp';
+      c.setAttribute('class', cls);
+      c.dataset.id = s.id;
+      const t = document.createElementNS(NS, 'title');
+      t.textContent = s.name + (s.security != null ? ' (' + s.security.toFixed(1) + ')' : '')
+        + (tr ? (tr.dataset.ups !== '0' ? ' - ' + tr.dataset.ups + ' upgrades marked' : '')
+              : ' - held by someone else');
+      c.appendChild(t);
+      if (own) c.addEventListener('click', () => select(s.id, true));
+      g.appendChild(c);
+      const lab = document.createElementNS(NS, 'text');
+      lab.setAttribute('x', pts[s.id][0] + (own ? 12 : 8)); lab.setAttribute('y', pts[s.id][1] + 4);
+      lab.setAttribute('class', own ? 'own' : 'other');
+      lab.textContent = s.name;
+      lab.dataset.id = s.id;
+      g.appendChild(lab);
+    });
+    svg.appendChild(g);
+    apply();
+  }
+
+  let mapReady = false;
+  function drawMap() {
+    if (mapReady) return;
+    mapReady = true;
+    drawRegion(regionButtons());
+    svg.addEventListener('wheel', e => {
+      e.preventDefault();
+      const rect = svg.getBoundingClientRect();
+      const mx = vb[0] + (e.clientX - rect.left) / rect.width * vb[2];
+      const my = vb[1] + (e.clientY - rect.top) / rect.height * vb[3];
+      const k = e.deltaY > 0 ? 1.2 : 1 / 1.2;
+      vb = [mx - (mx - vb[0]) * k, my - (my - vb[1]) * k, vb[2] * k, vb[3] * k];
+      setVB();
+    }, {passive: false});
+    let drag = null;
+    svg.addEventListener('mousedown', e => { drag = [e.clientX, e.clientY, vb[0], vb[1]]; svg.style.cursor = 'grabbing'; });
+    window.addEventListener('mouseup', () => { drag = null; svg.style.cursor = ''; });
+    window.addEventListener('mousemove', e => {
+      if (!drag) return;
+      const rect = svg.getBoundingClientRect();
+      vb[0] = drag[2] - (e.clientX - drag[0]) / rect.width * vb[2];
+      vb[1] = drag[3] - (e.clientY - drag[1]) / rect.height * vb[3];
+      setVB();
+    });
+  }
+
+  function select(id, jump) {
+    rows.forEach(r => r.classList.toggle('sel', r.dataset.id === String(id)));
+    document.querySelectorAll('#sov-map .sys').forEach(c => c.classList.toggle('sel', c.dataset.id === String(id)));
+    if (jump) {
+      document.querySelector('#sov-tabs [data-tab="list"]').click();
+      const tr = document.getElementById('sys-' + id);
+      if (tr) tr.scrollIntoView({block: 'center'});
+    }
+  }
+
+  // Manual upgrades
+  let editing = null;
+  const modal = () => bootstrap.Modal.getOrCreateInstance($('sovUpModal'));
+  window.sovEdit = function (id) {
+    editing = id;
+    const tr = document.getElementById('sys-' + id);
+    const have = new Set((tr.dataset.upids || '').split(',').filter(Boolean));
+    document.querySelectorAll('.sov-up-cb').forEach(cb => { cb.checked = have.has(cb.value); });
+    $('sov-up-title').textContent = 'Upgrades installed in ' + tr.dataset.name;
+    $('sov-up-err').textContent = '';
+    modal().show();
+  };
+  window.sovSave = async function () {
+    const ids = Array.from(document.querySelectorAll('.sov-up-cb:checked')).map(cb => +cb.value);
+    try {
+      const r = await fetch('/api/sov/upgrades', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                                  body: JSON.stringify({system_id: editing, type_ids: ids})});
+      const d = await r.json();
+      if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
+      const tr = document.getElementById('sys-' + editing);
+      tr.dataset.upids = d.type_ids.join(',');
+      tr.dataset.ups = String(d.type_ids.length);
+      const cell = tr.querySelector('.sov-ups');
+      cell.innerHTML = '';
+      d.type_ids.forEach(t => {
+        const cb = document.getElementById('up-' + t);
+        const span = document.createElement('span');
+        span.className = 'badge sov-up g' + cb.dataset.group;
+        span.title = cb.dataset.gname;
+        span.textContent = cb.nextElementSibling.textContent.trim();
+        cell.appendChild(span);
+      });
+      modal().hide();
+      apply();
+    } catch (e) {
+      $('sov-up-err').textContent = 'Not saved: ' + e.message;
+    }
+  };
+
+  apply();
+  if (location.hash === '#map') document.querySelector('#sov-tabs [data-tab="map"]').click();
+})();
+</script>
+{% endblock %}

@@ -259,6 +259,13 @@ _SDE_TABLES_TO_REFRESH = (
     # so a user database kept whatever the SDE looked like when it was first filled.
     # The bundled copy is rebuilt from the current SDE, so refresh it too.
     "rig_bonuses",
+    # The map around a system, for the sovereignty view: region, constellation,
+    # security, star, planets by kind, belts and the gate links.
+    "sde_regions",
+    "sde_constellations",
+    "sde_map_systems",
+    "sde_stargate_links",
+    "sde_system_planets",
 )
 
 
@@ -10036,6 +10043,108 @@ def _industry_last_ok() -> float | None:
     return None if a is None or b is None else min(a, b)
 
 
+# ── Sovereignty ──────────────────────────────────────────────────────────────
+
+from fastapi.responses import JSONResponse  # noqa: E402
+from app.web import sov_helper as sov_api   # noqa: E402
+
+
+async def _my_alliances(conn: sqlite3.Connection) -> list[int]:
+    """Alliances the added characters are in (through their corporations)."""
+    corp_ids = set()
+    for cid, _name in list_characters(conn):
+        row = get_character_row(conn, cid) or {}
+        if row.get("corporation_id"):
+            corp_ids.add(row["corporation_id"])
+    if not corp_ids:
+        return []
+    return sorted(set((await _corp_alliance_ids(conn, corp_ids)).values()))
+
+
+async def _job_sov(report) -> dict:
+    conn = get_conn()
+    try:
+        res = await sov_api.refresh_sov(conn, report)
+        _mark_ok(conn, "sov")
+        return res
+    finally:
+        conn.close()
+
+
+def _sov_last_ok() -> float | None:
+    conn = get_conn()
+    try:
+        return sov_api.sov_last_ok(conn)
+    finally:
+        conn.close()
+
+
+@app.get("/sov", response_class=HTMLResponse)
+async def sov_page(request: Request, alliance: int = 0):
+    conn = get_conn()
+    try:
+        sov_api.ensure_sov_tables(conn)
+        mine = await _my_alliances(conn)
+        selected = alliance if alliance in mine else (mine[0] if mine else 0)
+        names = await sov_api.alliance_names(conn, mine)
+        systems = sov_api.systems_for(conn, [selected]) if selected else []
+        last_ok = sov_api.sov_last_ok(conn)
+        catalogue = sov_api.upgrade_catalogue(conn)
+        has_map = bool(conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='sde_map_systems'").fetchone())
+    finally:
+        conn.close()
+    if not last_ok and selected and bg.auto_update_enabled() and "sov" not in bg.manual_only():
+        bg.run_now("sov")                 # first visit: nothing stored yet
+    return _tr("sov.html", request, {
+        "alliances": [{"id": a, **names.get(a, {"name": str(a), "ticker": ""})} for a in mine],
+        "selected": selected, "systems": systems,
+        "last_ok": last_ok, "catalogue": catalogue,
+        "upgrade_groups": sov_api.UPGRADE_GROUPS, "has_map": has_map,
+        "running": bg.job_state("sov").running,
+    })
+
+
+@app.get("/api/sov/systems")
+async def api_sov_systems(alliance: int):
+    conn = get_conn()
+    try:
+        if alliance not in await _my_alliances(conn):
+            return JSONResponse({"error": "not one of your alliances"}, status_code=404)
+        return {"systems": sov_api.systems_for(conn, [alliance]),
+                "last_ok": sov_api.sov_last_ok(conn)}
+    finally:
+        conn.close()
+
+
+@app.get("/api/sov/region-map")
+async def api_sov_region_map(region_id: int):
+    conn = get_conn()
+    try:
+        return sov_api.region_map(conn, region_id)
+    finally:
+        conn.close()
+
+
+@app.post("/api/sov/upgrades")
+async def api_sov_upgrades(request: Request):
+    body = await request.json()
+    try:
+        system_id = int(body.get("system_id"))
+        type_ids = [int(t) for t in body.get("type_ids") or []]
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "system_id and type_ids are required"}, status_code=400)
+    conn = get_conn()
+    try:
+        if not conn.execute("SELECT 1 FROM sde_map_systems WHERE system_id=?",
+                            (system_id,)).fetchone():
+            return JSONResponse({"error": "unknown system"}, status_code=404)
+        kept = sov_api.set_manual_upgrades(conn, system_id, type_ids)
+    finally:
+        conn.close()
+    return {"ok": True, "type_ids": kept}
+
+
 def _register_background() -> None:
     bg.GATE.sde_ready = lambda: bool(_SDE_READY[0])
     bg.GATE.sync_running = lambda: bool(_sync_state["running"])
@@ -10085,6 +10194,11 @@ def _register_background() -> None:
     bg.register(bg.Job(
         key="industry", title="Industry indices and adjusted prices", group="industry",
         every=60 * 60, run=_job_industry, last_ok=_industry_last_ok, href="/plan"))
+    bg.register(bg.Job(
+        key="sov", title="Sovereignty hubs and campaigns", group="sovereignty",
+        every=sov_api.SOV_TTL, run=_job_sov, last_ok=_sov_last_ok,
+        applies=_characters_apply,
+        describe=lambda p: (p.get("pct"), p.get("detail") or ""), href="/sov"))
 
     bg.register_filler(bg.Filler(
         key="public", title="Public contracts", start=ensure_public_filler,

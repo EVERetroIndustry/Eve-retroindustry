@@ -507,6 +507,9 @@ window.renderContractItems = function (box, data, price) {
           <a class="nav-link {% if request.url.path.startswith('/jobs') %}active{% endif %}" href="/jobs" title="Jobs"><i class="bi bi-gear-wide-connected"></i><span class="nav-label">Jobs</span></a>
         </li>
         <li class="nav-item">
+          <a class="nav-link {% if request.url.path.startswith('/sov') %}active{% endif %}" href="/sov" title="Sovereignty"><i class="bi bi-flag"></i><span class="nav-label">Sov</span></a>
+        </li>
+        <li class="nav-item">
           <a class="nav-link {% if request.url.path.startswith('/planets') %}active{% endif %}" href="/planets" title="Planets"><i class="bi bi-globe-americas"></i><span class="nav-label">Planets</span><span id="nav-pi-badge" class="d-none badge rounded-pill ms-1" style="font-size:.6rem;vertical-align:top" title="PI extractors expiring within 24h"></span></a>
         </li>
       </ul>

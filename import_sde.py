@@ -308,6 +308,153 @@ def import_universe(conn: sqlite3.Connection):
                   + (f" ([red]{n_nn}[/] without a name)" if n_nn else ""))
 
 
+# Planet type -> the kind a sovereignty hub cares about. Two type ids exist for
+# most kinds (11 and 56023 are both "Planet (Temperate)"), so the kind is stored
+# as text and read from the type's own name, not from a hand-kept id list.
+_PLANET_KIND_RE = re.compile(r"^Planet \((.+)\)$")
+
+
+def _map_tables(conn: sqlite3.Connection) -> None:
+    conn.executescript("""
+        DROP TABLE IF EXISTS sde_regions;
+        DROP TABLE IF EXISTS sde_constellations;
+        DROP TABLE IF EXISTS sde_map_systems;
+        DROP TABLE IF EXISTS sde_stargate_links;
+        DROP TABLE IF EXISTS sde_system_planets;
+        CREATE TABLE sde_regions (
+            region_id INTEGER PRIMARY KEY,
+            name      TEXT
+        );
+        CREATE TABLE sde_constellations (
+            constellation_id INTEGER PRIMARY KEY,
+            name             TEXT,
+            region_id        INTEGER
+        );
+        -- security: the raw securityStatus, not the rounded figure the client
+        -- shows. star_class: the spectral class ("A0", "K2 V" ...). x2d/y2d: the
+        -- flattened map position CCP ships for drawing; x/y/z: the real position,
+        -- for systems that have no 2D one. belts: asteroid belts at a planet.
+        CREATE TABLE sde_map_systems (
+            system_id        INTEGER PRIMARY KEY,
+            constellation_id INTEGER,
+            region_id        INTEGER,
+            security         REAL,
+            star_class       TEXT,
+            x2d REAL, y2d REAL,
+            x REAL, y REAL, z REAL,
+            belts            INTEGER
+        );
+        -- Each gate pair once, low id first: the gate network is undirected.
+        CREATE TABLE sde_stargate_links (
+            a INTEGER,
+            b INTEGER,
+            PRIMARY KEY (a, b)
+        );
+        CREATE TABLE sde_system_planets (
+            system_id INTEGER,
+            kind      TEXT,
+            count     INTEGER,
+            PRIMARY KEY (system_id, kind)
+        );
+        CREATE INDEX idx_sde_map_systems_region ON sde_map_systems(region_id);
+    """)
+
+
+def import_map(conn: sqlite3.Connection, zip_path: str | None = None) -> str | None:
+    """The map around a solar system: region, constellation, security, star,
+    planets by kind, belts, and the gate links between systems.
+
+    This is what a sovereignty view stands on. A hub's power and workforce come
+    from the planets and the star of its system, and the client shows them
+    nowhere outside that system - but which planets and which star a system has
+    is static data, so it can be answered offline for the whole map at once.
+
+    Needs the flat layout (build 3482594 onwards); returns the zip used, or None.
+    """
+    if zip_path is None:
+        flat = [p for p in sorted(glob.glob(os.path.join(_DATA_DIR, "*.zip")), reverse=True)
+                if _zip_layout(p) == "flat"]
+        if not flat:
+            console.print("[yellow]No flat-layout SDE zip in data/ - skipping the map[/]")
+            return None
+        # Newest by build number in the name, not by name order: "sde.zip"
+        # sorts after every "eve-online-static-data-..." zip.
+        zip_path = max(flat, key=lambda p: int((re.findall(r"(\d{6,})", os.path.basename(p))
+                                                or ["0"])[0]))
+    _map_tables(conn)
+    with zipfile.ZipFile(zip_path) as z:
+        regions = _yaml_load(z.read("mapRegions.yaml")) or {}
+        consts = _yaml_load(z.read("mapConstellations.yaml")) or {}
+        systems = _yaml_load(z.read("mapSolarSystems.yaml")) or {}
+        stars = _yaml_load(z.read("mapStars.yaml")) or {}
+        gates = _yaml_load(z.read("mapStargates.yaml")) or {}
+        planets = _yaml_load(z.read("mapPlanets.yaml")) or {}
+        belts = _yaml_load(z.read("mapAsteroidBelts.yaml")) or {}
+        types = {tid: _en((rec or {}).get("name")) or ""
+                 for tid, rec in (_yaml_load(z.read("types.yaml")) or {}).items()
+                 if (rec or {}).get("groupID") == 7}
+
+    conn.executemany("INSERT INTO sde_regions VALUES (?,?)",
+                     [(int(rid), _en(r.get("name")) or "") for rid, r in regions.items()])
+    conn.executemany("INSERT INTO sde_constellations VALUES (?,?,?)",
+                     [(int(cid), _en(c.get("name")) or "", c.get("regionID"))
+                      for cid, c in consts.items()])
+
+    belt_count: dict[int, int] = {}
+    for rec in belts.values():
+        sid = rec.get("solarSystemID")
+        if sid:
+            belt_count[sid] = belt_count.get(sid, 0) + 1
+    rows = []
+    for sid, s in systems.items():
+        star = stars.get(s.get("starID")) or {}
+        p2 = s.get("position2D") or {}
+        p3 = s.get("position") or {}
+        rows.append((int(sid), s.get("constellationID"), s.get("regionID"),
+                     s.get("securityStatus"),
+                     (star.get("statistics") or {}).get("spectralClass"),
+                     p2.get("x"), p2.get("y"), p3.get("x"), p3.get("y"), p3.get("z"),
+                     belt_count.get(int(sid), 0)))
+    conn.executemany("INSERT INTO sde_map_systems VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
+
+    links = set()
+    for g in gates.values():
+        a = g.get("solarSystemID")
+        b = (g.get("destination") or {}).get("solarSystemID")
+        if a and b and a != b:
+            links.add((min(a, b), max(a, b)))
+    conn.executemany("INSERT INTO sde_stargate_links VALUES (?,?)", sorted(links))
+
+    kinds: dict[tuple[int, str], int] = {}
+    unknown = set()
+    for p in planets.values():
+        m = _PLANET_KIND_RE.match(types.get(p.get("typeID"), ""))
+        if not m:
+            unknown.add(p.get("typeID"))
+            continue
+        key = (p.get("solarSystemID"), m.group(1))
+        kinds[key] = kinds.get(key, 0) + 1
+    conn.executemany("INSERT INTO sde_system_planets VALUES (?,?,?)",
+                     [(sid, kind, n) for (sid, kind), n in sorted(kinds.items())])
+    conn.commit()
+    console.print(f"  map: [green]{len(rows)}[/] systems, [green]{len(links)}[/] gate links,"
+                  f" [green]{sum(kinds.values())}[/] planets"
+                  + (f" ([red]{len(unknown)} planet types without a kind: {sorted(unknown)}[/])"
+                     if unknown else ""))
+    return zip_path
+
+
+def _zip_layout(path: str) -> str | None:
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = set(z.namelist())
+    except zipfile.BadZipFile:
+        return None
+    if "npcStations.yaml" in names and "mapSolarSystems.yaml" in names:
+        return "flat"
+    return "nested" if "bsd/staStations.yaml" in names else None
+
+
 def init_db(conn: sqlite3.Connection):
     conn.executescript("""
         -- volume / packaged_volume: how much space one unit takes, in m3. The two
@@ -598,6 +745,13 @@ def main():
         console.print(f"\n[bold green]Done in {time.time()-t0:.1f}s[/]")
         return
 
+    if "--map-only" in sys.argv:
+        t0 = time.time()
+        import_map(conn)
+        conn.close()
+        console.print(f"\n[bold green]Done in {time.time()-t0:.1f}s[/]")
+        return
+
     init_db(conn)
 
     t_start = time.time()
@@ -607,6 +761,7 @@ def main():
     import_groups(conn)
     import_planet_schematics(conn)
     import_universe(conn)
+    import_map(conn)
     conn.close()
 
     console.print(f"\n[bold green]Done in {time.time()-t_start:.1f}s[/]")

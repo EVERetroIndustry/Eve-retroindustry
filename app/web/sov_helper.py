@@ -1,0 +1,313 @@
+"""Sovereignty: which systems an alliance holds, what stands in them, and what
+the map says about each one.
+
+Sources, and what each one can and cannot say:
+
+* ESI `/sovereignty/map` - who holds every system (cached by contracts_helper,
+  which uses it for its own rule about prices in sov space).
+* ESI `/sovereignty/structures` - every Sovereignty Hub with its Activity
+  Defense Multiplier ("vulnerability_occupancy_level") and vulnerability window.
+  Since Equinox the hub is the only sovereignty structure; there are no TCUs.
+* ESI `/sovereignty/campaigns` - running and upcoming fights over hubs.
+* The SDE - region, constellation, security, star, planets by kind, belts and
+  gate links (import_sde.import_map).
+
+What none of them says: which upgrades are installed in a hub. ESI has no
+endpoint for it, so upgrades are entered by hand here, and the page says so.
+Nor does anything report how much power or workforce a system yields - the SDE
+carries the planets and the star, not the numbers the client computes from
+them, so the page shows the planets and makes no claim about the totals.
+
+/sovereignty/map and /sovereignty/structures answer 404 under our pinned
+compatibility date (2026-07-17) and under every newer one; they exist only under
+an older date. /sovereignty/campaigns answers under all of them.
+"""
+from __future__ import annotations
+
+import sqlite3
+import time
+
+import httpx
+
+from app.esi.client import esi_client
+from app.web.contracts_helper import _SOV_COMPAT_DATE, ensure_public_contract_tables
+
+_BASE = "https://esi.evetech.net"
+SOV_TTL = 60 * 60            # ESI caches all three for an hour
+
+# Hub upgrade groups in the SDE. Read by group, not by a list of type ids, so a
+# new upgrade CCP adds turns up without a code change.
+UPGRADE_GROUPS = {
+    4768: "Site detection",
+    4772: "Service infrastructure",
+    4838: "Colony resources",
+    4839: "System effect",
+}
+
+
+def ensure_sov_tables(conn: sqlite3.Connection) -> None:
+    ensure_public_contract_tables(conn)          # owns sov_map_cache
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS sov_hubs (
+            structure_id INTEGER PRIMARY KEY,
+            system_id    INTEGER,
+            alliance_id  INTEGER,
+            adm          REAL,
+            vuln_start   TEXT,
+            vuln_end     TEXT,
+            cached_at    REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_sov_hubs_system ON sov_hubs(system_id);
+        CREATE TABLE IF NOT EXISTS sov_campaigns (
+            campaign_id      INTEGER PRIMARY KEY,
+            system_id        INTEGER,
+            constellation_id INTEGER,
+            structure_id     INTEGER,
+            event_type       TEXT,
+            defender_id      INTEGER,
+            defender_score   REAL,
+            attackers_score  REAL,
+            start_time       TEXT,
+            cached_at        REAL
+        );
+        -- Entered by the user: ESI does not publish installed upgrades.
+        CREATE TABLE IF NOT EXISTS sov_upgrades_manual (
+            system_id INTEGER,
+            type_id   INTEGER,
+            added_at  REAL,
+            PRIMARY KEY (system_id, type_id)
+        );
+        CREATE TABLE IF NOT EXISTS sov_alliance_names (
+            alliance_id INTEGER PRIMARY KEY,
+            name        TEXT,
+            ticker      TEXT,
+            cached_at   REAL
+        );
+    """)
+    conn.commit()
+
+
+async def _get(client: httpx.AsyncClient, path: str) -> list[dict]:
+    """The whole answer or an exception - never a partial or empty stand-in,
+    because the caller replaces its table with whatever comes back."""
+    r = await client.get(f"{_BASE}/{path}",
+                         headers={"X-Compatibility-Date": _SOV_COMPAT_DATE})
+    r.raise_for_status()
+    data = r.json()
+    if not isinstance(data, list):
+        raise RuntimeError(f"ESI /{path} answered with something that is not a list")
+    return data
+
+
+async def refresh_sov(conn: sqlite3.Connection, report=None) -> dict:
+    """Hubs, campaigns and the sovereignty map, each stored whole or not at all.
+
+    The map is read here as well (not left to its 6-hour cache in
+    contracts_helper) because a hub list from now against a map from hours ago
+    would put a hub in a system its alliance no longer holds.
+    """
+    ensure_sov_tables(conn)
+    report = report or (lambda **kw: None)
+    async with esi_client(timeout=30) as client:
+        report(pct=10, detail="sovereignty map")
+        smap = await _get(client, "sovereignty/map")
+        report(pct=40, detail="hubs")
+        hubs = await _get(client, "sovereignty/structures")
+        report(pct=70, detail="campaigns")
+        camps = await _get(client, "sovereignty/campaigns")
+    if not smap:
+        # Every system in New Eden has an entry; an empty map is a broken answer.
+        raise RuntimeError("ESI returned an empty sovereignty map")
+    now = time.time()
+    conn.execute("DELETE FROM sov_map_cache")
+    conn.executemany(
+        "INSERT OR REPLACE INTO sov_map_cache (system_id, alliance_id, faction_id, cached_at)"
+        " VALUES (?,?,?,?)",
+        [(e.get("system_id"), e.get("alliance_id"), e.get("faction_id"), now)
+         for e in smap if e.get("system_id")])
+    conn.execute("DELETE FROM sov_hubs")
+    conn.executemany(
+        "INSERT OR REPLACE INTO sov_hubs VALUES (?,?,?,?,?,?,?)",
+        [(h.get("structure_id"), h.get("solar_system_id"), h.get("alliance_id"),
+          h.get("vulnerability_occupancy_level"), h.get("vulnerable_start_time"),
+          h.get("vulnerable_end_time"), now)
+         for h in hubs if h.get("structure_id")])
+    conn.execute("DELETE FROM sov_campaigns")
+    conn.executemany(
+        "INSERT OR REPLACE INTO sov_campaigns VALUES (?,?,?,?,?,?,?,?,?,?)",
+        [(c.get("campaign_id"), c.get("solar_system_id"), c.get("constellation_id"),
+          c.get("structure_id"), c.get("event_type"), c.get("defender_id"),
+          c.get("defender_score"), c.get("attackers_score"), c.get("start_time"), now)
+         for c in camps if c.get("campaign_id")])
+    conn.commit()
+    report(pct=100, detail="")
+    return {"systems": len(smap), "hubs": len(hubs), "campaigns": len(camps)}
+
+
+def sov_last_ok(conn: sqlite3.Connection) -> float | None:
+    ensure_sov_tables(conn)
+    row = conn.execute("SELECT MAX(cached_at) FROM sov_hubs").fetchone()
+    return row[0] if row and row[0] else None
+
+
+async def alliance_names(conn: sqlite3.Connection, ids) -> dict[int, dict]:
+    """alliance_id -> {name, ticker}; a week in the cache, stale kept on failure."""
+    ensure_sov_tables(conn)
+    ids = sorted({int(i) for i in ids if i})
+    out: dict[int, dict] = {}
+    miss = []
+    now = time.time()
+    for aid in ids:
+        row = conn.execute("SELECT name, ticker, cached_at FROM sov_alliance_names"
+                           " WHERE alliance_id=?", (aid,)).fetchone()
+        if row:
+            out[aid] = {"name": row[0], "ticker": row[1]}
+        if not row or now - (row[2] or 0) > 7 * 86400:
+            miss.append(aid)
+    if miss:
+        try:
+            async with esi_client(timeout=10) as client:
+                for aid in miss:
+                    r = await client.get(f"{_BASE}/latest/alliances/{aid}/")
+                    if r.status_code != 200:
+                        continue
+                    d = r.json()
+                    out[aid] = {"name": d.get("name") or str(aid), "ticker": d.get("ticker") or ""}
+                    conn.execute("INSERT OR REPLACE INTO sov_alliance_names VALUES (?,?,?,?)",
+                                 (aid, out[aid]["name"], out[aid]["ticker"], time.time()))
+            conn.commit()
+        except Exception:
+            pass                          # names are cosmetic; ids still work
+    return out
+
+
+def upgrade_catalogue(conn: sqlite3.Connection) -> list[dict]:
+    """Every published hub upgrade in the static data, grouped as the SDE does."""
+    ph = ",".join("?" * len(UPGRADE_GROUPS))
+    rows = conn.execute(
+        f"SELECT type_id, name, group_id FROM sde_types"
+        f" WHERE group_id IN ({ph}) AND published=1 ORDER BY group_id, name",
+        list(UPGRADE_GROUPS)).fetchall()
+    return [{"type_id": t, "name": n, "group_id": g, "group": UPGRADE_GROUPS[g]}
+            for t, n, g in rows]
+
+
+def set_manual_upgrades(conn: sqlite3.Connection, system_id: int, type_ids) -> list[int]:
+    """Replace what the user says is installed in `system_id`. Only hub upgrades
+    from the catalogue are accepted."""
+    ensure_sov_tables(conn)
+    valid = {u["type_id"] for u in upgrade_catalogue(conn)}
+    keep = sorted({int(t) for t in type_ids} & valid)
+    conn.execute("DELETE FROM sov_upgrades_manual WHERE system_id=?", (system_id,))
+    now = time.time()
+    conn.executemany("INSERT INTO sov_upgrades_manual VALUES (?,?,?)",
+                     [(system_id, t, now) for t in keep])
+    conn.commit()
+    return keep
+
+
+def security_display(sec: float | None) -> float | None:
+    """The security status as the client shows it: rounded to one decimal,
+    except that anything above 0.0 and below 0.05 shows as 0.1 - otherwise a
+    lowsec system would read as 0.0, which is nullsec."""
+    if sec is None:
+        return None
+    if 0.0 < sec < 0.05:
+        return 0.1
+    return round(sec, 1) + 0.0          # + 0.0 turns -0.0 into 0.0
+
+
+def systems_for(conn: sqlite3.Connection, alliance_ids) -> list[dict]:
+    """Every system held by any of `alliance_ids`, with what the map, ESI and
+    the user's own records say about it."""
+    ensure_sov_tables(conn)
+    ids = [int(a) for a in alliance_ids if a]
+    if not ids:
+        return []
+    ph = ",".join("?" * len(ids))
+    rows = conn.execute(f"""
+        SELECT m.system_id, m.alliance_id, s.name, ms.security, ms.star_class,
+               ms.belts, ms.x2d, ms.y2d, c.name, r.name, ms.region_id,
+               ms.constellation_id
+          FROM sov_map_cache m
+          JOIN sde_map_systems ms ON ms.system_id = m.system_id
+          LEFT JOIN sde_systems s ON s.system_id = m.system_id
+          LEFT JOIN sde_constellations c ON c.constellation_id = ms.constellation_id
+          LEFT JOIN sde_regions r ON r.region_id = ms.region_id
+         WHERE m.alliance_id IN ({ph})
+         ORDER BY r.name, s.name""", ids).fetchall()
+    if not rows:
+        return []
+    sids = [r[0] for r in rows]
+    sph = ",".join("?" * len(sids))
+
+    hubs = {r[0]: r[1:] for r in conn.execute(
+        f"SELECT system_id, structure_id, adm, vuln_start, vuln_end FROM sov_hubs"
+        f" WHERE system_id IN ({sph})", sids)}
+    camps: dict[int, list] = {}
+    for r in conn.execute(
+            f"SELECT system_id, event_type, start_time, defender_score, attackers_score"
+            f" FROM sov_campaigns WHERE system_id IN ({sph}) ORDER BY start_time", sids):
+        camps.setdefault(r[0], []).append({"event": r[1], "start": r[2],
+                                           "defender": r[3], "attackers": r[4]})
+    planets: dict[int, dict] = {}
+    for sid, kind, n in conn.execute(
+            f"SELECT system_id, kind, count FROM sde_system_planets"
+            f" WHERE system_id IN ({sph})", sids):
+        planets.setdefault(sid, {})[kind] = n
+    cat = {u["type_id"]: u for u in upgrade_catalogue(conn)}
+    upgrades: dict[int, list] = {}
+    for sid, tid in conn.execute(
+            f"SELECT system_id, type_id FROM sov_upgrades_manual WHERE system_id IN ({sph})",
+            sids):
+        if tid in cat:
+            upgrades.setdefault(sid, []).append(cat[tid])
+    mined: dict[int, dict] = {}
+    try:
+        cutoff = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 30 * 86400))
+        for sid, n, last in conn.execute(
+                f"SELECT solar_system_id, SUM(quantity), MAX(day) FROM mining_ledger"
+                f" WHERE solar_system_id IN ({sph}) AND day >= ? GROUP BY solar_system_id",
+                sids + [cutoff]):
+            mined[sid] = {"units": n, "last": last}
+    except sqlite3.OperationalError:
+        pass                              # no ledger read yet
+
+    out = []
+    for (sid, aid, name, sec, star, belts, x, y, const, region, rid, cid) in rows:
+        hub = hubs.get(sid)
+        out.append({
+            "system_id": sid, "alliance_id": aid, "name": name or str(sid),
+            "security": sec, "security_shown": security_display(sec),
+            "star_class": star or "", "a0": bool(star and star.startswith("A0")),
+            "belts": belts or 0, "x": x, "y": y,
+            "constellation": const or "", "constellation_id": cid,
+            "region": region or "", "region_id": rid,
+            "hub": bool(hub), "adm": hub[1] if hub else None,
+            "vuln_start": hub[2] if hub else None, "vuln_end": hub[3] if hub else None,
+            "campaigns": camps.get(sid, []),
+            "planets": planets.get(sid, {}),
+            "upgrades": sorted(upgrades.get(sid, []), key=lambda u: (u["group_id"], u["name"])),
+            "mined": mined.get(sid),
+        })
+    return out
+
+
+def region_map(conn: sqlite3.Connection, region_id: int) -> dict:
+    """Every system of a region with who holds it, and the gates inside it -
+    the alliance's systems drawn among their neighbours, as the client's region
+    map shows them."""
+    ensure_sov_tables(conn)
+    systems = [
+        {"id": sid, "name": name or str(sid), "x": x, "y": y, "alliance_id": aid,
+         "security": security_display(sec)}
+        for sid, name, x, y, aid, sec in conn.execute("""
+            SELECT ms.system_id, s.name, ms.x2d, ms.y2d, m.alliance_id, ms.security
+              FROM sde_map_systems ms
+              LEFT JOIN sde_systems s ON s.system_id = ms.system_id
+              LEFT JOIN sov_map_cache m ON m.system_id = ms.system_id
+             WHERE ms.region_id = ? AND ms.x2d IS NOT NULL""", (region_id,))]
+    ids = {s["id"] for s in systems}
+    links = [(a, b) for a, b in conn.execute("SELECT a, b FROM sde_stargate_links")
+             if a in ids and b in ids]
+    return {"systems": systems, "links": links}
