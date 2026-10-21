@@ -200,9 +200,9 @@
       </optgroup>
     </select>
     <select id="sov-map-scheme" class="form-select form-select-sm" style="width:auto" title="Colour scheme for the overlays">
+      <option value="steel">Colours: blue</option>
       <option value="heat">Colours: heat (yellow - red)</option>
       <option value="gold">Colours: gold</option>
-      <option value="steel">Colours: steel blue</option>
       <option value="violet">Colours: violet</option>
       <option value="semantic">Colours: by meaning</option>
       <option value="bars">Colours: dark + bar</option>
@@ -554,7 +554,9 @@
         ctx.fillRect(b.x + 3, b.y + BH - bh - 3, (BW - 6) * b.bar, bh);
       }
       const sel = b.id === selected, hov = hover && b.id === hover.id;
-      ctx.strokeStyle = sel || hov ? '#e3b341' : b.own ? '#7bb8ec' : '#3b4452';
+      // This alliance: steel blue in the sovereignty view, white on coloured
+      // overlays, where blue would vanish into blue boxes.
+      ctx.strokeStyle = sel || hov ? '#e3b341' : b.own ? (paintKind === 'sov' ? '#7bb8ec' : '#f0f6fc') : '#3b4452';
       ctx.lineWidth = (sel ? 3.5 : b.own && near ? 2.5 : 1) / s;
       ctx.strokeRect(b.x, b.y, BW, BH);
       if (b.ice) {
@@ -665,7 +667,9 @@
     gold:   ['#2b3442', '#e3b341'],
     // DOTLAN-like heat: nothing dark, then yellow, orange, red for the most.
     heat:   ['#23272e', '#f2e27a', '#f5b041', '#ea7a2a', '#d9442b', '#b3122e'],
-    steel:  ['#1b2533', '#3d6a94', '#7bb8ec', '#cfe6fb'],
+    // One stop per class (7) after "none": navy to almost white, each step
+    // a clear jump in lightness.
+    steel:  ['#1b2533', '#1e3a5c', '#24507f', '#2f6aa6', '#4588c8', '#6aa9e3', '#9fcbf2', '#dcecfb'],
     violet: ['#1f1b2e', '#4c3a8c', '#8b5cf6', '#c4b5fd'],
     bars:   ['#1a1f27', '#2a2440'],
   };
@@ -675,7 +679,7 @@
     sci_manufacturing: ['#1f1b2e', '#5b45a8', '#a78bfa'], sci_reaction: ['#1f1b2e', '#5b45a8', '#a78bfa'],
     sci_invention: ['#1f1b2e', '#5b45a8', '#a78bfa'], adm: ['#16262a', '#2a7d86', '#5eead4'],
   };
-  let scheme = 'heat', rampKind = '';
+  let scheme = 'steel', rampKind = '', paintKind = 'sov';
   function ramp(t) {
     const stops = (scheme === 'semantic' ? MEANING[rampKind] : SCHEMES[scheme]) || SCHEMES.violet;
     const x = Math.max(0, Math.min(1, t)) * (stops.length - 1), i = Math.min(stops.length - 2, Math.floor(x));
@@ -704,6 +708,7 @@
     const meta = (lastMap.overlays || {}).meta || {};
     const names = lastMap.names || {};
     const legend = $('sov-map-legend');
+    paintKind = kind;
     const spec = OVERLAYS[kind];
     let max = 0, min = Infinity;
     if (spec) SYS.forEach(b => { const v = (V[b.id] || {})[kind]; if (v != null) { max = Math.max(max, v); min = Math.min(min, v); } });
@@ -711,7 +716,7 @@
     // Five classes with as many systems each (as DOTLAN does): a few hot spots
     // no longer push everything else into one shade. Fixed scales (ADM) stay
     // linear.
-    const CLASSES = 5;
+    const CLASSES = 7;
     let breaks = null;
     if (spec && !spec.fixed) {
       const vals = SYS.map(b => (V[b.id] || {})[kind]).filter(v => v != null && v > 0).sort((a, b) => a - b);
@@ -785,7 +790,7 @@
         const lo = c === 0 ? edges[0] : breaks[c - 1], hi = c === CLASSES - 1 ? max : breaks[c];
         h += ' &nbsp;<span class="sov-chip" style="background:' + ramp((c + 1) / CLASSES) + '"></span> ' + f(lo) + (c === CLASSES - 1 ? '+' : '-' + f(hi));
       }
-      h += ' <span class="text-muted">(each colour about a fifth of the systems with any)</span>';
+      h += ' <span class="text-muted">(each colour about a seventh of the systems with any)</span>';
       function vals0() { return SYS.map(b => (V[b.id] || {})[kind]).filter(v => v != null && v > 0).reduce((a, b) => Math.min(a, b), Infinity); }
     }
     else if (spec) h = E(spec.label) + ': <span class="text-muted">' + (spec.fmt ? spec.fmt(min === Infinity ? 0 : min) : (min === Infinity ? 0 : min))
@@ -794,7 +799,7 @@
     const src = spec && spec.src ? meta[spec.src] : (kind === 'incursion' ? meta.incursions : null);
     if (src && src.fetched_at) h += ' <span class="text-muted">&middot; from ESI' + (src.data_time ? ' (data of ' + E(src.data_time.replace(/:\d\d GMT$/, ' UTC')) + ')' : '') + ', read ' + ago(src.fetched_at) + ' ago</span>';
     else if (spec && spec.src && spec.src !== 'sci') h += ' <span class="text-warning">&middot; not read yet - the map activity job fetches it hourly</span>';
-    if (kind !== 'sov') h += ' <span class="text-muted">&middot; this alliance\'s systems outlined blue</span>';
+    if (kind !== 'sov') h += ' <span class="text-muted">&middot; this alliance\'s systems outlined white</span>';
     h += ' <span class="text-muted">&middot; <span style="color:#22d3ee">cyan frame</span>: ice belts (DOTLAN)</span>';
     legend.innerHTML = h;
     $('help-sov').classList.toggle('d-none', kind !== 'sov');
