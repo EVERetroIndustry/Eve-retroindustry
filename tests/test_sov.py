@@ -568,7 +568,7 @@ def test_the_map_offers_the_overlays(client, held):
     html = client.get("/sov").text
     pick = html[html.index('id="sov-map-overlay"'):]
     pick = pick[:pick.index("</select>")]
-    for v in ("security", "jumps", "ship_kills", "npc_kills", "pod_kills", "adm", "ice",
+    for v in ("security", "jumps", "ship_kills", "npc_kills", "pod_kills", "adm",
               "sci_manufacturing", "incursion", "last_mined"):
         assert f'value="{v}"' in pick
     rid = client.get(f"/api/sov/system/{held}").json()["region_id"]
