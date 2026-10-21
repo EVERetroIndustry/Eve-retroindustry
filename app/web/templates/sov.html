@@ -74,6 +74,17 @@
   Mark them per system with <i class="bi bi-pencil-square"></i>; they are kept on this computer only.
   Planets and the star come from the static data; the power and workforce the client computes from them are not shown.
 </div>
+<div class="small text-muted mb-2" id="logs-line">
+  <i class="bi bi-journal-text me-1"></i>
+  {% if logs_dirs %}Mining times come from the game client's logs in <code>{{ logs_dirs | join(', ') }}</code>{% if logs_last_ok %}{% set a = logs_last_ok | age_short %}, read {{ 'just now' if a == 'now' else a ~ ' ago' }}{% endif %}.
+  {% else %}No EVE client logs folder found on this computer, so there are no mining times from the client.{% endif %}
+  <a href="#" onclick="document.getElementById('logs-set').classList.toggle('d-none'); return false">Choose folder</a>
+  <span id="logs-set" class="d-none ms-2">
+    <input type="text" id="logs-path" class="form-control form-control-sm d-inline-block" style="width:420px" placeholder="...\Documents\EVE\logs (empty = search the usual places)">
+    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="sovLogsDir()">Save</button>
+    <span id="logs-err" class="text-danger"></span>
+  </span>
+</div>
 
 <div class="card mb-3"><div class="card-body py-2">
   <div class="row g-2 align-items-center">
@@ -120,6 +131,7 @@
     <th>Planets</th>
     <th data-key="ups" data-type="num" class="sortable">Upgrades</th>
     <th data-key="mined" data-type="num" class="sortable text-end" title="Units your characters mined here in the last 30 days (ESI mining ledger)">Mined 30 d</th>
+    <th data-key="logs" data-type="num" class="sortable text-end" title="When your characters last mined here, to the minute, from the game client's own logs on this computer">Last mined</th>
     <th></th>
   </tr></thead>
   <tbody>
@@ -134,7 +146,7 @@
       data-manual="{{ s.upgrades | map(attribute='type_id') | join(',') }}"
       data-planets="{{ s.planets.keys() | join(',') }}" data-a0="{{ 1 if s.a0 else 0 }}"
       data-hub="{{ 1 if s.hub else 0 }}" data-camp="{{ 1 if s.campaigns else 0 }}"
-      data-mined="{{ s.mined.units if s.mined else 0 }}">
+      data-mined="{{ s.mined.units if s.mined else 0 }}" data-logs="{{ s.logs_last or '' }}">
     <td class="fw-medium"><a href="#" class="link-light text-decoration-none sov-open" onclick="sovDetail({{ s.system_id }}); return false" title="Details">{{ s.name }}</a>
       {% for c in s.campaigns %}<span class="badge bg-danger ms-1" title="{{ c.event | replace('_', ' ') }} from {{ c.start[:16] | replace('T', ' ') }} UTC, defender {{ ((c.defender or 0) * 100) | round | int }} %">contested</span>{% endfor %}
     </td>
@@ -148,6 +160,7 @@
     <td class="sov-planets">{% for k, n in s.planets | dictsort %}<span>{{ k }} {{ n }}</span>{% endfor %}</td>
     <td><span class="sov-ups">{% for u in s.upgrades %}<span class="badge sov-up g{{ u.group_id }}" title="{{ u.group }}: {{ u.description }}">{{ u.name }}</span>{% endfor %}</span>{% for u in s.detected %}<span class="badge sov-up g{{ u.group_id }}" title="Read from corporation assets ({{ u.state }}): {{ u.description }}"><i class="bi bi-building-check me-1"></i>{{ u.name }}{% if u.state != 'active' %} ({{ u.state }}){% endif %}</span>{% endfor %}</td>
     <td class="text-end">{% if s.mined %}<span title="last mined {{ s.mined.last }}">{{ s.mined.units | count_eu }}</span>{% else %}-{% endif %}</td>
+    <td class="text-end">{% if s.logs_last %}{% set a = s.logs_last | age_short %}<span title="{{ s.logs_last | int }}" class="sov-logts">{{ 'just now' if a == 'now' else a ~ ' ago' }}</span>{% else %}-{% endif %}</td>
     <td class="text-end"><button type="button" class="btn btn-sm btn-link p-0" title="Mark installed upgrades" onclick="sovEdit({{ s.system_id }})"><i class="bi bi-pencil-square"></i></button></td>
   </tr>
   {% endfor %}
@@ -572,6 +585,19 @@
         h += '<tr><td>' + E(t.name) + '</td><td class="text-end">' + fmt(t.units) + '</td><td class="text-end">' + t.characters + '</td><td>' + E(t.last) + '</td></tr>';
       h += '</tbody></table>';
     }
+    h += '<h6 class="mt-3">Mining sessions from the game client\'s logs</h6>';
+    if (!d.log_sessions.length) h += '<div class="text-muted mb-2">None in the logs on this computer. The logs say when and what was mined, not whether a site has respawned.</div>';
+    else {
+      const dt = t => new Date(t * 1000).toISOString().slice(0, 16).replace('T', ' ');
+      h += '<div class="text-muted mb-1">Times in UTC. A depleted asteroid is one rock running out, not the whole site.</div>';
+      h += '<table class="table table-dark table-sm tbl-compact"><thead><tr><th>When</th><th>Characters</th><th class="text-end">Units</th><th class="text-end">Asteroids depleted</th><th>Mined</th></tr></thead><tbody>';
+      for (const g of d.log_sessions) {
+        const types = Object.entries(g.types).sort((a, b) => b[1] - a[1]).map(([k, v]) => E(k) + ' ' + fmt(v)).join(', ');
+        h += '<tr><td class="text-nowrap">' + dt(g.start_ts) + '-' + dt(g.end_ts).slice(11) + '</td><td>' + g.characters.map(E).join(', ')
+          + '</td><td class="text-end">' + fmt(g.units) + '</td><td class="text-end">' + g.depleted + '</td><td>' + types + '</td></tr>';
+      }
+      h += '</tbody></table>';
+    }
     h += '<h6 class="mt-3">Gates to</h6><div>';
     h += d.neighbours.map(n => {
       const nm = n.alliance_id ? d.names[n.alliance_id] : null;
@@ -582,6 +608,16 @@
     }).join('');
     h += '</div>';
     $('det-body').innerHTML = h;
+  };
+
+  window.sovLogsDir = async function () {
+    const r = await fetch('/api/sov/logs-dir', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                               body: JSON.stringify({path: $('logs-path').value})});
+    const d = await r.json();
+    if (!r.ok || d.error) { $('logs-err').textContent = d.error || ('HTTP ' + r.status); return; }
+    $('logs-err').textContent = '';
+    setTimeout(() => location.reload(), 4000);
+    $('logs-set').innerHTML = '<span class="text-muted">saved, reading the logs...</span>';
   };
 
   // Import from pasted text: the server reads it, the dialog shows what it read.

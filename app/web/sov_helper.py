@@ -309,6 +309,8 @@ def systems_for(conn: sqlite3.Connection, alliance_ids) -> list[dict]:
         if tid in cat:
             upgrades.setdefault(sid, []).append(cat[tid])
     detected = detected_upgrades(conn)
+    from app.character.client_logs import last_mined
+    logged = last_mined(conn)
     mined: dict[int, dict] = {}
     try:
         cutoff = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 30 * 86400))
@@ -337,6 +339,7 @@ def systems_for(conn: sqlite3.Connection, alliance_ids) -> list[dict]:
             "upgrades": sorted(upgrades.get(sid, []), key=lambda u: (u["group_id"], u["name"])),
             "detected": sorted(detected.get(sid, []), key=lambda u: (u["group_id"], u["name"])),
             "mined": mined.get(sid),
+            "logs_last": logged.get(sid),
         })
     return out
 
@@ -496,4 +499,6 @@ def system_detail(conn: sqlite3.Connection, system_id: int, alliance_ids) -> dic
             near.append({"system_id": other, "name": r[0], "security": security_display(r[1]),
                          "alliance_id": r[2], "faction_id": r[3], "region": r[4]})
     row["neighbours"] = sorted(near, key=lambda n: n["name"] or "")
+    from app.character.client_logs import sessions_in
+    row["log_sessions"] = sessions_in(conn, system_id)
     return row

@@ -10080,6 +10080,49 @@ def _sov_last_ok() -> float | None:
         conn.close()
 
 
+from app.character import client_logs as client_logs_api   # noqa: E402
+
+
+async def _job_client_logs(report) -> dict:
+    dirs = client_logs_api.logs_dirs()
+    if not dirs:
+        raise RuntimeError("No EVE client logs folder found on this computer")
+
+    def work():
+        conn = get_conn()
+        try:
+            total = {"files": 0, "mining": 0, "locations": 0, "sessions": 0}
+            for d in dirs:
+                res = client_logs_api.ingest(conn, d, report)
+                for k in total:
+                    total[k] = res[k] if k == "sessions" else total[k] + res[k]
+            _mark_ok(conn, "client-logs")
+            return total
+        finally:
+            conn.close()
+    # Plain file reading: off the event loop, the first pass reads months of logs.
+    return await asyncio.to_thread(work)
+
+
+def _client_logs_apply() -> str | None:
+    return None if client_logs_api.logs_dirs() else "no EVE client logs on this computer"
+
+
+@app.post("/api/sov/logs-dir")
+async def api_sov_logs_dir(request: Request):
+    body = await request.json()
+    if not client_logs_api.set_logs_dir(str(body.get("path") or "")):
+        return JSONResponse({"error": "That folder has no Gamelogs folder in it"}, status_code=400)
+    _sync_client_logs_job()
+    return {"ok": True, "dirs": client_logs_api.logs_dirs()}
+
+
+def _sync_client_logs_job() -> None:
+    if client_logs_api.logs_dirs() and bg.auto_update_enabled() \
+            and "client-logs" not in bg.manual_only():
+        bg.run_now("client-logs")
+
+
 @app.get("/sov", response_class=HTMLResponse)
 async def sov_page(request: Request, alliance: int = 0):
     conn = get_conn()
@@ -10105,6 +10148,8 @@ async def sov_page(request: Request, alliance: int = 0):
         "upgrade_groups": sov_api.UPGRADE_GROUPS, "has_map": has_map,
         "all_regions": all_regions,
         "running": bg.job_state("sov").running,
+        "logs_dirs": client_logs_api.logs_dirs(),
+        "logs_last_ok": _recorded_ok("client-logs", lambda c: None),
     })
 
 
@@ -10258,6 +10303,11 @@ def _register_background() -> None:
         key="sov", title="Sovereignty hubs and campaigns", group="sovereignty",
         every=sov_api.SOV_TTL, run=_job_sov, last_ok=_sov_last_ok,
         applies=_characters_apply,
+        describe=lambda p: (p.get("pct"), p.get("detail") or ""), href="/sov"))
+    bg.register(bg.Job(
+        key="client-logs", title="Mining from the game client's logs", group="local-files",
+        every=10 * 60, run=_job_client_logs, applies=_client_logs_apply,
+        last_ok=lambda: _recorded_ok("client-logs", lambda c: None),
         describe=lambda p: (p.get("pct"), p.get("detail") or ""), href="/sov"))
 
     bg.register_filler(bg.Filler(
