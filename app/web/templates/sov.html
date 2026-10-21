@@ -544,6 +544,14 @@
       ctx.strokeStyle = sel || hov ? '#e3b341' : b.own ? '#7bb8ec' : '#3b4452';
       ctx.lineWidth = (sel ? 3.5 : b.own ? 2.5 : 1) / s;
       ctx.strokeRect(b.x, b.y, BW, BH);
+      if (b.ice) {
+        // Ice belts: a bright cyan frame just outside the box, in every view,
+        // so it reads apart from this alliance's steel-blue outline.
+        const o = 4;
+        ctx.strokeStyle = '#22d3ee';
+        ctx.lineWidth = Math.max(3, 2.5 / s);
+        ctx.strokeRect(b.x - o, b.y - o, BW + 2 * o, BH + 2 * o);
+      }
       if (near) {
         ctx.fillStyle = b.ink;
         ctx.font = '600 13px system-ui, sans-serif';
@@ -597,7 +605,7 @@
     SYS = d.systems.map(x => ({
       id: x.id, name: x.name, x: pts[x.id][0] - BW / 2, y: pts[x.id][1] - BH / 2,
       own: x.alliance_id === OWN, sec: x.security, aid: x.alliance_id || 0, fid: x.faction_id || 0,
-      star: x.star_class || '', a0: !!x.a0, rid: x.region_id, src: x,
+      star: x.star_class || '', a0: !!x.a0, rid: x.region_id, src: x, ice: x.ice || 0,
       secText: x.true_sec != null ? sec2(x.true_sec) : '',
       secCol: x.security != null && x.security <= 0 ? '#e47aa9' : secCol(x.security),
       fill: '#1a1f27', ink: '#e6edf3', t2: '', t3: '',
@@ -726,6 +734,7 @@
     if (src && src.fetched_at) h += ' <span class="text-muted">&middot; from ESI' + (src.data_time ? ' (data of ' + E(src.data_time.replace(/:\d\d GMT$/, ' UTC')) + ')' : '') + ', read ' + ago(src.fetched_at) + ' ago</span>';
     else if (spec && spec.src && spec.src !== 'sci') h += ' <span class="text-warning">&middot; not read yet - the map activity job fetches it hourly</span>';
     if (kind !== 'sov') h += ' <span class="text-muted">&middot; this alliance\'s systems outlined blue</span>';
+    h += ' <span class="text-muted">&middot; <span style="color:#22d3ee">cyan frame</span>: ice belts (DOTLAN)</span>';
     legend.innerHTML = h;
     $('help-sov').classList.toggle('d-none', kind !== 'sov');
     requestRender();
