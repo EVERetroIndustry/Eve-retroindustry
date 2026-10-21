@@ -761,9 +761,11 @@
         const v = vs[kind];
         if (v == null) { fill = '#14181e'; t2 = 'no data'; }
         else {
+          // Under the floor counts as nothing happening: no colour, like none.
+          const fl = spec.floor && breaks ? 1 : 0;
           const t = spec.fixed ? (max > min ? (v - min) / (max - min) : 1)
-                               : (breaks ? (classOf(v) + 1) / CLASSES : 1);
-          fill = v === 0 && !spec.fixed ? '#1f2630' : ramp(t);
+                               : (breaks ? (classOf(v) + 1 - fl) / (CLASSES - fl) : 1);
+          fill = (v === 0 && !spec.fixed) || (fl && v < spec.floor) ? '#1f2630' : ramp(t);
           t2 = spec.fmt ? spec.fmt(v) : String(v);
         }
       }
@@ -783,10 +785,12 @@
       rampKind = kind;
       const f = v => spec.fmt ? spec.fmt(v) : String(v);
       const edges = [vals0(), ...breaks, max];
-      h = E(spec.label) + ': <span class="sov-chip" style="background:#1f2630"></span> none';
-      for (let c = 0; c < CLASSES; c++) {
+      const fl = spec.floor ? 1 : 0;
+      h = E(spec.label) + ': <span class="sov-chip" style="background:#1f2630"></span> '
+        + (fl ? 'none or under ' + f(spec.floor) : 'none');
+      for (let c = fl; c < CLASSES; c++) {
         const lo = c === 0 ? edges[0] : breaks[c - 1], hi = c === CLASSES - 1 ? max : breaks[c];
-        h += ' &nbsp;<span class="sov-chip" style="background:' + ramp((c + 1) / CLASSES) + '"></span> ' + f(lo) + (c === CLASSES - 1 ? '+' : '-' + f(hi));
+        h += ' &nbsp;<span class="sov-chip" style="background:' + ramp((c + 1 - fl) / (CLASSES - fl)) + '"></span> ' + f(lo) + (c === CLASSES - 1 ? '+' : '-' + f(hi));
       }
       h += ' <span class="text-muted">(round edges on a log scale: each colour roughly 2-3x the one before)</span>';
       function vals0() { return SYS.map(b => (V[b.id] || {})[kind]).filter(v => v != null && v > 0).reduce((a, b) => Math.min(a, b), Infinity); }
