@@ -50,7 +50,7 @@ def test_every_character_class_survives_to_the_page(client, app_module, monkeypa
                  " VALUES (?,?,?)", (CHAR, json.dumps(assets), now))
     conn.commit(); conn.close()
 
-    async def _fake(char_id, token, container_ids, assets_raw):
+    async def _fake(char_id, token, container_ids, assets_raw, *_):
         return {cid: (app_module._container_display_name(labels.get(cid, ""), "Megathron", cid),
                       60003760) for cid in container_ids}
     monkeypatch.setattr(app_module, "_resolve_container_names", _fake)

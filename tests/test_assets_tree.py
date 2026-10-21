@@ -351,7 +351,7 @@ def assembled_ship(app_module):
     # Keep the test hermetic: the real resolver POSTs to ESI /assets/names/.
     real = app_module._resolve_container_names
 
-    async def _fake(char_id, token, container_ids, assets_raw):
+    async def _fake(char_id, token, container_ids, assets_raw, *_):
         return {cid: (app_module._container_display_name("Blue Thunder", "Megathron", cid),
                       60003760) for cid in container_ids}
 
@@ -479,7 +479,7 @@ def test_fitted_and_spare_copies_of_one_module_stay_apart(app_module, client, mo
                  " VALUES (?,?,?)", (CHAR, j.dumps(assets), now))
     conn.commit(); conn.close()
 
-    async def _fake(char_id, token, container_ids, assets_raw):
+    async def _fake(char_id, token, container_ids, assets_raw, *_):
         return {cid: ("Fit Test (Megathron)", 60003760) for cid in container_ids}
     monkeypatch.setattr(app_module, "_resolve_container_names", _fake)
     try:
@@ -533,7 +533,7 @@ def test_plain_container_renders_no_slot_column(app_module, client, monkeypatch)
                  " VALUES (?,?,?)", (CHAR, j.dumps(assets), t.time()))
     conn.commit(); conn.close()
 
-    async def _fake(char_id, token, container_ids, assets_raw):
+    async def _fake(char_id, token, container_ids, assets_raw, *_):
         return {cid: ("Minerals (Small Secure Container)", 60003760) for cid in container_ids}
     monkeypatch.setattr(app_module, "_resolve_container_names", _fake)
     try:
@@ -661,7 +661,7 @@ def test_all_characters_view_shows_every_pilots_ship_name(app_module, client, mo
     owned = {cid: ship for cid, (ship, _n) in CHARS.items()}
     names = {ship: nm for _c, (ship, nm) in CHARS.items()}
 
-    async def _fake(char_id, token, container_ids, assets_raw):
+    async def _fake(char_id, token, container_ids, assets_raw, *_):
         # Mirrors the real resolver: a character only answers for its own items.
         mine = owned.get(char_id)
         if mine is None or mine not in container_ids:
