@@ -183,14 +183,59 @@ async def alliance_names(conn: sqlite3.Connection, ids) -> dict[int, dict]:
 
 
 def upgrade_catalogue(conn: sqlite3.Connection) -> list[dict]:
-    """Every published hub upgrade in the static data, grouped as the SDE does."""
+    """Every published hub upgrade in the static data, grouped as the SDE does,
+    with CCP's own description of it (empty on a database without the table)."""
     ph = ",".join("?" * len(UPGRADE_GROUPS))
-    rows = conn.execute(
-        f"SELECT type_id, name, group_id FROM sde_types"
-        f" WHERE group_id IN ({ph}) AND published=1 ORDER BY group_id, name",
-        list(UPGRADE_GROUPS)).fetchall()
-    return [{"type_id": t, "name": n, "group_id": g, "group": UPGRADE_GROUPS[g]}
-            for t, n, g in rows]
+    try:
+        rows = conn.execute(
+            f"SELECT t.type_id, t.name, t.group_id, d.description FROM sde_types t"
+            f" LEFT JOIN sde_sov_upgrades d ON d.type_id = t.type_id"
+            f" WHERE t.group_id IN ({ph}) AND t.published=1 ORDER BY t.group_id, t.name",
+            list(UPGRADE_GROUPS)).fetchall()
+    except sqlite3.OperationalError:
+        rows = [r + ("",) for r in conn.execute(
+            f"SELECT type_id, name, group_id FROM sde_types"
+            f" WHERE group_id IN ({ph}) AND published=1 ORDER BY group_id, name",
+            list(UPGRADE_GROUPS))]
+    return [{"type_id": t, "name": n, "group_id": g, "group": UPGRADE_GROUPS[g],
+             "description": d or ""} for t, n, g, d in rows]
+
+
+# Location flags ESI gives items inside a structure. That an installed hub
+# upgrade carries one of these, with the hub as its location, is what the spec
+# suggests; it could not be checked on a real hub (it needs a Director of the
+# corporation that owns one), so nothing is shown unless such rows exist.
+_STRUCTURE_FLAGS = {"StructureActive": "active", "StructureInactive": "inactive",
+                    "StructureOffline": "offline"}
+
+
+def detected_upgrades(conn: sqlite3.Connection) -> dict[int, list[dict]]:
+    """system_id -> upgrades found in stored corporation assets, located in a
+    known Sovereignty Hub. No ESI call: these assets are read for Assets anyway."""
+    import json
+    try:
+        hubs = dict(conn.execute("SELECT structure_id, system_id FROM sov_hubs"))
+        rows = conn.execute("SELECT corporation_id, data_json FROM corp_assets_cache").fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    if not hubs or not rows:
+        return {}
+    cat = {u["type_id"]: u for u in upgrade_catalogue(conn)}
+    out: dict[int, list[dict]] = {}
+    for corp, data in rows:
+        try:
+            items = json.loads(data) or []
+        except (TypeError, ValueError):
+            continue
+        for a in items:
+            sid = hubs.get(a.get("location_id"))
+            u = cat.get(a.get("type_id"))
+            if sid and u:
+                flag = a.get("location_flag") or ""
+                out.setdefault(sid, []).append(
+                    {**u, "flag": flag, "state": _STRUCTURE_FLAGS.get(flag, flag),
+                     "corporation_id": corp})
+    return out
 
 
 def set_manual_upgrades(conn: sqlite3.Connection, system_id: int, type_ids) -> list[int]:
@@ -263,6 +308,7 @@ def systems_for(conn: sqlite3.Connection, alliance_ids) -> list[dict]:
             sids):
         if tid in cat:
             upgrades.setdefault(sid, []).append(cat[tid])
+    detected = detected_upgrades(conn)
     mined: dict[int, dict] = {}
     try:
         cutoff = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 30 * 86400))
@@ -289,6 +335,7 @@ def systems_for(conn: sqlite3.Connection, alliance_ids) -> list[dict]:
             "campaigns": camps.get(sid, []),
             "planets": planets.get(sid, {}),
             "upgrades": sorted(upgrades.get(sid, []), key=lambda u: (u["group_id"], u["name"])),
+            "detected": sorted(detected.get(sid, []), key=lambda u: (u["group_id"], u["name"])),
             "mined": mined.get(sid),
         })
     return out
@@ -416,3 +463,37 @@ def map_regions(conn: sqlite3.Connection) -> list[dict]:
            AND EXISTS (SELECT 1 FROM sde_map_systems ms
                         WHERE ms.region_id = r.region_id AND ms.x2d IS NOT NULL)
          ORDER BY r.name""")]
+
+
+def system_detail(conn: sqlite3.Connection, system_id: int, alliance_ids) -> dict | None:
+    """One held system, with what was mined there and its gate neighbours."""
+    row = next((s for s in systems_for(conn, alliance_ids) if s["system_id"] == system_id), None)
+    if row is None:
+        return None
+    try:
+        cutoff = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 30 * 86400))
+        row["mined_types"] = [
+            {"type_id": t, "name": n or str(t), "units": q, "last": last, "characters": k}
+            for t, n, q, last, k in conn.execute("""
+                SELECT l.type_id, st.name, SUM(l.quantity), MAX(l.day),
+                       COUNT(DISTINCT l.character_id)
+                  FROM mining_ledger l LEFT JOIN sde_types st ON st.type_id = l.type_id
+                 WHERE l.solar_system_id = ? AND l.day >= ?
+                 GROUP BY l.type_id ORDER BY SUM(l.quantity) DESC""", (system_id, cutoff))]
+    except sqlite3.OperationalError:
+        row["mined_types"] = []
+    near = []
+    for (other,) in conn.execute(
+            "SELECT b FROM sde_stargate_links WHERE a=? UNION SELECT a FROM sde_stargate_links WHERE b=?",
+            (system_id, system_id)):
+        r = conn.execute("""SELECT s.name, ms.security, m.alliance_id, m.faction_id, rg.name
+                              FROM sde_map_systems ms
+                              LEFT JOIN sde_systems s ON s.system_id = ms.system_id
+                              LEFT JOIN sov_map_cache m ON m.system_id = ms.system_id
+                              LEFT JOIN sde_regions rg ON rg.region_id = ms.region_id
+                             WHERE ms.system_id=?""", (other,)).fetchone()
+        if r:
+            near.append({"system_id": other, "name": r[0], "security": security_display(r[1]),
+                         "alliance_id": r[2], "faction_id": r[3], "region": r[4]})
+    row["neighbours"] = sorted(near, key=lambda n: n["name"] or "")
+    return row

@@ -266,6 +266,7 @@ _SDE_TABLES_TO_REFRESH = (
     "sde_map_systems",
     "sde_stargate_links",
     "sde_system_planets",
+    "sde_sov_upgrades",
 )
 
 
@@ -10154,6 +10155,22 @@ async def api_sov_upgrades_import(request: Request):
         conn.close()
     return {"ok": True, "systems": n,
             "skipped": [s["name"] for s in parsed["systems"] if not s["held"]]}
+
+
+@app.get("/api/sov/system/{system_id}")
+async def api_sov_system(system_id: int):
+    conn = get_conn()
+    try:
+        mine = await _my_alliances(conn)
+        d = sov_api.system_detail(conn, system_id, mine)
+        if d is None:
+            return JSONResponse({"error": "not a system your alliance holds"}, status_code=404)
+        names = await sov_api.alliance_names(
+            conn, {n["alliance_id"] for n in d["neighbours"] if n["alliance_id"]})
+        d["names"] = {str(k): v for k, v in names.items()}
+        return d
+    finally:
+        conn.close()
 
 
 @app.get("/api/sov/region-map")

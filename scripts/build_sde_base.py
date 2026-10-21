@@ -45,6 +45,7 @@ SDE_TABLES = {
     "sde_map_systems",
     "sde_stargate_links",
     "sde_system_planets",
+    "sde_sov_upgrades",
     META_TABLE,
 }
 

@@ -61,6 +61,8 @@ def _sde_zip(tmp_path) -> str:
             13: {"groupID": 7, "name": {"en": "Planet (Gas)"}},
             2063: {"groupID": 7, "name": {"en": "Planet (Plasma)"}},
             34: {"groupID": 18, "name": {"en": "Tritanium"}},
+            81615: {"groupID": 4772, "name": {"en": "Cynosural Navigation"},
+                    "description": {"en": "Enables a <a href=showinfo:35912>Standup cyno</a>.<br>Twice."}},
         },
     }
     path = tmp_path / "eve-online-static-data-1234567-yaml.zip"
@@ -85,6 +87,8 @@ def test_the_map_is_imported_from_the_sde(tmp_path):
     assert sorted(conn.execute("SELECT * FROM sde_system_planets")) == [
         (30000001, "Gas", 1), (30000001, "Temperate", 2), (30000002, "Plasma", 1)]
     assert conn.execute("SELECT name FROM sde_regions").fetchall() == [("Region A",)]
+    assert conn.execute("SELECT * FROM sde_sov_upgrades").fetchall() == [
+        (81615, "Enables a Standup cyno.\nTwice.")]
     assert conn.execute("SELECT * FROM sde_constellations").fetchall() == [
         (20000001, "Const A", 10000001)]
 
@@ -395,3 +399,56 @@ def test_the_region_map_says_who_holds_what(client, held, app_module, monkeypatc
     me = next(s for s in d["systems"] if s["id"] == held)
     assert me["alliance_id"] == ALLY and d["names"][str(ALLY)]["name"] == f"Alliance {ALLY}"
     assert "faction_id" in me
+
+
+# ── Phase 2: one system in detail ────────────────────────────────────────────
+
+def test_upgrades_carry_ccps_description():
+    conn = _bundle_db()
+    cyno = next(u for u in SOV.upgrade_catalogue(conn) if u["type_id"] == 81615)
+    assert "cynosural field generator" in cyno["description"]
+    assert "<" not in cyno["description"], "showinfo links are stripped"
+    conn.execute("DROP TABLE sde_sov_upgrades")
+    assert SOV.upgrade_catalogue(conn)[0]["description"] == ""   # an older install
+
+
+def test_upgrades_in_corporation_assets_are_shown_as_read(app_module):
+    import json as _json
+    conn = _bundle_db()
+    held = _system(conn, "1DQ1-A")
+    conn.execute("INSERT INTO sov_map_cache VALUES (?,?,NULL,1)", (held, ALLY))
+    conn.execute("INSERT INTO sov_hubs VALUES (555, ?, ?, 4.5, NULL, NULL, 1)", (held, ALLY))
+    conn.execute("CREATE TABLE corp_assets_cache (corporation_id INTEGER, data_json TEXT,"
+                 " cached_at REAL)")
+    conn.execute("INSERT INTO corp_assets_cache VALUES (1, ?, 1)", (_json.dumps([
+        {"type_id": 81615, "location_id": 555, "location_flag": "StructureActive"},
+        {"type_id": 82588, "location_id": 555, "location_flag": "StructureOffline"},
+        {"type_id": 81615, "location_id": 999, "location_flag": "StructureActive"},  # not a hub
+        {"type_id": 34, "location_id": 555, "location_flag": "StructureActive"},     # not an upgrade
+    ]),))
+    row = SOV.systems_for(conn, [ALLY])[0]
+    assert sorted((u["type_id"], u["state"]) for u in row["detected"]) == [
+        (81615, "active"), (82588, "offline")]
+    assert row["upgrades"] == [], "detected is kept apart from what the user marked"
+
+
+def test_the_detail_lists_ores_mined_and_neighbours(client, held, app_module):
+    m = app_module
+    conn = m.get_conn()
+    from app.character.history_store import ensure_history_tables
+    ensure_history_tables(conn)
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    conn.execute("DELETE FROM mining_ledger")
+    conn.executemany("INSERT INTO mining_ledger VALUES (?,?,?,?,?)",
+                     [(900000001, today, held, 1230, 400), (900000002, today, held, 1230, 99),
+                      (900000001, time.strftime("%Y-%m-%d", time.gmtime(time.time() - 86400)),
+                       held, 1230, 1),
+                      (900000001, today, held, 1228, 7)])
+    conn.commit()
+    conn.close()
+    d = client.get(f"/api/sov/system/{held}").json()
+    assert [(t["type_id"], t["units"], t["characters"]) for t in d["mined_types"]] == [
+        (1230, 500, 2), (1228, 7, 1)]
+    assert d["mined_types"][0]["name"] == "Veldspar"
+    assert d["neighbours"] and all(n["name"] for n in d["neighbours"])
+    assert client.get("/api/sov/system/30000142").status_code == 404   # Jita: not held

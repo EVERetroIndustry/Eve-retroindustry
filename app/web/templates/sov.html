@@ -129,11 +129,13 @@
       data-name="{{ s.name }}" data-sec="{{ s.security if s.security is not none else '' }}"
       data-const="{{ s.constellation }}" data-region="{{ s.region }}" data-star="{{ s.star_class }}"
       data-adm="{{ s.adm if s.adm is not none else '' }}" data-vuln="{{ vuln }}" data-belts="{{ s.belts }}"
-      data-ups="{{ s.upgrades | length }}" data-upids="{{ s.upgrades | map(attribute='type_id') | join(',') }}"
+      {% set all_ups = (s.upgrades + s.detected) | map(attribute='type_id') | unique | list %}
+      data-ups="{{ all_ups | length }}" data-upids="{{ all_ups | join(',') }}"
+      data-manual="{{ s.upgrades | map(attribute='type_id') | join(',') }}"
       data-planets="{{ s.planets.keys() | join(',') }}" data-a0="{{ 1 if s.a0 else 0 }}"
       data-hub="{{ 1 if s.hub else 0 }}" data-camp="{{ 1 if s.campaigns else 0 }}"
       data-mined="{{ s.mined.units if s.mined else 0 }}">
-    <td class="fw-medium">{{ s.name }}
+    <td class="fw-medium"><a href="#" class="link-light text-decoration-none sov-open" onclick="sovDetail({{ s.system_id }}); return false" title="Details">{{ s.name }}</a>
       {% for c in s.campaigns %}<span class="badge bg-danger ms-1" title="{{ c.event | replace('_', ' ') }} from {{ c.start[:16] | replace('T', ' ') }} UTC, defender {{ ((c.defender or 0) * 100) | round | int }} %">contested</span>{% endfor %}
     </td>
     <td class="text-end"><span class="sov-sec {{ 's-neg' if (s.security_shown or 0) <= 0 else 's-low' }}">{{ '%.1f' | format(s.security_shown) if s.security_shown is not none else '-' }}</span></td>
@@ -144,7 +146,7 @@
     <td>{{ vuln or ('no hub' if not s.hub else '-') }}</td>
     <td class="text-end">{{ s.belts }}</td>
     <td class="sov-planets">{% for k, n in s.planets | dictsort %}<span>{{ k }} {{ n }}</span>{% endfor %}</td>
-    <td class="sov-ups">{% for u in s.upgrades %}<span class="badge sov-up g{{ u.group_id }}" title="{{ u.group }}">{{ u.name }}</span>{% endfor %}</td>
+    <td><span class="sov-ups">{% for u in s.upgrades %}<span class="badge sov-up g{{ u.group_id }}" title="{{ u.group }}: {{ u.description }}">{{ u.name }}</span>{% endfor %}</span>{% for u in s.detected %}<span class="badge sov-up g{{ u.group_id }}" title="Read from corporation assets ({{ u.state }}): {{ u.description }}"><i class="bi bi-building-check me-1"></i>{{ u.name }}{% if u.state != 'active' %} ({{ u.state }}){% endif %}</span>{% endfor %}</td>
     <td class="text-end">{% if s.mined %}<span title="last mined {{ s.mined.last }}">{{ s.mined.units | count_eu }}</span>{% else %}-{% endif %}</td>
     <td class="text-end"><button type="button" class="btn btn-sm btn-link p-0" title="Mark installed upgrades" onclick="sovEdit({{ s.system_id }})"><i class="bi bi-pencil-square"></i></button></td>
   </tr>
@@ -170,6 +172,17 @@
 </div>
 
 {% if systems %}
+
+<div class="modal fade" id="sovDetailModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content bg-dark text-light">
+    <div class="modal-header py-2"><h6 class="modal-title" id="det-title">System</h6>
+      <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body small" id="det-body"></div>
+    <div class="modal-footer py-2">
+      <button type="button" class="btn btn-sm btn-outline-secondary me-auto" id="det-edit"><i class="bi bi-pencil-square me-1"></i>Mark upgrades</button>
+      <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button></div>
+  </div></div>
+</div>
 
 <div class="modal fade" id="sovImportModal" tabindex="-1">
   <div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content bg-dark text-light">
@@ -204,7 +217,7 @@
       <div class="small text-muted mt-2 mb-1">{{ gname }}</div>
       {% for u in catalogue if u.group_id == gid %}
       <div class="form-check"><input class="form-check-input sov-up-cb" type="checkbox" value="{{ u.type_id }}" id="up-{{ u.type_id }}" data-group="{{ u.group_id }}" data-gname="{{ u.group }}">
-        <label class="form-check-label small" for="up-{{ u.type_id }}">{{ u.name }}</label></div>
+        <label class="form-check-label small" for="up-{{ u.type_id }}" title="{{ u.description }}">{{ u.name }}</label></div>
       {% endfor %}{% endfor %}
     </div>
     <div class="modal-footer py-2"><span class="small text-danger me-auto" id="sov-up-err"></span>
@@ -477,7 +490,7 @@
   window.sovEdit = function (id) {
     editing = id;
     const tr = document.getElementById('sys-' + id);
-    const have = new Set((tr.dataset.upids || '').split(',').filter(Boolean));
+    const have = new Set((tr.dataset.manual || '').split(',').filter(Boolean));
     document.querySelectorAll('.sov-up-cb').forEach(cb => { cb.checked = have.has(cb.value); });
     $('sov-up-title').textContent = 'Upgrades installed in ' + tr.dataset.name;
     $('sov-up-err').textContent = '';
@@ -491,8 +504,10 @@
       const d = await r.json();
       if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
       const tr = document.getElementById('sys-' + editing);
+      tr.dataset.manual = d.type_ids.join(',');
+      const auto = Array.from(tr.querySelectorAll('.bi-building-check')).length;
       tr.dataset.upids = d.type_ids.join(',');
-      tr.dataset.ups = String(d.type_ids.length);
+      tr.dataset.ups = String(d.type_ids.length + auto);
       const cell = tr.querySelector('.sov-ups');
       cell.innerHTML = '';
       d.type_ids.forEach(t => {
@@ -508,6 +523,65 @@
     } catch (e) {
       $('sov-up-err').textContent = 'Not saved: ' + e.message;
     }
+  };
+
+  // System detail: what is known about one system, each fact with its source.
+  window.sovDetail = async function (id) {
+    const m = bootstrap.Modal.getOrCreateInstance($('sovDetailModal'));
+    $('det-title').textContent = (document.getElementById('sys-' + id) || {dataset: {}}).dataset.name || 'System';
+    $('det-body').innerHTML = '<div class="text-muted">Loading...</div>';
+    $('det-edit').onclick = () => { m.hide(); sovEdit(id); };
+    m.show();
+    select(id, false);
+    let d;
+    try {
+      const r = await fetch('/api/sov/system/' + id);
+      d = await r.json();
+      if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
+    } catch (e) {
+      $('det-body').innerHTML = '<div class="text-danger">' + escHtml(e.message) + '</div>';
+      return;
+    }
+    const E = escHtml, fmt = n => Number(n).toLocaleString('en-US').replace(/,/g, ' ');
+    const sec = d.security_shown == null ? '-' : d.security_shown.toFixed(1);
+    $('det-title').innerHTML = E(d.name) + ' <span class="text-muted">' + sec + ' &middot; ' + E(d.constellation) + ' &middot; ' + E(d.region) + '</span>';
+    let h = '<div class="row g-2 mb-3">';
+    const fact = (k, v) => { h += '<div class="col-6 col-md-3"><div class="text-muted">' + k + '</div><div>' + v + '</div></div>'; };
+    fact('Star', E(d.star_class || '-') + (d.a0 ? ' <span class="sov-a0">A0</span>' : ''));
+    fact('Sovereignty Hub', d.hub ? 'ADM ' + (d.adm != null ? d.adm.toFixed(1) : '-') : 'none');
+    fact('Vulnerable (UTC)', d.vuln_start ? E(d.vuln_start.slice(11, 16)) + '-' + E(d.vuln_end.slice(11, 16)) : '-');
+    fact('Asteroid belts', d.belts);
+    h += '</div>';
+    const pl = Object.entries(d.planets).sort();
+    h += '<div class="mb-3"><span class="text-muted">Planets:</span> ' + (pl.length ? pl.map(([k, n]) => E(k) + ' ' + n).join(' &middot; ') : 'none') + '</div>';
+    for (const c of d.campaigns)
+      h += '<div class="alert alert-danger py-1 mb-2">' + E(c.event.replace(/_/g, ' ')) + ' from ' + E(c.start.slice(0, 16).replace('T', ' '))
+        + ' UTC &middot; defender ' + Math.round((c.defender || 0) * 100) + ' %, attackers ' + Math.round((c.attackers || 0) * 100) + ' %</div>';
+    const ups = [...d.upgrades.map(u => ({...u, src: 'marked by you'})),
+                 ...d.detected.map(u => ({...u, src: 'corporation assets, ' + u.state}))];
+    h += '<h6 class="mt-3">Upgrades</h6>';
+    if (!ups.length) h += '<div class="text-muted mb-2">None marked. ESI does not publish installed upgrades.</div>';
+    for (const u of ups)
+      h += '<div class="mb-2"><span class="badge sov-up g' + u.group_id + '">' + E(u.name) + '</span> <span class="text-muted">' + E(u.group) + ' &middot; ' + E(u.src) + '</span>'
+        + (u.description ? '<div class="text-muted ps-1">' + E(u.description) + '</div>' : '') + '</div>';
+    h += '<h6 class="mt-3">Mined here by your characters, last 30 days</h6>';
+    if (!d.mined_types.length) h += '<div class="text-muted mb-2">Nothing in the mining ledger.</div>';
+    else {
+      h += '<table class="table table-dark table-sm tbl-compact"><thead><tr><th>Type</th><th class="text-end">Units</th><th class="text-end">Characters</th><th>Last day</th></tr></thead><tbody>';
+      for (const t of d.mined_types)
+        h += '<tr><td>' + E(t.name) + '</td><td class="text-end">' + fmt(t.units) + '</td><td class="text-end">' + t.characters + '</td><td>' + E(t.last) + '</td></tr>';
+      h += '</tbody></table>';
+    }
+    h += '<h6 class="mt-3">Gates to</h6><div>';
+    h += d.neighbours.map(n => {
+      const nm = n.alliance_id ? d.names[n.alliance_id] : null;
+      const who = n.alliance_id ? (nm ? nm.name : 'alliance ' + n.alliance_id) : (n.faction_id ? 'NPC space' : 'no holder');
+      const link = document.getElementById('sys-' + n.system_id)
+        ? '<a href="#" onclick="sovDetail(' + n.system_id + '); return false">' + E(n.name) + '</a>' : E(n.name);
+      return '<div>' + link + ' <span class="text-muted">' + (n.security != null ? n.security.toFixed(1) : '') + ' &middot; ' + E(n.region || '') + ' &middot; ' + E(who) + '</span></div>';
+    }).join('');
+    h += '</div>';
+    $('det-body').innerHTML = h;
   };
 
   // Import from pasted text: the server reads it, the dialog shows what it read.

@@ -314,6 +314,17 @@ def import_universe(conn: sqlite3.Connection):
 _PLANET_KIND_RE = re.compile(r"^Planet \((.+)\)$")
 
 
+_SOV_UPGRADE_GROUPS = {4768, 4772, 4838, 4839}
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _plain_text(html: str) -> str:
+    """CCP's descriptions carry <a href=showinfo:...> links and <br>s."""
+    text = re.sub(r"<br\s*/?>", "\n", html, flags=re.IGNORECASE)
+    text = _TAG_RE.sub("", text)
+    return re.sub(r"[ \t]+", " ", text).strip()
+
+
 def _map_tables(conn: sqlite3.Connection) -> None:
     conn.executescript("""
         DROP TABLE IF EXISTS sde_regions;
@@ -321,6 +332,7 @@ def _map_tables(conn: sqlite3.Connection) -> None:
         DROP TABLE IF EXISTS sde_map_systems;
         DROP TABLE IF EXISTS sde_stargate_links;
         DROP TABLE IF EXISTS sde_system_planets;
+        DROP TABLE IF EXISTS sde_sov_upgrades;
         CREATE TABLE sde_regions (
             region_id INTEGER PRIMARY KEY,
             name      TEXT
@@ -356,6 +368,12 @@ def _map_tables(conn: sqlite3.Connection) -> None:
             count     INTEGER,
             PRIMARY KEY (system_id, kind)
         );
+        -- CCP's own description of each hub upgrade, as plain text: the only
+        -- statement of what an upgrade does that the static data carries.
+        CREATE TABLE sde_sov_upgrades (
+            type_id     INTEGER PRIMARY KEY,
+            description TEXT
+        );
         CREATE INDEX idx_sde_map_systems_region ON sde_map_systems(region_id);
     """)
 
@@ -390,9 +408,13 @@ def import_map(conn: sqlite3.Connection, zip_path: str | None = None) -> str | N
         gates = _yaml_load(z.read("mapStargates.yaml")) or {}
         planets = _yaml_load(z.read("mapPlanets.yaml")) or {}
         belts = _yaml_load(z.read("mapAsteroidBelts.yaml")) or {}
+        all_types = _yaml_load(z.read("types.yaml")) or {}
         types = {tid: _en((rec or {}).get("name")) or ""
-                 for tid, rec in (_yaml_load(z.read("types.yaml")) or {}).items()
-                 if (rec or {}).get("groupID") == 7}
+                 for tid, rec in all_types.items() if (rec or {}).get("groupID") == 7}
+        upgrade_text = [(int(tid), _plain_text(_en((rec or {}).get("description")) or ""))
+                        for tid, rec in all_types.items()
+                        if (rec or {}).get("groupID") in _SOV_UPGRADE_GROUPS]
+        del all_types
 
     conn.executemany("INSERT INTO sde_regions VALUES (?,?)",
                      [(int(rid), _en(r.get("name")) or "") for rid, r in regions.items()])
@@ -434,6 +456,7 @@ def import_map(conn: sqlite3.Connection, zip_path: str | None = None) -> str | N
             continue
         key = (p.get("solarSystemID"), m.group(1))
         kinds[key] = kinds.get(key, 0) + 1
+    conn.executemany("INSERT INTO sde_sov_upgrades VALUES (?,?)", upgrade_text)
     conn.executemany("INSERT INTO sde_system_planets VALUES (?,?,?)",
                      [(sid, kind, n) for (sid, kind), n in sorted(kinds.items())])
     conn.commit()
