@@ -208,7 +208,7 @@
   <div class="small text-muted mb-1">Scroll to zoom, drag to move. <span id="help-sov"></span> Hover a system for who holds it, click it for its detail.{% if systems %} This alliance's systems outside the filter are dimmed.{% endif %}</div>
   <div class="small mb-1" id="sov-map-summary"></div>
   <div class="small mb-1 d-flex align-items-center gap-2 flex-wrap" id="sov-map-legend"></div>
-  <div class="position-relative"><canvas id="sov-map"></canvas>
+  <div class="position-relative" style="overflow:hidden"><canvas id="sov-map"></canvas>
     <div id="sov-map-tip" class="d-none"></div></div>
 </div>
 
@@ -928,9 +928,13 @@
         tip.textContent = b.name + (x.true_sec != null ? ' (' + sec2(x.true_sec) + ')' : '')
           + ' - ' + (lastMap.regions[b.rid] || '') + ' - ' + holder(x, lastMap.names)
           + (tr && tr.dataset.ups !== '0' ? ', ' + tr.dataset.ups + ' upgrades marked' : '');
-        tip.style.left = (e.clientX - r.left + 14) + 'px';
-        tip.style.top = (e.clientY - r.top + 14) + 'px';
         tip.classList.remove('d-none');
+        // Beside the cursor, flipped to the other side near an edge, so it
+        // never sticks out of the map and widens the page.
+        const mx = e.clientX - r.left, my = e.clientY - r.top;
+        const tw = tip.offsetWidth, th = tip.offsetHeight;
+        tip.style.left = Math.max(0, mx + 14 + tw > r.width ? mx - 14 - tw : mx + 14) + 'px';
+        tip.style.top = Math.max(0, my + 14 + th > r.height ? my - 14 - th : my + 14) + 'px';
       } else tip.classList.add('d-none');
     });
     cvs.addEventListener('mouseleave', () => { tip.classList.add('d-none'); if (hover) { hover = null; requestRender(); } });
