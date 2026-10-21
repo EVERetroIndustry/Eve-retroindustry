@@ -695,6 +695,20 @@
   const ago = ts => { const m = Math.round((Date.now() / 1000 - ts) / 60);
     return m < 60 ? m + ' min' : m < 2880 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' d'; };
 
+  // Round class edges between lo and hi: steps of 1-3-10 over a wide range,
+  // 1-2-5 over a narrow one. Edges are where a class starts.
+  function niceBreaks(lo, hi) {
+    const wide = Math.log10(hi / lo) >= 2.5;
+    const steps = wide ? [1, 3] : [1, 2, 5];
+    const out = [];
+    for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)); e++) {
+      for (const m of steps) {
+        const v = +(m * Math.pow(10, e)).toPrecision(6);
+        if (v > lo && v <= hi) out.push(v);
+      }
+    }
+    return out;
+  }
   const allianceFill = aid => 'hsl(' + ((aid * 47) % 360) + ',30%,20%)';
   const textOn = rgb => {               // dark text on a bright box
     const m = /rgb\((\d+),(\d+),(\d+)\)/.exec(rgb || '');
@@ -716,11 +730,18 @@
     // Five classes with as many systems each (as DOTLAN does): a few hot spots
     // no longer push everything else into one shade. Fixed scales (ADM) stay
     // linear.
-    const CLASSES = 7;
-    let breaks = null;
+    // Classes on a log scale with round edges - 1, 3, 10, 30, 100, 300, 1000...
+    // (or 1, 2, 5, 10... over a short range). Each class is about three times
+    // the one below, so the long tail keeps its own colours: by count, a few
+    // hot spots (400 or 1 700 NPCs) shared one top class with everything above
+    // a few hundred.
+    let breaks = null, CLASSES = 1;
     if (spec && !spec.fixed) {
-      const vals = SYS.map(b => (V[b.id] || {})[kind]).filter(v => v != null && v > 0).sort((a, b) => a - b);
-      if (vals.length) breaks = Array.from({length: CLASSES - 1}, (_, i) => vals[Math.floor(vals.length * (i + 1) / CLASSES)]);
+      const pos = SYS.map(b => (V[b.id] || {})[kind]).filter(v => v != null && v > 0);
+      if (pos.length) {
+        breaks = niceBreaks(Math.min(...pos), Math.max(...pos));
+        CLASSES = breaks.length + 1;
+      }
     }
     const classOf = v => { let c = 0; while (c < breaks.length && v >= breaks[c]) c++; return c; };
     for (const b of SYS) {
@@ -790,7 +811,7 @@
         const lo = c === 0 ? edges[0] : breaks[c - 1], hi = c === CLASSES - 1 ? max : breaks[c];
         h += ' &nbsp;<span class="sov-chip" style="background:' + ramp((c + 1) / CLASSES) + '"></span> ' + f(lo) + (c === CLASSES - 1 ? '+' : '-' + f(hi));
       }
-      h += ' <span class="text-muted">(each colour about a seventh of the systems with any)</span>';
+      h += ' <span class="text-muted">(round edges on a log scale: each colour roughly 2-3x the one before)</span>';
       function vals0() { return SYS.map(b => (V[b.id] || {})[kind]).filter(v => v != null && v > 0).reduce((a, b) => Math.min(a, b), Infinity); }
     }
     else if (spec) h = E(spec.label) + ': <span class="text-muted">' + (spec.fmt ? spec.fmt(min === Infinity ? 0 : min) : (min === Infinity ? 0 : min))
