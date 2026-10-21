@@ -452,3 +452,43 @@ def test_the_detail_lists_ores_mined_and_neighbours(client, held, app_module):
     assert d["mined_types"][0]["name"] == "Veldspar"
     assert d["neighbours"] and all(n["name"] for n in d["neighbours"])
     assert client.get("/api/sov/system/30000142").status_code == 404   # Jita: not held
+
+
+# ── Combat anomalies by band and space ───────────────────────────────────────
+
+@pytest.mark.parametrize("sec, band", [
+    (-0.044879, 0), (-0.25, 0), (-0.250001, 1), (-0.45, 1), (-0.5, 2), (-0.7, 3),
+    (-0.85, 3), (-0.9, 4), (-1.0, 4), (0.3, None), (None, None),
+])
+def test_true_security_picks_the_band(sec, band):
+    from app.web.sov_anomalies import band as _band
+    assert _band(sec) == band
+
+
+def test_anomalies_follow_band_space_and_what_is_installed():
+    from app.web.sov_anomalies import for_system
+    a = for_system(-0.9, "Delve", ["Major Threat Detection Array 3", "Cynosural Navigation"])
+    assert (a["band"], a["space"]) == ("-0.85 to -1.0", "pirate")
+    major3 = next(r for r in a["rows"] if r["upgrade"] == "Major Threat Detection Array 3")
+    assert major3["installed"] and major3["count"] == 19
+    assert dict(a["installed_total"]) == {"Haven": 8, "Sanctum": 4, "Forsaken Sanctum": 3,
+                                          "Forsaken Hub": 2, "Forlorn Hub": 2}
+    d = for_system(-0.9, "Oasa", ["Major Threat Detection Array 3", "Minor Threat Detection Array 1"])
+    assert d["space"] == "drone"
+    assert dict(d["installed_total"])["Drone Horde"] == 10
+    assert dict(d["installed_total"])["Drone Gathering"] == 2
+    two = for_system(-0.9, "Delve", ["Minor Threat Detection Array 2",
+                                     "Minor Threat Detection Array 3"])
+    assert dict(two["installed_total"])["Den"] == 4, "two arrays add up"
+    # Major 1 is the September 2024 table, not the July one.
+    m1 = next(r for r in for_system(-0.1, "Delve", [])["rows"]
+              if r["upgrade"] == "Major Threat Detection Array 1")
+    assert m1["sites"] == [(2, "Hub"), (3, "Hidden Hub"), (2, "Forsaken Hub")]
+
+
+def test_the_detail_carries_the_anomalies(client, held):
+    client.post("/api/sov/upgrades", json={"system_id": held, "type_ids": [82498]})  # Major 3
+    d = client.get(f"/api/sov/system/{held}").json()
+    a = d["anomalies"]
+    assert a["installed_total"] and any(r["installed"] for r in a["rows"])
+    assert "2024-09-18.1" in a["source"]

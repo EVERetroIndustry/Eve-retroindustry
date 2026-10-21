@@ -501,4 +501,8 @@ def system_detail(conn: sqlite3.Connection, system_id: int, alliance_ids) -> dic
     row["neighbours"] = sorted(near, key=lambda n: n["name"] or "")
     from app.character.client_logs import sessions_in
     row["log_sessions"] = sessions_in(conn, system_id)
+    from app.web.sov_anomalies import for_system
+    row["anomalies"] = for_system(
+        row["security"], row["region"],
+        [u["name"] for u in row["upgrades"] + row["detected"]])
     return row
