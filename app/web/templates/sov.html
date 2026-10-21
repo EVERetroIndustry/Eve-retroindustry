@@ -59,13 +59,15 @@
 
 {% if not has_map %}
 <div class="alert alert-warning py-2 small">The map data is missing from this installation's static data. Restart the app to refresh it.</div>
-{% elif not alliances %}
-<div class="alert alert-secondary py-2 small">None of the added characters is in an alliance, so there is no sovereignty to show.</div>
+{% else %}
+{% if not alliances %}
+<div class="alert alert-secondary py-2 small">None of the added characters is in an alliance, so there is no sovereignty of your own to show. The map of any region is below.</div>
 {% elif not systems %}
 <div class="alert alert-secondary py-2 small">
   {% if last_ok %}This alliance holds no systems.{% else %}Sovereignty has not been read yet{% if running %} - reading it now{% endif %}.{% endif %}
 </div>
-{% else %}
+{% endif %}
+{% if systems %}
 
 <div class="small text-muted mb-2">
   <i class="bi bi-info-circle me-1"></i>ESI does not publish which upgrades are installed in a hub.
@@ -95,11 +97,14 @@
   </div>
 </div></div>
 
+{% endif %}
+
 <ul class="nav nav-tabs mb-2" id="sov-tabs">
-  <li class="nav-item"><button class="nav-link active" data-tab="list" type="button">List</button></li>
-  <li class="nav-item"><button class="nav-link" data-tab="map" type="button">Map</button></li>
+  {% if systems %}<li class="nav-item"><button class="nav-link active" data-tab="list" type="button">List</button></li>{% endif %}
+  <li class="nav-item"><button class="nav-link {{ 'active' if not systems }}" data-tab="map" type="button">Map</button></li>
 </ul>
 
+{% if systems %}
 <div id="tab-list">
 <div class="table-responsive">
 <table class="table table-dark table-hover tbl-compact align-middle" id="sov-table">
@@ -149,11 +154,22 @@
 </div>
 </div>
 
-<div id="tab-map" class="d-none">
-  <div class="d-flex flex-wrap gap-1 mb-2" id="sov-map-regions"></div>
-  <div class="small text-muted mb-1">Scroll to zoom, drag to move. Filled: this alliance (blue with a hub, grey without, red contested); hollow: held by someone else or nobody. This alliance's systems outside the filter are dimmed; click one to find it in the list.</div>
+{% endif %}
+
+<div id="tab-map" class="{{ 'd-none' if systems }}">
+  <div class="d-flex flex-wrap gap-1 mb-2 align-items-center">
+    <div class="d-flex flex-wrap gap-1" id="sov-map-regions"></div>
+    <select id="sov-map-pick" class="form-select form-select-sm" style="width:auto">
+      <option value="">Any region...</option>
+      {% for r in all_regions %}<option value="{{ r.id }}">{{ r.name }}</option>{% endfor %}
+    </select>
+  </div>
+  <div class="small text-muted mb-1">Scroll to zoom, drag to move. Filled: this alliance (blue with a hub, grey without, red contested). Hollow: everyone else, the ring coloured by security (green high, amber low, red null). Hover a system for who holds it.{% if systems %} This alliance's systems outside the filter are dimmed; click one to find it in the list.{% endif %}</div>
+  <div class="small mb-1" id="sov-map-summary"></div>
   <svg id="sov-map" xmlns="http://www.w3.org/2000/svg"></svg>
 </div>
+
+{% if systems %}
 
 <div class="modal fade" id="sovImportModal" tabindex="-1">
   <div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content bg-dark text-light">
@@ -198,6 +214,7 @@
 </div>
 
 {% endif %}
+{% endif %}
 
 <script>
 (function () {
@@ -225,8 +242,7 @@
   };
 
   const table = document.getElementById('sov-table');
-  if (!table) return;
-  const rows = Array.from(table.querySelectorAll('tbody tr.sov-row'));
+  const rows = table ? Array.from(table.querySelectorAll('tbody tr.sov-row')) : [];
   const $ = id => document.getElementById(id);
 
   function matches(tr) {
@@ -248,6 +264,7 @@
   }
 
   function apply() {
+    if (!table) return;
     let n = 0;
     const shown = new Set();
     for (const tr of rows) {
@@ -259,13 +276,13 @@
     document.querySelectorAll('#sov-map .sys:not(.other)').forEach(c => c.classList.toggle('dim', !shown.has(c.dataset.id)));
     document.querySelectorAll('#sov-map text.own').forEach(t => t.classList.toggle('dim', !shown.has(t.dataset.id)));
   }
-  ['f-q', 'f-region', 'f-up', 'f-planet', 'f-a0', 'f-hub', 'f-camp', 'f-mined'].forEach(id => {
+  if (table) ['f-q', 'f-region', 'f-up', 'f-planet', 'f-a0', 'f-hub', 'f-camp', 'f-mined'].forEach(id => {
     $(id).addEventListener(id === 'f-q' ? 'input' : 'change', apply);
   });
 
   // Sorting by the header's data-key over the rows' data-* values.
   let sortKey = null, sortDir = 1;
-  table.querySelectorAll('th.sortable').forEach(th => {
+  (table ? table.querySelectorAll('th.sortable') : []).forEach(th => {
     th.style.cursor = 'pointer';
     th.addEventListener('click', () => {
       const key = th.dataset.key, num = th.dataset.type === 'num';
@@ -320,13 +337,16 @@
       b.addEventListener('click', () => drawRegion(rid));
       box.appendChild(b);
     });
-    return [...counts.entries()].sort((a, b) => b[1].n - a[1].n)[0][0];
+    const top = [...counts.entries()].sort((a, b) => b[1].n - a[1].n)[0];
+    return top ? top[0] : (document.querySelector('#sov-map-pick option[value="10000002"]') ? 10000002
+                           : +($('sov-map-pick').options[1] || {}).value);
   }
 
   async function drawRegion(rid) {
     mapRegion = rid;
     document.querySelectorAll('#sov-map-regions .btn').forEach(b =>
       b.classList.toggle('active', b.dataset.rid === String(rid)));
+    $('sov-map-pick').value = String(rid);
     const d = await fetch('/api/sov/region-map?region_id=' + rid).then(r => r.json());
     svg.innerHTML = '';
     const pts = {};
@@ -359,11 +379,12 @@
       if (tr && tr.dataset.hub !== '1') cls += ' nohub';
       if (tr && tr.dataset.camp === '1') cls += ' camp';
       c.setAttribute('class', cls);
+      if (!own) c.style.stroke = secColour(s.security);
       c.dataset.id = s.id;
       const t = document.createElementNS(NS, 'title');
       t.textContent = s.name + (s.security != null ? ' (' + s.security.toFixed(1) + ')' : '')
-        + (tr ? (tr.dataset.ups !== '0' ? ' - ' + tr.dataset.ups + ' upgrades marked' : '')
-              : ' - held by someone else');
+        + ' - ' + holder(s, d.names)
+        + (tr && tr.dataset.ups !== '0' ? ', ' + tr.dataset.ups + ' upgrades marked' : '');
       c.appendChild(t);
       if (own) c.addEventListener('click', () => select(s.id, true));
       g.appendChild(c);
@@ -375,7 +396,43 @@
       g.appendChild(lab);
     });
     svg.appendChild(g);
+    summary(d);
     apply();
+  }
+
+  function secColour(sec) {
+    if (sec == null) return '#6e7681';
+    return sec >= 0.5 ? '#4ea36a' : sec > 0 ? '#c08b2c' : '#b8504a';
+  }
+  function holder(s, names) {
+    if (s.alliance_id) {
+      const n = names[s.alliance_id];
+      return 'sovereignty: ' + (n ? n.name + (n.ticker ? ' [' + n.ticker + ']' : '') : 'alliance ' + s.alliance_id);
+    }
+    return s.faction_id ? 'NPC space' : 'no sovereignty holder';
+  }
+  // What the region is, in one line: security mix and who holds what.
+  function summary(d) {
+    const n = d.systems.length;
+    let hi = 0, lo = 0, nul = 0, npc = 0, free = 0;
+    const by = new Map();
+    d.systems.forEach(s => {
+      if (s.security >= 0.5) hi++; else if (s.security > 0) lo++; else nul++;
+      if (s.alliance_id) by.set(s.alliance_id, (by.get(s.alliance_id) || 0) + 1);
+      else if (s.faction_id) npc++; else free++;
+    });
+    const parts = [n + ' systems'];
+    const sec = [];
+    if (hi) sec.push(hi + ' high'); if (lo) sec.push(lo + ' low'); if (nul) sec.push(nul + ' null');
+    parts.push(sec.join(', '));
+    const held = [...by.entries()].sort((a, b) => b[1] - a[1]).map(([aid, k]) => {
+      const nm = d.names[aid];
+      return escHtml(nm ? nm.name + (nm.ticker ? ' [' + nm.ticker + ']' : '') : 'alliance ' + aid) + ' ' + k;
+    });
+    if (held.length) parts.push('sovereignty: ' + held.join(', '));
+    if (npc) parts.push(npc + ' NPC space');
+    if (free) parts.push(free + ' without a holder');
+    $('sov-map-summary').innerHTML = parts.join(' &middot; ');
   }
 
   let mapReady = false;
@@ -459,7 +516,7 @@
     bootstrap.Modal.getOrCreateInstance($('sovImportModal')).show();
     setTimeout(() => $('imp-text').focus(), 300);
   };
-  $('imp-text').addEventListener('input', () => { clearTimeout(impTimer); impTimer = setTimeout(impPreview, 300); });
+  if ($('imp-text')) $('imp-text').addEventListener('input', () => { clearTimeout(impTimer); impTimer = setTimeout(impPreview, 300); });
   async function impPreview() {
     const text = $('imp-text').value;
     const box = $('imp-preview');
@@ -486,7 +543,7 @@
     $('imp-go').disabled = !ok.length;
     $('imp-status').textContent = ok.length ? ok.length + ' system' + (ok.length === 1 ? '' : 's') + ' to import' : '';
   }
-  ['imp-replace', 'imp-add'].forEach(id => $(id).addEventListener('change', impPreview));
+  if ($('imp-text')) ['imp-replace', 'imp-add'].forEach(id => $(id).addEventListener('change', impPreview));
   window.sovImport = async function () {
     $('imp-go').disabled = true;
     try {
@@ -502,6 +559,8 @@
   };
 
   apply();
+  $('sov-map-pick').addEventListener('change', e => { if (e.target.value) drawRegion(+e.target.value); });
+  if (!table) drawMap();
   if (location.hash === '#map') document.querySelector('#sov-tabs [data-tab="map"]').click();
 })();
 </script>

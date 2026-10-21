@@ -363,3 +363,35 @@ def test_a_system_name_inside_an_upgrade_name_is_not_a_system(monkeypatch):
         {"type_id": 1, "name": "Jita Stability Generator", "group_id": 4839, "group": "x"}])
     d = SOV.parse_upgrade_text(conn, "1DQ1-A: Jita Stability Generator")
     assert [(s["name"], s["type_ids"]) for s in d["systems"]] == [("1DQ1-A", [1])]
+
+
+# ── Any region's map ─────────────────────────────────────────────────────────
+
+def test_without_an_alliance_the_map_of_any_region_is_offered(client, app_module, monkeypatch):
+    m = app_module
+
+    async def none(conn, corp_ids):
+        return {}
+    monkeypatch.setattr(m, "_corp_alliance_ids", none)
+    monkeypatch.setattr(m.bg, "auto_update_enabled", lambda: False)
+    html = client.get("/sov").text
+    assert 'id="sov-map-pick"' in html and ">The Forge</option>" in html
+    assert 'id="sov-table"' not in html and 'data-tab="list" type="button"' not in html
+    # Known space only: no wormhole regions in the picker.
+    assert "A-R00001" not in html
+
+
+def test_the_region_map_says_who_holds_what(client, held, app_module, monkeypatch):
+    m = app_module
+
+    async def names(conn, ids):
+        return {i: {"name": f"Alliance {i}", "ticker": "T"} for i in ids}
+    monkeypatch.setattr(m.sov_api, "alliance_names", names)
+    conn = m.get_conn()
+    rid = conn.execute("SELECT region_id FROM sde_map_systems WHERE system_id=?",
+                       (held,)).fetchone()[0]
+    conn.close()
+    d = client.get(f"/api/sov/region-map?region_id={rid}").json()
+    me = next(s for s in d["systems"] if s["id"] == held)
+    assert me["alliance_id"] == ALLY and d["names"][str(ALLY)]["name"] == f"Alliance {ALLY}"
+    assert "faction_id" in me

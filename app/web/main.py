@@ -10092,15 +10092,17 @@ async def sov_page(request: Request, alliance: int = 0):
         catalogue = sov_api.upgrade_catalogue(conn)
         has_map = bool(conn.execute(
             "SELECT 1 FROM sqlite_master WHERE name='sde_map_systems'").fetchone())
+        all_regions = sov_api.map_regions(conn) if has_map else []
     finally:
         conn.close()
-    if not last_ok and selected and bg.auto_update_enabled() and "sov" not in bg.manual_only():
+    if not last_ok and bg.auto_update_enabled() and "sov" not in bg.manual_only():
         bg.run_now("sov")                 # first visit: nothing stored yet
     return _tr("sov.html", request, {
         "alliances": [{"id": a, **names.get(a, {"name": str(a), "ticker": ""})} for a in mine],
         "selected": selected, "systems": systems,
         "last_ok": last_ok, "catalogue": catalogue,
         "upgrade_groups": sov_api.UPGRADE_GROUPS, "has_map": has_map,
+        "all_regions": all_regions,
         "running": bg.job_state("sov").running,
     })
 
@@ -10158,7 +10160,11 @@ async def api_sov_upgrades_import(request: Request):
 async def api_sov_region_map(region_id: int):
     conn = get_conn()
     try:
-        return sov_api.region_map(conn, region_id)
+        d = sov_api.region_map(conn, region_id)
+        names = await sov_api.alliance_names(
+            conn, {x["alliance_id"] for x in d["systems"] if x["alliance_id"]})
+        d["names"] = {str(k): v for k, v in names.items()}
+        return d
     finally:
         conn.close()
 

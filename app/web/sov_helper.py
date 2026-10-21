@@ -301,9 +301,10 @@ def region_map(conn: sqlite3.Connection, region_id: int) -> dict:
     ensure_sov_tables(conn)
     systems = [
         {"id": sid, "name": name or str(sid), "x": x, "y": y, "alliance_id": aid,
-         "security": security_display(sec)}
-        for sid, name, x, y, aid, sec in conn.execute("""
-            SELECT ms.system_id, s.name, ms.x2d, ms.y2d, m.alliance_id, ms.security
+         "faction_id": fid, "security": security_display(sec)}
+        for sid, name, x, y, aid, fid, sec in conn.execute("""
+            SELECT ms.system_id, s.name, ms.x2d, ms.y2d, m.alliance_id, m.faction_id,
+                   ms.security
               FROM sde_map_systems ms
               LEFT JOIN sde_systems s ON s.system_id = ms.system_id
               LEFT JOIN sov_map_cache m ON m.system_id = ms.system_id
@@ -405,3 +406,13 @@ def import_upgrades(conn: sqlite3.Connection, items, replace: bool = True) -> in
         set_manual_upgrades(conn, sid, tids)
         n += 1
     return n
+
+
+def map_regions(conn: sqlite3.Connection) -> list[dict]:
+    """Regions that can be drawn: known space with flattened map positions."""
+    return [{"id": rid, "name": name} for rid, name in conn.execute("""
+        SELECT r.region_id, r.name FROM sde_regions r
+         WHERE r.region_id < 11000000
+           AND EXISTS (SELECT 1 FROM sde_map_systems ms
+                        WHERE ms.region_id = r.region_id AND ms.x2d IS NOT NULL)
+         ORDER BY r.name""")]
