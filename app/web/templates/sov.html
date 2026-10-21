@@ -199,6 +199,14 @@
         <option value="last_mined">Last mined by you (client logs)</option>
       </optgroup>
     </select>
+    <select id="sov-map-scheme" class="form-select form-select-sm" style="width:auto" title="Colour scheme for the overlays">
+      <option value="heat">Colours: heat (yellow - red)</option>
+      <option value="gold">Colours: gold</option>
+      <option value="steel">Colours: steel blue</option>
+      <option value="violet">Colours: violet</option>
+      <option value="semantic">Colours: by meaning</option>
+      <option value="bars">Colours: dark + bar</option>
+    </select>
     <button type="button" class="btn btn-sm btn-outline-secondary" id="sov-map-fit" title="Show all of New Eden"><i class="bi bi-arrows-fullscreen me-1"></i>All of New Eden</button>
     <select id="sov-map-pick" class="form-select form-select-sm" style="width:auto">
       <option value="">Go to region...</option>
@@ -540,16 +548,22 @@
       ctx.globalAlpha = dimSet && b.own && !dimSet.has(String(b.id)) ? 0.22 : 1;
       ctx.fillStyle = b.fill;
       ctx.fillRect(b.x, b.y, BW, BH);
+      if (b.bar) {
+        ctx.fillStyle = '#a78bfa';
+        const bh = near ? 5 : BH * 0.35;
+        ctx.fillRect(b.x + 3, b.y + BH - bh - 3, (BW - 6) * b.bar, bh);
+      }
       const sel = b.id === selected, hov = hover && b.id === hover.id;
       ctx.strokeStyle = sel || hov ? '#e3b341' : b.own ? '#7bb8ec' : '#3b4452';
-      ctx.lineWidth = (sel ? 3.5 : b.own ? 2.5 : 1) / s;
+      ctx.lineWidth = (sel ? 3.5 : b.own && near ? 2.5 : 1) / s;
       ctx.strokeRect(b.x, b.y, BW, BH);
       if (b.ice) {
         // Ice belts: a bright cyan frame just outside the box, in every view,
         // so it reads apart from this alliance's steel-blue outline.
         const o = 4;
         ctx.strokeStyle = '#22d3ee';
-        ctx.lineWidth = Math.max(3, 2.5 / s);
+        // Far out a box is a few pixels: a thin frame, or it buries the colour.
+        ctx.lineWidth = near ? Math.max(3, 2.5 / s) : 1.2 / s;
         ctx.strokeRect(b.x - o, b.y - o, BW + 2 * o, BH + 2 * o);
       }
       if (near) {
@@ -645,8 +659,29 @@
     belts: {label: 'Asteroid belts (static data)'},
     upgrades: {label: 'Hub upgrades you have marked'},
   };
-  const RAMP_LO = [0x2b, 0x34, 0x42], RAMP_HI = [0xe3, 0xb3, 0x41];
-  const ramp = t => 'rgb(' + RAMP_LO.map((lo, i) => Math.round(lo + (RAMP_HI[i] - lo) * t)).join(',') + ')';
+  // Colour schemes for valued overlays: stops from "none" to "most".
+  const hex = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  const SCHEMES = {
+    gold:   ['#2b3442', '#e3b341'],
+    // DOTLAN-like heat: nothing dark, then yellow, orange, red for the most.
+    heat:   ['#23272e', '#f2e27a', '#f5b041', '#ea7a2a', '#d9442b', '#b3122e'],
+    steel:  ['#1b2533', '#3d6a94', '#7bb8ec', '#cfe6fb'],
+    violet: ['#1f1b2e', '#4c3a8c', '#8b5cf6', '#c4b5fd'],
+    bars:   ['#1a1f27', '#2a2440'],
+  };
+  const MEANING = {                      // "by meaning": one hue per kind of value
+    jumps: ['#1b2533', '#2f6db5', '#60a5fa'], ship_kills: ['#2a1b1b', '#9b2c2c', '#f87171'],
+    pod_kills: ['#2a1b1b', '#9b2c2c', '#f87171'], npc_kills: ['#182a1f', '#2f7d4f', '#4ade80'],
+    sci_manufacturing: ['#1f1b2e', '#5b45a8', '#a78bfa'], sci_reaction: ['#1f1b2e', '#5b45a8', '#a78bfa'],
+    sci_invention: ['#1f1b2e', '#5b45a8', '#a78bfa'], adm: ['#16262a', '#2a7d86', '#5eead4'],
+  };
+  let scheme = 'heat', rampKind = '';
+  function ramp(t) {
+    const stops = (scheme === 'semantic' ? MEANING[rampKind] : SCHEMES[scheme]) || SCHEMES.violet;
+    const x = Math.max(0, Math.min(1, t)) * (stops.length - 1), i = Math.min(stops.length - 2, Math.floor(x));
+    const a = hex(stops[i]), b = hex(stops[i + 1]), f = x - i;
+    return 'rgb(' + a.map((v, k) => Math.round(v + (b[k] - v) * f)).join(',') + ')';
+  }
   // The client's own security colours, by the shown (rounded) status.
   const SEC = {'1.0': '#2c75e1', '0.9': '#399aeb', '0.8': '#4ecef8', '0.7': '#60dba3', '0.6': '#71e554',
                '0.5': '#f3fd82', '0.4': '#dc6d07', '0.3': '#ce440f', '0.2': '#bb1116', '0.1': '#722020'};
@@ -673,10 +708,22 @@
     let max = 0, min = Infinity;
     if (spec) SYS.forEach(b => { const v = (V[b.id] || {})[kind]; if (v != null) { max = Math.max(max, v); min = Math.min(min, v); } });
     if (spec && spec.fixed) [min, max] = spec.fixed;
+    // Five classes with as many systems each (as DOTLAN does): a few hot spots
+    // no longer push everything else into one shade. Fixed scales (ADM) stay
+    // linear.
+    const CLASSES = 5;
+    let breaks = null;
+    if (spec && !spec.fixed) {
+      const vals = SYS.map(b => (V[b.id] || {})[kind]).filter(v => v != null && v > 0).sort((a, b) => a - b);
+      if (vals.length) breaks = Array.from({length: CLASSES - 1}, (_, i) => vals[Math.floor(vals.length * (i + 1) / CLASSES)]);
+    }
+    const classOf = v => { let c = 0; while (c < breaks.length && v >= breaks[c]) c++; return c; };
     for (const b of SYS) {
       const vs = V[b.id] || {};
       const sec = b.sec, aid = b.aid;
       let fill = '#1a1f27', t2 = '', t3 = '';
+      rampKind = kind;
+      let bar = null;
       if (kind === 'sov') {
         if (aid) {
           const nm = names[aid];
@@ -709,12 +756,15 @@
         const v = vs[kind];
         if (v == null) { fill = '#14181e'; t2 = 'no data'; }
         else {
-          const t = max > min ? (v - min) / (max - min) : (v > 0 ? 1 : 0);
-          fill = v === 0 && !spec.fixed ? '#1f2630' : ramp(spec.fixed ? t : Math.sqrt(t));
+          const t = spec.fixed ? (max > min ? (v - min) / (max - min) : 1)
+                               : (breaks ? (classOf(v) + 1) / CLASSES : 1);
+          fill = v === 0 && !spec.fixed ? '#1f2630' : ramp(t);
+          bar = t;
           t2 = spec.fmt ? spec.fmt(v) : String(v);
         }
       }
       b.fill = fill; b.t2 = t2; b.t3 = t3;
+      b.bar = scheme === 'bars' ? bar : null;
       b.ink = textOn(fill) || '#e6edf3';
     }
     const E = escHtml;
@@ -726,9 +776,20 @@
     else if (kind === 'a0') h = '<span class="sov-chip" style="background:#2c75e1"></span> \u2605 system with an A0 star (its type, as the client shows it); other systems show their star.';
     else if (kind === 'belts' || kind === 'ice') h = (kind === 'ice' ? '<span class="sov-chip" style="background:#2f6fa8"></span> \u2744 systems with ice belts. ' : 'Asteroid belts from the static data, ice belts after the +. ')
       + 'Ice belt counts: ' + E(lastMap.ice_source || 'not in this installation\'s static data') + ' - CCP publishes them nowhere (static data, ESI or the client\'s files).';
+    else if (spec && breaks) {
+      rampKind = kind;
+      const f = v => spec.fmt ? spec.fmt(v) : String(v);
+      const edges = [vals0(), ...breaks, max];
+      h = E(spec.label) + ': <span class="sov-chip" style="background:#1f2630"></span> none';
+      for (let c = 0; c < CLASSES; c++) {
+        const lo = c === 0 ? edges[0] : breaks[c - 1], hi = c === CLASSES - 1 ? max : breaks[c];
+        h += ' &nbsp;<span class="sov-chip" style="background:' + ramp((c + 1) / CLASSES) + '"></span> ' + f(lo) + (c === CLASSES - 1 ? '+' : '-' + f(hi));
+      }
+      h += ' <span class="text-muted">(each colour about a fifth of the systems with any)</span>';
+      function vals0() { return SYS.map(b => (V[b.id] || {})[kind]).filter(v => v != null && v > 0).reduce((a, b) => Math.min(a, b), Infinity); }
+    }
     else if (spec) h = E(spec.label) + ': <span class="text-muted">' + (spec.fmt ? spec.fmt(min === Infinity ? 0 : min) : (min === Infinity ? 0 : min))
-      + '</span> <span class="sov-ramp"></span> <span class="text-muted">' + (spec.fmt ? spec.fmt(max) : max) + '</span>'
-      + (spec.fixed ? '' : ' <span class="text-muted">(scaled across New Eden)</span>');
+      + '</span> <span class="sov-ramp" style="background:linear-gradient(90deg,' + (rampKind = kind, [0, 0.33, 0.66, 1].map(ramp).join(',')) + ')"></span> <span class="text-muted">' + (spec.fmt ? spec.fmt(max) : max) + '</span>';
     else if (kind === 'sov') h = 'Box colour: <span class="sov-chip" style="background:#1f3b57"></span> this alliance, other alliances each their own shade, <span class="sov-chip" style="background:#2a2333"></span> NPC space, <span class="sov-chip" style="background:#5a1d1d"></span> contested. Ticker and hub ADM inside.';
     const src = spec && spec.src ? meta[spec.src] : (kind === 'incursion' ? meta.incursions : null);
     if (src && src.fetched_at) h += ' <span class="text-muted">&middot; from ESI' + (src.data_time ? ' (data of ' + E(src.data_time.replace(/:\d\d GMT$/, ' UTC')) + ')' : '') + ', read ' + ago(src.fetched_at) + ' ago</span>';
@@ -1074,6 +1135,17 @@
     if (o && $('sov-map-overlay').querySelector('option[value="' + o + '"]')) $('sov-map-overlay').value = o;
   }
   $('sov-map-fit').addEventListener('click', fitWorld);
+  {
+    let sc = new URLSearchParams(location.search).get('scheme');
+    if (!sc) { try { sc = localStorage.getItem('sovMapScheme'); } catch (e) {} }
+    if (sc && $('sov-map-scheme').querySelector('option[value="' + sc + '"]')) $('sov-map-scheme').value = sc;
+    scheme = $('sov-map-scheme').value;
+  }
+  $('sov-map-scheme').addEventListener('change', () => {
+    scheme = $('sov-map-scheme').value;
+    try { localStorage.setItem('sovMapScheme', scheme); } catch (e) {}
+    paint();
+  });
   $('sov-map-overlay').addEventListener('change', () => {
     try { localStorage.setItem('sovMapOverlay', $('sov-map-overlay').value); } catch (e) {}
     paint();
