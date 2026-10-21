@@ -651,7 +651,8 @@
   const OVERLAYS = {
     jumps: {label: 'Jumps in the last hour', src: 'jumps'},
     ship_kills: {label: 'Ships destroyed in the last hour', src: 'kills'},
-    npc_kills: {label: 'NPCs killed in the last hour', src: 'kills'},
+    // floor: below it nothing much is happening - one base class.
+    npc_kills: {label: 'NPCs killed in the last hour', src: 'kills', floor: 30},
     pod_kills: {label: 'Pods destroyed in the last hour', src: 'kills'},
     adm: {label: 'Activity Defense Multiplier of the Sovereignty Hub (1 to 6)', fixed: [1, 6], fmt: v => v.toFixed(1)},
     sci_manufacturing: {label: 'Manufacturing cost index', src: 'sci', fmt: v => (v * 100).toFixed(2) + ' %'},
@@ -697,8 +698,15 @@
 
   // Round class edges between lo and hi: steps of 1-3-10 over a wide range,
   // 1-2-5 over a narrow one. Edges are where a class starts.
-  function niceBreaks(lo, hi) {
-    const wide = Math.log10(hi / lo) >= 2.5;
+  function niceBreaks(lo, hi, floor) {
+    // With a floor, everything under it is one base class and the classes
+    // above it step 1-2-5, finer, since that is the range worth reading.
+    if (floor && hi <= floor) return [floor];        // a quiet hour: all base class
+    if (floor && hi > floor) {
+      const above = niceBreaks(floor, hi, 0, true).filter(v => v > floor);
+      return [floor, ...above];
+    }
+    const wide = Math.log10(hi / lo) >= 2.5 && !arguments[3];
     const steps = wide ? [1, 3] : [1, 2, 5];
     const out = [];
     for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)); e++) {
@@ -739,7 +747,7 @@
     if (spec && !spec.fixed) {
       const pos = SYS.map(b => (V[b.id] || {})[kind]).filter(v => v != null && v > 0);
       if (pos.length) {
-        breaks = niceBreaks(Math.min(...pos), Math.max(...pos));
+        breaks = niceBreaks(Math.min(...pos), Math.max(...pos), spec.floor || 0);
         CLASSES = breaks.length + 1;
       }
     }
