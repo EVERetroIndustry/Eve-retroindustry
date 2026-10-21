@@ -527,7 +527,7 @@ def system_detail(conn: sqlite3.Connection, system_id: int, alliance_ids) -> dic
                               LEFT JOIN sde_regions rg ON rg.region_id = ms.region_id
                              WHERE ms.system_id=?""", (other,)).fetchone()
         if r:
-            near.append({"system_id": other, "name": r[0], "security": security_display(r[1]),
+            near.append({"system_id": other, "name": r[0], "security": security_display(r[1]), "true_sec": r[1],
                          "alliance_id": r[2], "faction_id": r[3], "region": r[4]})
     row["neighbours"] = sorted(near, key=lambda n: n["name"] or "")
     from app.character.client_logs import sessions_in
@@ -684,6 +684,7 @@ def universe_map(conn: sqlite3.Connection) -> dict:
     systems = [
         {"id": sid, "name": name or str(sid), "x": x, "y": y, "region_id": rid,
          "alliance_id": aid, "faction_id": fid, "security": security_display(sec),
+         "true_sec": sec,
          "star_class": star_label(star), "a0": is_a0(star)}
         for sid, name, x, y, rid, aid, fid, sec, star in conn.execute("""
             SELECT ms.system_id, s.name, ms.x2d, ms.y2d, ms.region_id, m.alliance_id,

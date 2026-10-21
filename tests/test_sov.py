@@ -643,3 +643,17 @@ def test_overlays_do_not_bind_one_parameter_per_system():
     ids = [r[0] for r in conn.execute("SELECT system_id FROM sde_map_systems")]
     assert len(ids) > 999
     SOV.region_overlays(conn, ids)          # must not raise "too many SQL variables"
+
+
+def test_security_is_shown_to_two_decimals(client, held, app_module, monkeypatch):
+    async def names(conn, ids):
+        return {}
+    monkeypatch.setattr(app_module.sov_api, "alliance_names", names)
+    me = next(s for s in client.get("/api/sov/universe-map").json()["systems"] if s["id"] == held)
+    assert -1.0 <= me["true_sec"] < 0, "the raw value, not the one-decimal one"
+    html = client.get("/sov").text
+    row = html[html.index('id="sys-%d"' % held):]
+    row = row[:row.index("</tr>")]
+    shown = "%.2f" % round(me["true_sec"], 2)
+    assert f">{shown}</span>" in row
+    assert "const sec2" in html and "sec2(x.true_sec)" in html

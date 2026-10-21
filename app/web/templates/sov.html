@@ -145,7 +145,7 @@
       <a href="#" class="text-secondary ms-1" onclick="sovShowOnMap({{ s.system_id }}, {{ s.region_id }}); return false" title="Show on map"><i class="bi bi-geo-alt"></i></a>
       {% for c in s.campaigns %}<span class="badge bg-danger ms-1" title="{{ c.event | replace('_', ' ') }} from {{ c.start[:16] | replace('T', ' ') }} UTC, defender {{ ((c.defender or 0) * 100) | round | int }} %">contested</span>{% endfor %}
     </td>
-    <td class="text-end"><span class="sov-sec {{ 's-neg' if (s.security_shown or 0) <= 0 else 's-low' }}">{{ '%.1f' | format(s.security_shown) if s.security_shown is not none else '-' }}</span></td>
+    <td class="text-end"><span class="sov-sec {{ 's-neg' if (s.security_shown or 0) <= 0 else 's-low' }}" title="Shown in game as {{ '%.1f' | format(s.security_shown) if s.security_shown is not none else '-' }}">{{ '%.2f' | format((s.security | round(2)) + 0.0) if s.security is not none else '-' }}</span></td>
     <td>{{ s.constellation }}</td>
     <td>{{ s.region }}</td>
     <td class="{{ 'sov-a0' if s.a0 }}" title="{{ 'Spectral class ' ~ s.spectral if s.spectral }}">{% if s.a0 %}&#9733; {% endif %}{{ s.star_class or '-' }}</td>
@@ -594,7 +594,7 @@
       id: x.id, name: x.name, x: pts[x.id][0] - BW / 2, y: pts[x.id][1] - BH / 2,
       own: x.alliance_id === OWN, sec: x.security, aid: x.alliance_id || 0, fid: x.faction_id || 0,
       star: x.star_class || '', a0: !!x.a0, rid: x.region_id, src: x,
-      secText: x.security != null ? x.security.toFixed(1) : '',
+      secText: x.true_sec != null ? sec2(x.true_sec) : '',
       secCol: x.security != null && x.security <= 0 ? '#e47aa9' : secCol(x.security),
       fill: '#1a1f27', ink: '#e6edf3', t2: '', t3: '',
     }));
@@ -638,6 +638,8 @@
   // The client's own security colours, by the shown (rounded) status.
   const SEC = {'1.0': '#2c75e1', '0.9': '#399aeb', '0.8': '#4ecef8', '0.7': '#60dba3', '0.6': '#71e554',
                '0.5': '#f3fd82', '0.4': '#dc6d07', '0.3': '#ce440f', '0.2': '#bb1116', '0.1': '#722020'};
+  // True security to two decimals; never "-0.00".
+  const sec2 = v => { const t = v.toFixed(2); return t === '-0.00' ? '0.00' : t; };
   const secCol = v => v == null ? '#6e7681' : (v <= 0 ? '#8d3264' : SEC[v.toFixed(1)] || '#8d3264');
   const ago = ts => { const m = Math.round((Date.now() / 1000 - ts) / 60);
     return m < 60 ? m + ' min' : m < 2880 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' d'; };
@@ -825,7 +827,7 @@
       cvs.style.cursor = b ? 'pointer' : '';
       if (b) {
         const x = b.src, tr = document.getElementById('sys-' + b.id);
-        tip.textContent = b.name + (x.security != null ? ' (' + x.security.toFixed(1) + ')' : '')
+        tip.textContent = b.name + (x.true_sec != null ? ' (' + sec2(x.true_sec) + ')' : '')
           + ' - ' + (lastMap.regions[b.rid] || '') + ' - ' + holder(x, lastMap.names)
           + (tr && tr.dataset.ups !== '0' ? ', ' + tr.dataset.ups + ' upgrades marked' : '');
         tip.style.left = (e.clientX - r.left + 14) + 'px';
@@ -916,7 +918,7 @@
       return;
     }
     const E = escHtml, fmt = n => Number(n).toLocaleString('en-US').replace(/,/g, ' ');
-    const sec = d.security_shown == null ? '-' : d.security_shown.toFixed(1);
+    const sec = d.security == null ? '-' : sec2(d.security);
     const holderName = d.alliance_id ? (d.names[d.alliance_id] ? d.names[d.alliance_id].name : 'alliance ' + d.alliance_id)
                                      : (d.faction_id ? 'NPC space' : 'no sovereignty holder');
     $('det-title').innerHTML = E(d.name) + ' <span class="text-muted">' + sec + ' &middot; ' + E(d.constellation) + ' &middot; ' + E(d.region)
@@ -986,7 +988,7 @@
       const nm = n.alliance_id ? d.names[n.alliance_id] : null;
       const who = n.alliance_id ? (nm ? nm.name : 'alliance ' + n.alliance_id) : (n.faction_id ? 'NPC space' : 'no holder');
       const link = '<a href="#" onclick="sovDetail(' + n.system_id + '); return false">' + E(n.name) + '</a>';
-      return '<div>' + link + ' <span class="text-muted">' + (n.security != null ? n.security.toFixed(1) : '') + ' &middot; ' + E(n.region || '') + ' &middot; ' + E(who) + '</span></div>';
+      return '<div>' + link + ' <span class="text-muted">' + (n.true_sec != null ? sec2(n.true_sec) : '') + ' &middot; ' + E(n.region || '') + ' &middot; ' + E(who) + '</span></div>';
     }).join('');
     h += '</div>';
     $('det-body').innerHTML = h;
