@@ -194,6 +194,7 @@
         <option value="a0">A0 star (blue)</option>
         <option value="belts">Asteroid belts</option>
         <option value="last_mined">Last mined by you (client logs)</option>
+        <option value="ice">Ice mined by you (client logs)</option>
       </optgroup>
     </select>
     <button type="button" class="btn btn-sm btn-outline-secondary" id="sov-map-fit" title="Show all of New Eden"><i class="bi bi-arrows-fullscreen me-1"></i>All of New Eden</button>
@@ -684,6 +685,9 @@
         const v = vs.last_mined;
         if (v) { const hh = (Date.now() / 1000 - v) / 3600; fill = ramp(Math.max(0.15, 1 - Math.log10(1 + hh) / 3)); t2 = 'mined ' + ago(v) + ' ago'; }
         if (vs.ice_last) t3 = 'ice ' + ago(vs.ice_last) + ' ago';
+      } else if (kind === 'ice') {
+        const v = vs.ice_last;
+        if (v) { const hh = (Date.now() / 1000 - v) / 3600; fill = 'rgb(' + [70, 140, 200].map(c => Math.round(c * Math.max(0.35, 1 - Math.log10(1 + hh) / 3.5))).join(',') + ')'; t2 = '\u2744 ice ' + ago(v) + ' ago'; }
       } else if (kind === 'a0') {
         if (b.a0) { fill = '#2c75e1'; t2 = '★ ' + b.star; }
         else t2 = b.star || 'no star';
@@ -710,6 +714,7 @@
     else if (kind === 'contested') h = '<span class="sov-chip" style="background:#8b2323"></span> a sovereignty campaign is running or scheduled';
     else if (kind === 'incursion') h = '<span class="sov-chip" style="background:#5b3e8a"></span> infested by an incursion';
     else if (kind === 'last_mined') h = 'When your characters last mined there, from the game client\'s logs on this computer: the brighter, the more recent. Ice shown on its own line.';
+    else if (kind === 'ice') h = '<span class="sov-chip" style="background:#468cc8"></span> \u2744 where your characters mined ice, from the game client\'s logs on this computer - the brighter, the more recent. Ice fields are anomalies the server spawns: no static data or client file lists them, so systems where nobody of yours mined ice show nothing.';
     else if (kind === 'a0') h = '<span class="sov-chip" style="background:#2c75e1"></span> \u2605 system with an A0 star (its type, as the client shows it); other systems show their star.';
     else if (kind === 'belts') h = 'Asteroid belts in the static data. Ice fields are anomalies the server spawns, recorded nowhere in the static data or the client\'s files; "ice mined" is where your characters mined ice, from the client\'s logs.';
     else if (spec) h = E(spec.label) + ': <span class="text-muted">' + (spec.fmt ? spec.fmt(min === Infinity ? 0 : min) : (min === Infinity ? 0 : min))
