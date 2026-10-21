@@ -631,6 +631,35 @@
     summary(d.systems, 'New Eden');
   }
 
+  // New data from the background jobs, without reloading: the systems and
+  // their places do not change, only what is coloured and written on them,
+  // so the view (position, zoom, selection) stays where it is.
+  let focusedRid = null;
+  const MAP_JOBS = ['map-activity', 'sov', 'industry', 'client-logs'];
+  let seenRuns = null;
+  async function refreshData() {
+    const d = await fetch('/api/sov/universe-map').then(r => r.json());
+    for (const x of d.systems) {
+      const b = byId.get(x.id);
+      if (!b) continue;
+      Object.assign(b, {own: x.alliance_id === OWN, aid: x.alliance_id || 0, fid: x.faction_id || 0, src: x});
+    }
+    lastMap = Object.assign({}, lastMap, {overlays: d.overlays, names: d.names, systems: d.systems});
+    paint();
+    apply();
+    if (focusedRid) summary(d.systems.filter(x => x.region_id === focusedRid), d.regions[focusedRid]);
+    else summary(d.systems, 'New Eden');
+  }
+  async function watchJobs() {
+    try {
+      const snap = await (window.rawFetch || fetch)('/api/activity').then(r => r.json());
+      const now = {};
+      for (const j of snap.jobs || []) if (MAP_JOBS.includes(j.key)) now[j.key] = j.last_ok || 0;
+      if (seenRuns && MAP_JOBS.some(k => (now[k] || 0) > (seenRuns[k] || 0)) && lastMap) await refreshData();
+      seenRuns = now;
+    } catch (e) { /* the next minute tries again */ }
+  }
+
   // Move the view onto a region; nothing is re-laid out.
   function focusRegion(rid) {
     rid = +rid;
@@ -639,6 +668,7 @@
     document.querySelectorAll('#sov-map-regions .btn').forEach(b => b.classList.toggle('active', b.dataset.rid === String(rid)));
     $('sov-map-pick').value = String(rid);
     fitRect(r[0], r[1], r[2], r[3], 30);
+    focusedRid = rid;
     if (lastMap) summary(lastMap.systems.filter(x => x.region_id === rid), lastMap.regions[rid]);
   }
 
@@ -877,7 +907,7 @@
     if (!mapReady) {
       regionButtons();
       bindMapControls();
-      mapReady = drawUniverse();
+      mapReady = drawUniverse().then(() => { watchJobs(); setInterval(watchJobs, 60000); });
     }
     return mapReady;
   }
@@ -1160,7 +1190,12 @@
     if (!o) { try { o = localStorage.getItem('sovMapOverlay'); } catch (e) {} }
     if (o && $('sov-map-overlay').querySelector('option[value="' + o + '"]')) $('sov-map-overlay').value = o;
   }
-  $('sov-map-fit').addEventListener('click', fitWorld);
+  $('sov-map-fit').addEventListener('click', () => {
+    fitWorld();
+    focusedRid = null;
+    document.querySelectorAll('#sov-map-regions .btn').forEach(b => b.classList.remove('active'));
+    if (lastMap) summary(lastMap.systems, 'New Eden');
+  });
   $('sov-map-overlay').addEventListener('change', () => {
     try { localStorage.setItem('sovMapOverlay', $('sov-map-overlay').value); } catch (e) {}
     paint();
