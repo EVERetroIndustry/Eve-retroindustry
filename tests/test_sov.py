@@ -451,7 +451,12 @@ def test_the_detail_lists_ores_mined_and_neighbours(client, held, app_module):
         (1230, 500, 2), (1228, 7, 1)]
     assert d["mined_types"][0]["name"] == "Veldspar"
     assert d["neighbours"] and all(n["name"] for n in d["neighbours"])
-    assert client.get("/api/sov/system/30000142").status_code == 404   # Jita: not held
+    assert d["own"] is True
+    # Any system of known space has a detail - the map opens it for every dot.
+    jita = client.get("/api/sov/system/30000142").json()
+    assert jita["name"] == "Jita" and jita["own"] is False and jita["region"] == "The Forge"
+    assert jita["anomalies"] is None, "no Threat Detection Arrays outside null"
+    assert client.get("/api/sov/system/1").status_code == 404
 
 
 # ── Combat anomalies by band and space ───────────────────────────────────────
@@ -492,3 +497,15 @@ def test_the_detail_carries_the_anomalies(client, held):
     a = d["anomalies"]
     assert a["installed_total"] and any(r["installed"] for r in a["rows"])
     assert "2024-09-18.1" in a["source"]
+
+
+
+def test_the_list_and_the_map_lead_to_each_other(client, held):
+    html = client.get("/sov").text
+    row = html[html.index('id="sys-%d"' % held):]
+    row = row[:row.index("</tr>")]
+    assert "sovShowOnMap(%d," % held in row and "sovDetail(%d)" % held in row
+    assert 'id="det-map"' in html and "window.sovShowOnMap" in html
+    script = html[html.index("function drawRegion"):]
+    click = script[script.index("addEventListener('click'"):][:200]
+    assert "sovDetail(s.id)" in click, "a dot on the map opens the system's detail"

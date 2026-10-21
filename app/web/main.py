@@ -10266,9 +10266,10 @@ async def api_sov_system(system_id: int):
         mine = await _my_alliances(conn)
         d = sov_api.system_detail(conn, system_id, mine)
         if d is None:
-            return JSONResponse({"error": "not a system your alliance holds"}, status_code=404)
+            return JSONResponse({"error": "unknown system"}, status_code=404)
         names = await sov_api.alliance_names(
-            conn, {n["alliance_id"] for n in d["neighbours"] if n["alliance_id"]})
+            conn, {n["alliance_id"] for n in d["neighbours"] if n["alliance_id"]}
+            | ({d["alliance_id"]} if d["alliance_id"] else set()))
         d["names"] = {str(k): v for k, v in names.items()}
         return d
     finally:

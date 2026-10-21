@@ -18,7 +18,7 @@
   #sov-map .lnk { stroke: #30363d; stroke-width: 1; vector-effect: non-scaling-stroke; }
   #sov-map .sys { fill: #7bb8ec; stroke: #0b0f14; stroke-width: 1; vector-effect: non-scaling-stroke; cursor: pointer; }
   #sov-map .sys.nohub { fill: #6e7681; }
-  #sov-map .sys.other { fill: none; stroke: #6e7681; stroke-width: 1.5; cursor: default; }
+  #sov-map .sys.other { fill: none; stroke: #6e7681; stroke-width: 1.5; }
   #sov-map text.other { fill: #6e7681; font-size: 12px; }
   #sov-map .sys.camp { fill: #f85149; }
   #sov-map .sys.dim { opacity: .18; }
@@ -137,7 +137,7 @@
   <tbody>
   {% for s in systems %}
   {% set vuln = (s.vuln_start[11:16] ~ '-' ~ s.vuln_end[11:16]) if s.vuln_start and s.vuln_end else '' %}
-  <tr class="sov-row" id="sys-{{ s.system_id }}" data-id="{{ s.system_id }}"
+  <tr class="sov-row" id="sys-{{ s.system_id }}" data-id="{{ s.system_id }}" data-rid="{{ s.region_id }}"
       data-name="{{ s.name }}" data-sec="{{ s.security if s.security is not none else '' }}"
       data-const="{{ s.constellation }}" data-region="{{ s.region }}" data-star="{{ s.star_class }}"
       data-adm="{{ s.adm if s.adm is not none else '' }}" data-vuln="{{ vuln }}" data-belts="{{ s.belts }}"
@@ -148,6 +148,7 @@
       data-hub="{{ 1 if s.hub else 0 }}" data-camp="{{ 1 if s.campaigns else 0 }}"
       data-mined="{{ s.mined.units if s.mined else 0 }}" data-logs="{{ s.logs_last or '' }}">
     <td class="fw-medium"><a href="#" class="link-light text-decoration-none sov-open" onclick="sovDetail({{ s.system_id }}); return false" title="Details">{{ s.name }}</a>
+      <a href="#" class="text-secondary ms-1" onclick="sovShowOnMap({{ s.system_id }}, {{ s.region_id }}); return false" title="Show on map"><i class="bi bi-geo-alt"></i></a>
       {% for c in s.campaigns %}<span class="badge bg-danger ms-1" title="{{ c.event | replace('_', ' ') }} from {{ c.start[:16] | replace('T', ' ') }} UTC, defender {{ ((c.defender or 0) * 100) | round | int }} %">contested</span>{% endfor %}
     </td>
     <td class="text-end"><span class="sov-sec {{ 's-neg' if (s.security_shown or 0) <= 0 else 's-low' }}">{{ '%.1f' | format(s.security_shown) if s.security_shown is not none else '-' }}</span></td>
@@ -179,7 +180,7 @@
       {% for r in all_regions %}<option value="{{ r.id }}">{{ r.name }}</option>{% endfor %}
     </select>
   </div>
-  <div class="small text-muted mb-1">Scroll to zoom, drag to move. Filled: this alliance (blue with a hub, grey without, red contested). Hollow: everyone else, the ring coloured by security (green high, amber low, red null). Hover a system for who holds it.{% if systems %} This alliance's systems outside the filter are dimmed; click one to find it in the list.{% endif %}</div>
+  <div class="small text-muted mb-1">Scroll to zoom, drag to move. Filled: this alliance (blue with a hub, grey without, red contested). Hollow: everyone else, the ring coloured by security (green high, amber low, red null). Hover a system for who holds it, click it for its detail.{% if systems %} This alliance's systems outside the filter are dimmed.{% endif %}</div>
   <div class="small mb-1" id="sov-map-summary"></div>
   <svg id="sov-map" xmlns="http://www.w3.org/2000/svg"></svg>
 </div>
@@ -192,6 +193,7 @@
       <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
     <div class="modal-body small" id="det-body"></div>
     <div class="modal-footer py-2">
+      <button type="button" class="btn btn-sm btn-outline-secondary" id="det-map"><i class="bi bi-geo-alt me-1"></i>Show on map</button>
       <button type="button" class="btn btn-sm btn-outline-secondary me-auto" id="det-edit"><i class="bi bi-pencil-square me-1"></i>Mark upgrades</button>
       <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button></div>
   </div></div>
@@ -342,7 +344,7 @@
   const OWN = {{ selected | tojson }};
   const REGIONS = {{ systems | map(attribute='region_id') | list | tojson if systems else '[]' }};
   const REGION_NAMES = {{ systems | map(attribute='region') | list | tojson if systems else '[]' }};
-  let mapRegion = null, vb = null;
+  let mapRegion = null, vb = null, mapPts = {};
   const svg = $('sov-map'), NS = 'http://www.w3.org/2000/svg';
   const setVB = () => svg.setAttribute('viewBox', vb.join(' '));
 
@@ -375,7 +377,7 @@
     $('sov-map-pick').value = String(rid);
     const d = await fetch('/api/sov/region-map?region_id=' + rid).then(r => r.json());
     svg.innerHTML = '';
-    const pts = {};
+    const pts = mapPts = {};
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     d.systems.forEach(s => {
       const x = s.x, y = -s.y;
@@ -412,7 +414,8 @@
         + ' - ' + holder(s, d.names)
         + (tr && tr.dataset.ups !== '0' ? ', ' + tr.dataset.ups + ' upgrades marked' : '');
       c.appendChild(t);
-      if (own) c.addEventListener('click', () => select(s.id, true));
+      c.style.cursor = 'pointer';
+      c.addEventListener('click', () => { if (own) select(s.id, false); sovDetail(s.id); });
       g.appendChild(c);
       const lab = document.createElementNS(NS, 'text');
       lab.setAttribute('x', pts[s.id][0] + (own ? 12 : 8)); lab.setAttribute('y', pts[s.id][1] + 4);
@@ -425,6 +428,24 @@
     summary(d);
     apply();
   }
+
+  // From the list or the detail: open the map on the system's region, zoomed
+  // in on it and marked.
+  window.sovShowOnMap = async function (id, rid) {
+    document.querySelectorAll('#sov-tabs .nav-link').forEach(x => x.classList.toggle('active', x.dataset.tab === 'map'));
+    if ($('tab-list')) $('tab-list').classList.add('d-none');
+    $('tab-map').classList.remove('d-none');
+    if (!mapReady) { mapReady = true; regionButtons(); bindMapControls(); }
+    if (mapRegion !== rid || !mapPts[id]) await drawRegion(rid);
+    const p = mapPts[id];
+    if (!p) return;
+    const w = 480, h = w * (vb[3] / vb[2] || 0.6);
+    vb = [p[0] - w / 2, p[1] - h / 2, w, h];
+    setVB();
+    select(id, false);
+    document.querySelectorAll('#sov-map .sys').forEach(c => c.classList.toggle('sel', c.dataset.id === String(id)));
+    svg.scrollIntoView({block: 'center'});
+  };
 
   function secColour(sec) {
     if (sec == null) return '#6e7681';
@@ -466,6 +487,10 @@
     if (mapReady) return;
     mapReady = true;
     drawRegion(regionButtons());
+    bindMapControls();
+  }
+
+  function bindMapControls() {
     svg.addEventListener('wheel', e => {
       e.preventDefault();
       const rect = svg.getBoundingClientRect();
@@ -544,6 +569,7 @@
     $('det-title').textContent = (document.getElementById('sys-' + id) || {dataset: {}}).dataset.name || 'System';
     $('det-body').innerHTML = '<div class="text-muted">Loading...</div>';
     $('det-edit').onclick = () => { m.hide(); sovEdit(id); };
+    $('det-edit').classList.add('d-none');
     m.show();
     select(id, false);
     let d;
@@ -557,7 +583,12 @@
     }
     const E = escHtml, fmt = n => Number(n).toLocaleString('en-US').replace(/,/g, ' ');
     const sec = d.security_shown == null ? '-' : d.security_shown.toFixed(1);
-    $('det-title').innerHTML = E(d.name) + ' <span class="text-muted">' + sec + ' &middot; ' + E(d.constellation) + ' &middot; ' + E(d.region) + '</span>';
+    const holderName = d.alliance_id ? (d.names[d.alliance_id] ? d.names[d.alliance_id].name : 'alliance ' + d.alliance_id)
+                                     : (d.faction_id ? 'NPC space' : 'no sovereignty holder');
+    $('det-title').innerHTML = E(d.name) + ' <span class="text-muted">' + sec + ' &middot; ' + E(d.constellation) + ' &middot; ' + E(d.region)
+      + (d.own ? '' : ' &middot; ' + E(holderName)) + '</span>';
+    $('det-edit').classList.toggle('d-none', !d.own);
+    $('det-map').onclick = () => { m.hide(); sovShowOnMap(d.system_id, d.region_id); };
     let h = '<div class="row g-2 mb-3">';
     const fact = (k, v) => { h += '<div class="col-6 col-md-3"><div class="text-muted">' + k + '</div><div>' + v + '</div></div>'; };
     fact('Star', E(d.star_class || '-') + (d.a0 ? ' <span class="sov-a0">A0</span>' : ''));
@@ -573,7 +604,7 @@
     const ups = [...d.upgrades.map(u => ({...u, src: 'marked by you'})),
                  ...d.detected.map(u => ({...u, src: 'corporation assets, ' + u.state}))];
     h += '<h6 class="mt-3">Upgrades</h6>';
-    if (!ups.length) h += '<div class="text-muted mb-2">None marked. ESI does not publish installed upgrades.</div>';
+    if (!ups.length) h += '<div class="text-muted mb-2">' + (d.own ? 'None marked. ESI does not publish installed upgrades.' : 'Not your alliance\'s system; ESI does not publish installed upgrades.') + '</div>';
     for (const u of ups)
       h += '<div class="mb-2"><span class="badge sov-up g' + u.group_id + '">' + E(u.name) + '</span> <span class="text-muted">' + E(u.group) + ' &middot; ' + E(u.src) + '</span>'
         + (u.description ? '<div class="text-muted ps-1">' + E(u.description) + '</div>' : '') + '</div>';
@@ -619,8 +650,7 @@
     h += d.neighbours.map(n => {
       const nm = n.alliance_id ? d.names[n.alliance_id] : null;
       const who = n.alliance_id ? (nm ? nm.name : 'alliance ' + n.alliance_id) : (n.faction_id ? 'NPC space' : 'no holder');
-      const link = document.getElementById('sys-' + n.system_id)
-        ? '<a href="#" onclick="sovDetail(' + n.system_id + '); return false">' + E(n.name) + '</a>' : E(n.name);
+      const link = '<a href="#" onclick="sovDetail(' + n.system_id + '); return false">' + E(n.name) + '</a>';
       return '<div>' + link + ' <span class="text-muted">' + (n.security != null ? n.security.toFixed(1) : '') + ' &middot; ' + E(n.region || '') + ' &middot; ' + E(who) + '</span></div>';
     }).join('');
     h += '</div>';
@@ -691,6 +721,9 @@
   const hm = location.hash.match(/^#system=(\d+)$/);
   // Bootstrap loads after the page content, so the dialog can open only then.
   if (hm && document.getElementById('sys-' + hm[1])) window.addEventListener('load', () => sovDetail(+hm[1]));
+  const hmap = location.hash.match(/^#map-system=(\d+)$/);
+  if (hmap && document.getElementById('sys-' + hmap[1]))
+    sovShowOnMap(+hmap[1], +document.getElementById('sys-' + hmap[1]).dataset.rid);
   if (location.hash === '#map') document.querySelector('#sov-tabs [data-tab="map"]').click();
 })();
 </script>

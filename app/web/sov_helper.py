@@ -266,22 +266,25 @@ def security_display(sec: float | None) -> float | None:
 def systems_for(conn: sqlite3.Connection, alliance_ids) -> list[dict]:
     """Every system held by any of `alliance_ids`, with what the map, ESI and
     the user's own records say about it."""
-    ensure_sov_tables(conn)
     ids = [int(a) for a in alliance_ids if a]
     if not ids:
         return []
-    ph = ",".join("?" * len(ids))
+    return _systems(conn, f"m.alliance_id IN ({','.join('?' * len(ids))})", ids)
+
+
+def _systems(conn: sqlite3.Connection, where: str, params) -> list[dict]:
+    ensure_sov_tables(conn)
     rows = conn.execute(f"""
-        SELECT m.system_id, m.alliance_id, s.name, ms.security, ms.star_class,
+        SELECT ms.system_id, m.alliance_id, s.name, ms.security, ms.star_class,
                ms.belts, ms.x2d, ms.y2d, c.name, r.name, ms.region_id,
                ms.constellation_id
-          FROM sov_map_cache m
-          JOIN sde_map_systems ms ON ms.system_id = m.system_id
-          LEFT JOIN sde_systems s ON s.system_id = m.system_id
+          FROM sde_map_systems ms
+          LEFT JOIN sov_map_cache m ON m.system_id = ms.system_id
+          LEFT JOIN sde_systems s ON s.system_id = ms.system_id
           LEFT JOIN sde_constellations c ON c.constellation_id = ms.constellation_id
           LEFT JOIN sde_regions r ON r.region_id = ms.region_id
-         WHERE m.alliance_id IN ({ph})
-         ORDER BY r.name, s.name""", ids).fetchall()
+         WHERE {where}
+         ORDER BY r.name, s.name""", list(params)).fetchall()
     if not rows:
         return []
     sids = [r[0] for r in rows]
@@ -469,10 +472,16 @@ def map_regions(conn: sqlite3.Connection) -> list[dict]:
 
 
 def system_detail(conn: sqlite3.Connection, system_id: int, alliance_ids) -> dict | None:
-    """One held system, with what was mined there and its gate neighbours."""
-    row = next((s for s in systems_for(conn, alliance_ids) if s["system_id"] == system_id), None)
-    if row is None:
+    """One system of known space, with what was mined there and its gate
+    neighbours. `own` says whether one of `alliance_ids` holds it."""
+    rows = _systems(conn, "ms.system_id = ?", [system_id])
+    if not rows:
         return None
+    row = rows[0]
+    row["own"] = row["alliance_id"] in {int(a) for a in alliance_ids if a}
+    fac = conn.execute("SELECT faction_id FROM sov_map_cache WHERE system_id=?",
+                       (system_id,)).fetchone()
+    row["faction_id"] = fac[0] if fac else None
     try:
         cutoff = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 30 * 86400))
         row["mined_types"] = [
