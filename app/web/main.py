@@ -10117,6 +10117,43 @@ async def api_sov_systems(alliance: int):
         conn.close()
 
 
+async def _held_systems(conn) -> set[int]:
+    ids = await _my_alliances(conn)
+    if not ids:
+        return set()
+    sov_api.ensure_sov_tables(conn)
+    ph = ",".join("?" * len(ids))
+    return {r[0] for r in conn.execute(
+        f"SELECT system_id FROM sov_map_cache WHERE alliance_id IN ({ph})", ids)}
+
+
+@app.post("/api/sov/upgrades/parse")
+async def api_sov_upgrades_parse(request: Request):
+    """What the pasted text would import - nothing is stored yet."""
+    body = await request.json()
+    conn = get_conn()
+    try:
+        return sov_api.parse_upgrade_text(conn, str(body.get("text") or ""),
+                                          await _held_systems(conn))
+    finally:
+        conn.close()
+
+
+@app.post("/api/sov/upgrades/import")
+async def api_sov_upgrades_import(request: Request):
+    body = await request.json()
+    conn = get_conn()
+    try:
+        held = await _held_systems(conn)
+        parsed = sov_api.parse_upgrade_text(conn, str(body.get("text") or ""), held)
+        items = [s for s in parsed["systems"] if s["held"]]
+        n = sov_api.import_upgrades(conn, items, replace=bool(body.get("replace", True)))
+    finally:
+        conn.close()
+    return {"ok": True, "systems": n,
+            "skipped": [s["name"] for s in parsed["systems"] if not s["held"]]}
+
+
 @app.get("/api/sov/region-map")
 async def api_sov_region_map(region_id: int):
     conn = get_conn()

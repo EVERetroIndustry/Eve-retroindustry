@@ -310,3 +310,56 @@ def test_another_alliance_is_not_served(client, held):
 def test_the_refresh_is_a_scheduled_job(client, app_module):
     keys = {j["key"] for j in client.get("/api/activity").json()["jobs"]}
     assert "sov" in keys
+
+
+# ── Upgrades pasted as text ──────────────────────────────────────────────────
+
+_PASTE = """Hub upgrades, as of today
+1DQ1-A\tCynosural Navigation, Pyerite Prospecting Array II
+T5ZI-S
+  Major Threat Detection Array 3
+  power monitoring division 1
+Jita - Cynosural Suppression
+some note with nothing in it
+"""
+
+
+def test_pasted_text_is_read_by_system(client, held):
+    import json as _json
+    d = client.post("/api/sov/upgrades/parse", json={"text": "Cynosural Navigation\n" + _PASTE}).json()
+    by = {s["name"]: s for s in d["systems"]}
+    assert by["1DQ1-A"]["names"] == ["Cynosural Navigation", "Pyerite Prospecting Array 2"]
+    assert by["T5ZI-S"]["names"] == ["Major Threat Detection Array 3", "Power Monitoring Division 1"]
+    assert by["1DQ1-A"]["held"] and not by["T5ZI-S"]["held"] and not by["Jita"]["held"]
+    assert d["orphans"] == ["Cynosural Navigation"], "an upgrade before any system is not guessed"
+    assert d["unread"] == ["Hub upgrades, as of today", "some note with nothing in it"]
+    assert _json.dumps(d)                       # plain data for the dialog
+
+
+def test_import_stores_only_held_systems_and_replaces_or_adds(client, held, app_module):
+    m = app_module
+    client.post("/api/sov/upgrades", json={"system_id": held, "type_ids": [81623]})
+    r = client.post("/api/sov/upgrades/import", json={"text": _PASTE, "replace": False}).json()
+    assert r["systems"] == 1 and set(r["skipped"]) == {"T5ZI-S", "Jita"}
+    conn = m.get_conn()
+    marked = lambda: sorted(t for (t,) in conn.execute(
+        "SELECT type_id FROM sov_upgrades_manual WHERE system_id=?", (held,)))
+    pyerite2 = conn.execute("SELECT type_id FROM sde_types WHERE name="
+                            "'Pyerite Prospecting Array 2'").fetchone()[0]
+    assert marked() == sorted([81615, 81623, pyerite2])
+    client.post("/api/sov/upgrades/import", json={"text": _PASTE, "replace": True})
+    assert marked() == sorted([81615, pyerite2])
+    assert conn.execute("SELECT COUNT(*) FROM sov_upgrades_manual WHERE system_id != ?",
+                        (held,)).fetchone()[0] == 0
+    conn.close()
+
+
+def test_a_system_name_inside_an_upgrade_name_is_not_a_system(monkeypatch):
+    # None does today; a future upgrade named after a place must not switch
+    # the system its own line belongs to.
+    conn = _bundle_db()
+    real = SOV.upgrade_catalogue(conn)
+    monkeypatch.setattr(SOV, "upgrade_catalogue", lambda c: real + [
+        {"type_id": 1, "name": "Jita Stability Generator", "group_id": 4839, "group": "x"}])
+    d = SOV.parse_upgrade_text(conn, "1DQ1-A: Jita Stability Generator")
+    assert [(s["name"], s["type_ids"]) for s in d["systems"]] == [("1DQ1-A", [1])]

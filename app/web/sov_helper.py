@@ -24,6 +24,7 @@ an older date. /sovereignty/campaigns answers under all of them.
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 import time
 
@@ -311,3 +312,96 @@ def region_map(conn: sqlite3.Connection, region_id: int) -> dict:
     links = [(a, b) for a, b in conn.execute("SELECT a, b FROM sde_stargate_links")
              if a in ids and b in ids]
     return {"systems": systems, "links": links}
+
+
+# ── Upgrades pasted as text ──────────────────────────────────────────────────
+
+_ROMAN = {"I": "1", "II": "2", "III": "3"}
+_SEP = r"(?<![\w-])({})(?![\w-])"
+
+
+def _name_pattern(names) -> re.Pattern:
+    alts = sorted({n for n in names if n}, key=len, reverse=True)
+    return re.compile(_SEP.format("|".join(re.escape(n) for n in alts)), re.IGNORECASE)
+
+
+def parse_upgrade_text(conn: sqlite3.Connection, text: str, allowed_systems=None) -> dict:
+    """Read systems and hub upgrades out of pasted text.
+
+    No single format is assumed - a spreadsheet row ("1DQ1-A<TAB>Cynosural
+    Navigation, Pyerite Prospecting Array 2"), a block per system (the name on
+    its own line, upgrades under it) and a mix of both all read the same way:
+    a system name sets the system that the upgrade names after it belong to,
+    on that line and on the lines below, until the next system name.
+
+    Upgrade levels written as Roman numerals ("... Array II") are read as the
+    numbers the static data uses. Nothing is guessed beyond that: a line with
+    neither a known system nor a known upgrade is returned as unread, and a
+    system the alliance does not hold is reported, not imported.
+    """
+    cat = upgrade_catalogue(conn)
+    by_name = {u["name"].lower(): u for u in cat}
+    up_re = _name_pattern(by_name)
+    sys_rows = conn.execute("SELECT system_id, name FROM sde_systems").fetchall()
+    sys_by_name = {n.lower(): (sid, n) for sid, n in sys_rows if n}
+    sys_re = _name_pattern(n for _s, n in sys_rows)
+    roman_re = re.compile(r"\b(Array|Detector|Division|Mecha-Tooling)\s+(III|II|I)\b",
+                          re.IGNORECASE)
+
+    found: dict[int, dict] = {}
+    order: list[int] = []
+    unread: list[str] = []
+    orphans: list[str] = []
+    current = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        line_n = roman_re.sub(lambda m: f"{m.group(1)} {_ROMAN[m.group(2).upper()]}", line)
+        hits = []
+        for m in sys_re.finditer(line_n):
+            hits.append((m.start(), "sys", sys_by_name[m.group(1).lower()]))
+        for m in up_re.finditer(line_n):
+            hits.append((m.start(), "up", by_name[m.group(1).lower()]))
+        # A system name inside an upgrade name is not a system.
+        ups_spans = [(m.start(), m.end()) for m in up_re.finditer(line_n)]
+        hits = [h for h in hits
+                if h[1] == "up" or not any(a <= h[0] < b for a, b in ups_spans)]
+        if not hits:
+            unread.append(line)
+            continue
+        for _pos, kind, val in sorted(hits, key=lambda h: h[0]):
+            if kind == "sys":
+                current = val[0]
+                if current not in found:
+                    found[current] = {"system_id": current, "name": val[1], "type_ids": []}
+                    order.append(current)
+            elif current is None:
+                orphans.append(val["name"])
+            elif val["type_id"] not in found[current]["type_ids"]:
+                found[current]["type_ids"].append(val["type_id"])
+    systems = []
+    for sid in order:
+        s = found[sid]
+        info = {u["type_id"]: u for u in cat}
+        s["names"] = [info[t]["name"] for t in s["type_ids"]]
+        s["group_ids"] = [info[t]["group_id"] for t in s["type_ids"]]
+        s["held"] = allowed_systems is None or sid in allowed_systems
+        systems.append(s)
+    return {"systems": systems, "unread": unread, "orphans": orphans}
+
+
+def import_upgrades(conn: sqlite3.Connection, items, replace: bool = True) -> int:
+    """Store parsed upgrades. `replace` makes the text the whole truth for each
+    system it names; otherwise its upgrades are added to what is marked."""
+    ensure_sov_tables(conn)
+    n = 0
+    for it in items:
+        sid = int(it["system_id"])
+        tids = [int(t) for t in it.get("type_ids") or []]
+        if not replace:
+            tids += [r[0] for r in conn.execute(
+                "SELECT type_id FROM sov_upgrades_manual WHERE system_id=?", (sid,))]
+        set_manual_upgrades(conn, sid, tids)
+        n += 1
+    return n
