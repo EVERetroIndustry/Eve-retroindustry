@@ -576,3 +576,17 @@ def test_the_map_offers_the_overlays(client, held):
 
 def test_map_activity_is_a_scheduled_job(client, app_module):
     assert "map-activity" in {j["key"] for j in client.get("/api/activity").json()["jobs"]}
+
+
+def test_ice_is_where_your_characters_mined_ice():
+    conn = _bundle_db()
+    from app.character.client_logs import ensure_tables
+    ensure_tables(conn)
+    a, b = _system(conn, "1DQ1-A"), _system(conn, "T5ZI-S")
+    conn.executemany("INSERT INTO client_mining_sessions VALUES (1,?,?,?,1,10,0,0,?)", [
+        (a, 100.0, 200.0, '{"Blue Ice IV-Grade": 10}'),
+        (a, 300.0, 400.0, '{"Kylixium": 10}'),       # later, but not ice
+        (b, 500.0, 600.0, '{"Veldspar": 10}'),
+    ])
+    assert SOV.ice_last_mined(conn, [a, b]) == {a: 200.0}
+    assert SOV.region_overlays(conn, [a, b])["values"][str(a)]["ice_last"] == 200.0

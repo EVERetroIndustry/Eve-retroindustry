@@ -643,6 +643,8 @@ def region_overlays(conn: sqlite3.Connection, system_ids) -> dict:
     for sid, ts in last_mined(conn).items():
         if sid in vals:
             vals[sid]["last_mined"] = ts
+    for sid, ts in ice_last_mined(conn, ids).items():
+        vals[sid]["ice_last"] = ts
     for sid, n in conn.execute(
             f"SELECT system_id, COUNT(*) FROM sov_upgrades_manual WHERE system_id IN ({ph})"
             f" GROUP BY system_id", ids):
@@ -654,3 +656,26 @@ def region_overlays(conn: sqlite3.Connection, system_ids) -> dict:
     except sqlite3.OperationalError:
         pass
     return {"values": {str(k): v for k, v in vals.items() if v}, "meta": meta}
+
+
+ICE_GROUP = 465
+
+
+def ice_last_mined(conn: sqlite3.Connection, system_ids) -> dict[int, float]:
+    """system_id -> when your characters last mined ice there, from the
+    client's logs. Ice fields are anomalies the server spawns: no static data
+    or client file says where they are, so this is the only honest answer."""
+    ids = set(system_ids)
+    try:
+        ice = {n for (n,) in conn.execute("SELECT name FROM sde_types WHERE group_id=?",
+                                          (ICE_GROUP,))}
+        rows = conn.execute("SELECT system_id, end_ts, types_json FROM client_mining_sessions"
+                            ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    import json
+    out: dict[int, float] = {}
+    for sid, end, types in rows:
+        if sid in ids and ice & set(json.loads(types or "{}")):
+            out[sid] = max(out.get(sid, 0), end)
+    return out

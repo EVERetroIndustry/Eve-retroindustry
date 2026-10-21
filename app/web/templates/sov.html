@@ -16,17 +16,17 @@
   .sov-a0 { color: #9fcbf2; font-weight: 600; }
   #sov-map { width: 100%; height: max(640px, 78vh); background: #0b0f14; border-radius: 6px; cursor: grab; }
   #sov-map .lnk { stroke: #30363d; stroke-width: 1; vector-effect: non-scaling-stroke; }
-  #sov-map .sys { fill: #7bb8ec; stroke: #0b0f14; stroke-width: 1; vector-effect: non-scaling-stroke; cursor: pointer; }
-  #sov-map .sys.nohub { fill: #6e7681; }
-  #sov-map .sys.other { fill: none; stroke: #6e7681; stroke-width: 1.5; }
-  #sov-map text.other { fill: #6e7681; font-size: 12px; }
-  #sov-map .sys.camp { fill: #f85149; }
-  #sov-map .sys.dim { opacity: .18; }
-  #sov-map .sys.sel { stroke: #e3b341; stroke-width: 3; }
-  #sov-map text { fill: #c9d1d9; font-size: 15px; pointer-events: none; paint-order: stroke;
-                  stroke: #0b0f14; stroke-width: 3px; }
-  #sov-map text.dim { display: none; }
-  #sov-map text.val { font-size: 12px; fill: #e3b341; }
+  #sov-map .sys { cursor: pointer; }
+  #sov-map .sys .box { fill: #1a1f27; stroke: #3b4452; stroke-width: 1; vector-effect: non-scaling-stroke; }
+  #sov-map .sys.own .box { stroke: #7bb8ec; stroke-width: 2.5; }
+  #sov-map .sys.sel .box { stroke: #e3b341; stroke-width: 3.5; }
+  #sov-map .sys:hover .box { stroke: #e3b341; }
+  #sov-map .sys.dim { opacity: .22; }
+  #sov-map text { pointer-events: none; fill: #e6edf3; }
+  #sov-map text.nm { font-size: 13px; font-weight: 600; }
+  #sov-map text.sc { font-size: 11px; font-weight: 600; }
+  #sov-map text.l2 { font-size: 11px; }
+  #sov-map text.l3 { font-size: 10px; opacity: .8; }
   .sov-ramp { display: inline-block; width: 120px; height: 10px; border-radius: 2px;
               background: linear-gradient(90deg, #2b3442, #e3b341); vertical-align: middle; }
   .sov-chip { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; }
@@ -205,12 +205,13 @@
         <option value="last_mined">Last mined by you (client logs)</option>
       </optgroup>
     </select>
+    <button type="button" class="btn btn-sm btn-outline-secondary" id="sov-map-fit" title="Show the whole region"><i class="bi bi-arrows-fullscreen me-1"></i>Fit region</button>
     <select id="sov-map-pick" class="form-select form-select-sm" style="width:auto">
       <option value="">Any region...</option>
       {% for r in all_regions %}<option value="{{ r.id }}">{{ r.name }}</option>{% endfor %}
     </select>
   </div>
-  <div class="small text-muted mb-1">Scroll to zoom, drag to move. <span id="help-sov">Filled: this alliance (blue with a hub, grey without, red contested). Hollow: everyone else, the ring coloured by security (green high, amber low, red null).</span> Hover a system for who holds it, click it for its detail.{% if systems %} This alliance's systems outside the filter are dimmed.{% endif %}</div>
+  <div class="small text-muted mb-1">Scroll to zoom, drag to move. <span id="help-sov"></span> Hover a system for who holds it, click it for its detail.{% if systems %} This alliance's systems outside the filter are dimmed.{% endif %}</div>
   <div class="small mb-1" id="sov-map-summary"></div>
   <div class="small mb-1 d-flex align-items-center gap-2 flex-wrap" id="sov-map-legend"></div>
   <svg id="sov-map" xmlns="http://www.w3.org/2000/svg"></svg>
@@ -332,8 +333,7 @@
       if (ok) { n++; shown.add(tr.dataset.id); }
     }
     $('f-count').textContent = n === rows.length ? rows.length + ' systems' : n + ' of ' + rows.length + ' shown';
-    document.querySelectorAll('#sov-map .sys:not(.other)').forEach(c => c.classList.toggle('dim', !shown.has(c.dataset.id)));
-    document.querySelectorAll('#sov-map text.own').forEach(t => t.classList.toggle('dim', !shown.has(t.dataset.id)));
+    document.querySelectorAll('#sov-map .sys.own').forEach(c => c.classList.toggle('dim', !shown.has(c.dataset.id)));
   }
   if (table) ['f-q', 'f-region', 'f-up', 'f-planet', 'f-a0', 'f-hub', 'f-camp', 'f-mined'].forEach(id => {
     $(id).addEventListener(id === 'f-q' ? 'input' : 'change', apply);
@@ -375,7 +375,7 @@
   const OWN = {{ selected | tojson }};
   const REGIONS = {{ systems | map(attribute='region_id') | list | tojson if systems else '[]' }};
   const REGION_NAMES = {{ systems | map(attribute='region') | list | tojson if systems else '[]' }};
-  let mapRegion = null, vb = null, mapPts = {};
+  let mapRegion = null, vb = null, mapPts = {}, fitVB = null;
   const svg = $('sov-map'), NS = 'http://www.w3.org/2000/svg';
   const setVB = () => svg.setAttribute('viewBox', vb.join(' '));
 
@@ -408,6 +408,9 @@
     $('sov-map-pick').value = String(rid);
     const d = await fetch('/api/sov/region-map?region_id=' + rid).then(r => r.json());
     svg.innerHTML = '';
+    // DOTLAN-style boxes: CCP's flattened positions spread out until no two
+    // boxes overlap, so the map keeps its shape and every label stays legible.
+    const BW = 112, BH = 46, GAP = 14;
     const pts = mapPts = {};
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     d.systems.forEach(s => {
@@ -415,10 +418,43 @@
       pts[s.id] = [x, y];
       minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y);
     });
-    const S = 1000 / (Math.max(maxX - minX, maxY - minY) || 1);
-    for (const id in pts) pts[id] = [(pts[id][0] - minX) * S, (pts[id][1] - minY) * S];
-    const pad = 60;
-    vb = [-pad, -pad, (maxX - minX) * S + 2 * pad, (maxY - minY) * S + 2 * pad];
+    const n = d.systems.length || 1;
+    const span = Math.sqrt(n) * (BW + GAP) * 1.6;
+    const S = span / (Math.max(maxX - minX, maxY - minY) || 1);
+    for (const id in pts) pts[id] = [(pts[id][0] - minX) * S, (pts[id][1] - minY) * S * 0.75];
+    const ids = Object.keys(pts);
+    for (let it = 0; it < 300; it++) {
+      let moved = false;
+      for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) {
+        const p = pts[ids[i]], q = pts[ids[j]];
+        const dx = q[0] - p[0], dy = q[1] - p[1];
+        const ox = BW + GAP - Math.abs(dx), oy = BH + GAP - Math.abs(dy);
+        if (ox > 0 && oy > 0) {
+          moved = true;
+          if (ox / (BW + GAP) < oy / (BH + GAP)) { const m = (ox / 2 + 0.5) * (dx < 0 ? -1 : 1); p[0] -= m; q[0] += m; }
+          else { const m = (oy / 2 + 0.5) * (dy < 0 ? -1 : 1); p[1] -= m; q[1] += m; }
+        }
+      }
+      if (!moved) break;
+    }
+    minX = Math.min(...ids.map(i => pts[i][0])); maxX = Math.max(...ids.map(i => pts[i][0]));
+    minY = Math.min(...ids.map(i => pts[i][1])); maxY = Math.max(...ids.map(i => pts[i][1]));
+    const pad = 80;
+    fitVB = [minX - BW / 2 - pad, minY - BH / 2 - pad, maxX - minX + BW + 2 * pad, maxY - minY + BH + 2 * pad];
+    // Open at a readable size, centred on this alliance's systems (or the
+    // region); "Fit region" shows all of it.
+    const rect = svg.getBoundingClientRect();
+    const pxW = rect.width || 1600, pxH = rect.height || 800;
+    const fitScale = Math.min(pxW / fitVB[2], pxH / fitVB[3]);
+    if (fitScale >= 0.8) vb = fitVB.slice();
+    else {
+      const mine = d.systems.filter(x => x.alliance_id === OWN).map(x => pts[x.id]);
+      const pool = mine.length ? mine : ids.map(i => pts[i]);
+      const cx = pool.reduce((a, p) => a + p[0], 0) / pool.length;
+      const cy = pool.reduce((a, p) => a + p[1], 0) / pool.length;
+      const w = pxW / 0.9, h = pxH / 0.9;
+      vb = [cx - w / 2, cy - h / 2, w, h];
+    }
     setVB();
     const g = document.createElementNS(NS, 'g');
     for (const [a, b] of d.links) {
@@ -428,34 +464,41 @@
       l.setAttribute('class', 'lnk');
       g.appendChild(l);
     }
+    const txt = (cls, x, y, anchor) => {
+      const t = document.createElementNS(NS, 'text');
+      t.setAttribute('class', cls); t.setAttribute('x', x); t.setAttribute('y', y);
+      if (anchor) t.setAttribute('text-anchor', anchor);
+      return t;
+    };
     d.systems.forEach(s => {
       const own = s.alliance_id === OWN;
       const tr = own ? document.getElementById('sys-' + s.id) : null;
-      const c = document.createElementNS(NS, 'circle');
-      c.setAttribute('cx', pts[s.id][0]); c.setAttribute('cy', pts[s.id][1]);
-      c.setAttribute('r', own ? 9 : 5);
-      let cls = own ? 'sys' : 'sys other';
-      if (tr && tr.dataset.hub !== '1') cls += ' nohub';
-      if (tr && tr.dataset.camp === '1') cls += ' camp';
-      c.setAttribute('class', cls);
-      if (!own) c.style.stroke = secColour(s.security);
-      c.dataset.id = s.id;
-      c.dataset.own = own ? '1' : '';
-      c.dataset.sec = s.security == null ? '' : s.security;
+      const box = document.createElementNS(NS, 'g');
+      box.setAttribute('class', 'sys' + (own ? ' own' : ' other'));
+      box.setAttribute('transform', 'translate(' + (pts[s.id][0] - BW / 2) + ',' + (pts[s.id][1] - BH / 2) + ')');
+      box.dataset.id = s.id;
+      box.dataset.own = own ? '1' : '';
+      box.dataset.sec = s.security == null ? '' : s.security;
+      box.dataset.aid = s.alliance_id || '';
+      box.dataset.fid = s.faction_id || '';
+      const r = document.createElementNS(NS, 'rect');
+      r.setAttribute('class', 'box'); r.setAttribute('width', BW); r.setAttribute('height', BH);
+      r.setAttribute('rx', 4);
+      box.appendChild(r);
+      const nm = txt('nm', 6, 15); nm.textContent = s.name; box.appendChild(nm);
+      const sc = txt('sc', BW - 5, 15, 'end');
+      sc.textContent = s.security != null ? s.security.toFixed(1) : '';
+      sc.style.fill = s.security != null && s.security <= 0 ? '#e47aa9' : secCol(s.security);
+      box.appendChild(sc);
+      box.appendChild(txt('l2', 6, 29));
+      box.appendChild(txt('l3', 6, 41));
       const t = document.createElementNS(NS, 'title');
       t.textContent = s.name + (s.security != null ? ' (' + s.security.toFixed(1) + ')' : '')
         + ' - ' + holder(s, d.names)
         + (tr && tr.dataset.ups !== '0' ? ', ' + tr.dataset.ups + ' upgrades marked' : '');
-      c.appendChild(t);
-      c.style.cursor = 'pointer';
-      c.addEventListener('click', () => { if (own) select(s.id, false); sovDetail(s.id); });
-      g.appendChild(c);
-      const lab = document.createElementNS(NS, 'text');
-      lab.setAttribute('x', pts[s.id][0] + (own ? 12 : 8)); lab.setAttribute('y', pts[s.id][1] + 4);
-      lab.setAttribute('class', own ? 'own' : 'other');
-      lab.textContent = s.name;
-      lab.dataset.id = s.id;
-      g.appendChild(lab);
+      box.appendChild(t);
+      box.addEventListener('click', () => { if (own) select(s.id, false); sovDetail(s.id); });
+      g.appendChild(box);
     });
     svg.appendChild(g);
     lastMap = d;
@@ -488,68 +531,89 @@
   const ago = ts => { const m = Math.round((Date.now() / 1000 - ts) / 60);
     return m < 60 ? m + ' min' : m < 2880 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' d'; };
 
+  const allianceFill = aid => 'hsl(' + ((aid * 47) % 360) + ',30%,20%)';
+  const textOn = rgb => {               // dark text on a bright box
+    const m = /rgb\((\d+),(\d+),(\d+)\)/.exec(rgb || '');
+    return m && (0.299 * m[1] + 0.587 * m[2] + 0.114 * m[3]) > 140 ? '#0b0f14' : '';
+  };
+
   function paint() {
     if (!lastMap) return;
     const kind = $('sov-map-overlay').value;
     const V = (lastMap.overlays || {}).values || {};
     const meta = (lastMap.overlays || {}).meta || {};
-    svg.querySelectorAll('text.val').forEach(t => t.remove());
+    const names = lastMap.names || {};
     const legend = $('sov-map-legend');
-    const cs = Array.from(svg.querySelectorAll('circle.sys'));
-    let max = 0, min = Infinity;
-    const val = c => (V[c.dataset.id] || {})[kind];
+    const boxes = Array.from(svg.querySelectorAll('g.sys'));
+    const val = b => (V[b.dataset.id] || {})[kind];
     const spec = OVERLAYS[kind];
-    if (spec) cs.forEach(c => { const v = val(c); if (v != null) { max = Math.max(max, v); min = Math.min(min, v); } });
+    let max = 0, min = Infinity;
+    if (spec) boxes.forEach(b => { const v = val(b); if (v != null) { max = Math.max(max, v); min = Math.min(min, v); } });
     if (spec && spec.fixed) [min, max] = spec.fixed;
-    for (const c of cs) {
-      const own = c.dataset.own === '1';
-      const sec = c.dataset.sec === '' ? null : +c.dataset.sec;
-      c.style.fill = ''; c.style.stroke = own ? '' : secColour(sec); c.style.strokeWidth = '';
-      if (kind === 'sov') continue;
-      let fill = '#2b3442', label = null;
-      const v = val(c);
-      if (kind === 'security') { fill = secCol(sec); label = sec == null ? null : sec.toFixed(1); }
-      else if (kind === 'contested') { fill = v ? '#f85149' : '#2b3442'; label = v ? 'contested' : null; }
-      else if (kind === 'incursion') { fill = v ? '#d2a8ff' : '#2b3442'; label = v || null; }
-      else if (kind === 'last_mined') {
-        if (v) { const h = (Date.now() / 1000 - v) / 3600; fill = ramp(Math.max(0, 1 - Math.log10(1 + h) / 3)); label = ago(v) + ' ago'; }
+    for (const b of boxes) {
+      const vs = V[b.dataset.id] || {};
+      const sec = b.dataset.sec === '' ? null : +b.dataset.sec;
+      const aid = +b.dataset.aid || 0;
+      const rect = b.querySelector('rect'), l2 = b.querySelector('.l2'), l3 = b.querySelector('.l3');
+      let fill = '#1a1f27', t2 = '', t3 = '';
+      if (kind === 'sov') {
+        if (aid) {
+          const nm = names[aid];
+          fill = b.dataset.own ? '#1f3b57' : allianceFill(aid);
+          t2 = nm ? (nm.ticker ? '[' + nm.ticker + ']' : nm.name) : 'alliance ' + aid;
+        } else if (b.dataset.fid) { fill = '#2a2333'; t2 = 'NPC space'; }
+        else t2 = sec != null && sec > 0 ? '' : 'no holder';
+        if (vs.adm != null) t3 = 'ADM ' + vs.adm.toFixed(1);
+        if (vs.contested) { fill = '#5a1d1d'; t3 = 'contested'; }
+      } else if (kind === 'security') {
+        fill = secCol(sec); t2 = sec == null ? '' : 'true ' + sec.toFixed(3);
+      } else if (kind === 'contested') {
+        if (vs.contested) { fill = '#8b2323'; t2 = 'campaign'; }
+      } else if (kind === 'incursion') {
+        if (vs.incursion) { fill = '#5b3e8a'; t2 = vs.incursion; }
+      } else if (kind === 'last_mined') {
+        const v = vs.last_mined;
+        if (v) { const h = (Date.now() / 1000 - v) / 3600; fill = ramp(Math.max(0.15, 1 - Math.log10(1 + h) / 3)); t2 = 'mined ' + ago(v) + ' ago'; }
+        if (vs.ice_last) t3 = 'ice ' + ago(vs.ice_last) + ' ago';
+      } else if (kind === 'belts') {
+        const v = vs.belts || 0;
+        fill = v ? ramp(max > 0 ? Math.sqrt(v / max) : 0) : '#1a1f27';
+        t2 = v + ' belt' + (v === 1 ? '' : 's');
+        if (vs.ice_last) t3 = 'ice mined ' + ago(vs.ice_last) + ' ago';
       } else if (spec) {
-        if (v == null) fill = '#1a1f27';
+        const v = vs[kind];
+        if (v == null) { fill = '#14181e'; t2 = 'no data'; }
         else {
           const t = max > min ? (v - min) / (max - min) : (v > 0 ? 1 : 0);
-          fill = v === 0 && !spec.fixed ? '#2b3442' : ramp(spec.fixed ? t : Math.sqrt(t));
-          label = spec.fmt ? spec.fmt(v) : String(v);
+          fill = v === 0 && !spec.fixed ? '#1f2630' : ramp(spec.fixed ? t : Math.sqrt(t));
+          t2 = spec.fmt ? spec.fmt(v) : String(v);
+          if (spec.unit) t2 += ' ' + spec.unit;
         }
       }
-      c.style.fill = fill;
-      c.style.stroke = own ? '#7bb8ec' : 'none';
-      c.style.strokeWidth = own ? '3px' : '';
-      if (label && label !== '0') {
-        const t = document.createElementNS(NS, 'text');
-        t.setAttribute('class', 'val');
-        t.setAttribute('x', c.getAttribute('cx')); t.setAttribute('y', +c.getAttribute('cy') + 24);
-        t.setAttribute('text-anchor', 'middle');
-        t.textContent = label;
-        c.parentNode.appendChild(t);
-      }
+      rect.style.fill = fill;
+      const dark = textOn(fill);
+      b.querySelectorAll('text.nm, text.l2, text.l3').forEach(t => { t.style.fill = dark; });
+      l2.textContent = t2; l3.textContent = t3;
     }
     const E = escHtml;
     let h = '';
-    if (kind === 'sov') h = '';
-    else if (kind === 'security') h = 'True security, coloured as the client shows it.';
-    else if (kind === 'contested') h = '<span class="sov-chip" style="background:#f85149"></span> a sovereignty campaign is running or scheduled';
-    else if (kind === 'incursion') h = '<span class="sov-chip" style="background:#d2a8ff"></span> infested by an incursion (state shown under the name)';
-    else if (kind === 'last_mined') h = 'When your characters last mined there, from the game client\'s logs on this computer: the brighter, the more recent.';
+    if (kind === 'security') h = 'True security, coloured as the client shows it.';
+    else if (kind === 'contested') h = '<span class="sov-chip" style="background:#8b2323"></span> a sovereignty campaign is running or scheduled';
+    else if (kind === 'incursion') h = '<span class="sov-chip" style="background:#5b3e8a"></span> infested by an incursion';
+    else if (kind === 'last_mined') h = 'When your characters last mined there, from the game client\'s logs on this computer: the brighter, the more recent. Ice shown on its own line.';
+    else if (kind === 'belts') h = 'Asteroid belts in the static data. Ice fields are anomalies the server spawns, recorded nowhere in the static data or the client\'s files; "ice mined" is where your characters mined ice, from the client\'s logs.';
     else if (spec) h = E(spec.label) + ': <span class="text-muted">' + (spec.fmt ? spec.fmt(min === Infinity ? 0 : min) : (min === Infinity ? 0 : min))
       + '</span> <span class="sov-ramp"></span> <span class="text-muted">' + (spec.fmt ? spec.fmt(max) : max) + '</span>'
       + (spec.fixed ? '' : ' <span class="text-muted">(scaled to this region)</span>');
+    else if (kind === 'sov') h = 'Box colour: <span class="sov-chip" style="background:#1f3b57"></span> this alliance, other alliances each their own shade, <span class="sov-chip" style="background:#2a2333"></span> NPC space, <span class="sov-chip" style="background:#5a1d1d"></span> contested. Ticker and hub ADM inside.';
     const src = spec && spec.src ? meta[spec.src] : (kind === 'incursion' ? meta.incursions : null);
     if (src && src.fetched_at) h += ' <span class="text-muted">&middot; from ESI' + (src.data_time ? ' (data of ' + E(src.data_time.replace(/:\d\d GMT$/, ' UTC')) + ')' : '') + ', read ' + ago(src.fetched_at) + ' ago</span>';
     else if (spec && spec.src && spec.src !== 'sci') h += ' <span class="text-warning">&middot; not read yet - the map activity job fetches it hourly</span>';
-    if (kind !== 'sov' && kind !== 'security') h += ' <span class="text-muted">&middot; this alliance\'s systems ringed blue</span>';
+    if (kind !== 'sov') h += ' <span class="text-muted">&middot; this alliance\'s systems outlined blue</span>';
     legend.innerHTML = h;
     $('help-sov').classList.toggle('d-none', kind !== 'sov');
   }
+
 
   // From the list or the detail: open the map on the system's region, zoomed
   // in on it and marked.
@@ -843,6 +907,7 @@
     if (!o) { try { o = localStorage.getItem('sovMapOverlay'); } catch (e) {} }
     if (o && $('sov-map-overlay').querySelector('option[value="' + o + '"]')) $('sov-map-overlay').value = o;
   }
+  $('sov-map-fit').addEventListener('click', () => { if (fitVB) { vb = fitVB.slice(); setVB(); } });
   $('sov-map-overlay').addEventListener('change', () => {
     try { localStorage.setItem('sovMapOverlay', $('sov-map-overlay').value); } catch (e) {}
     paint();
