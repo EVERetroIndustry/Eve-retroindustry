@@ -509,3 +509,70 @@ def test_the_list_and_the_map_lead_to_each_other(client, held):
     script = html[html.index("function drawRegion"):]
     click = script[script.index("addEventListener('click'"):][:200]
     assert "sovDetail(s.id)" in click, "a dot on the map opens the system's detail"
+
+
+# ── Map overlays ─────────────────────────────────────────────────────────────
+
+def _activity_esi(monkeypatch, answers):
+    def handler(req):
+        status, body = answers[req.url.path.strip("/")]
+        return httpx.Response(status, json=body,
+                              headers={"last-modified": "Wed, 21 Oct 2026 11:00:00 GMT"})
+    monkeypatch.setattr(SOV, "esi_client",
+                        lambda **kw: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+
+_ACT = {"universe/system_jumps": (200, [{"system_id": 30000142, "ship_jumps": 900}]),
+        "universe/system_kills": (200, [{"system_id": 30000142, "ship_kills": 3, "npc_kills": 40,
+                                         "pod_kills": 1}]),
+        "incursions": (200, [{"infested_solar_systems": [30000144, 30000145],
+                              "staging_solar_system_id": 30000144, "state": "mobilizing",
+                              "has_boss": False}])}
+
+
+def test_activity_is_stored_and_a_missing_system_had_none(monkeypatch):
+    _activity_esi(monkeypatch, _ACT)
+    conn = _bundle_db()
+    asyncio.run(SOV.refresh_activity(conn))
+    jita, perimeter = 30000142, _system(conn, "Perimeter")
+    o = SOV.region_overlays(conn, [jita, perimeter, 30000144])
+    v = o["values"]
+    assert {k: v[str(jita)][k] for k in ("jumps", "ship_kills", "npc_kills", "pod_kills")} == {
+        "jumps": 900, "ship_kills": 3, "npc_kills": 40, "pod_kills": 1}
+    assert v[str(perimeter)]["jumps"] == 0, "not in the list after a good read = none"
+    assert v["30000144"]["incursion"] == "mobilizing (staging)"
+    assert v[str(jita)]["stations"] > 0
+    assert o["meta"]["jumps"]["data_time"].startswith("Wed, 21 Oct 2026")
+
+
+def test_activity_not_read_yet_is_unknown_not_zero():
+    conn = _bundle_db()
+    v = SOV.region_overlays(conn, [30000142])["values"]
+    assert "jumps" not in v["30000142"]
+
+
+@pytest.mark.parametrize("broken", list(_ACT))
+def test_a_failed_activity_read_keeps_the_last_one(monkeypatch, broken):
+    _activity_esi(monkeypatch, _ACT)
+    conn = _bundle_db()
+    asyncio.run(SOV.refresh_activity(conn))
+    _activity_esi(monkeypatch, {**_ACT, broken: (503, {"error": "down"})})
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(SOV.refresh_activity(conn))
+    assert SOV.region_overlays(conn, [30000142])["values"]["30000142"]["jumps"] == 900
+
+
+def test_the_map_offers_the_overlays(client, held):
+    html = client.get("/sov").text
+    pick = html[html.index('id="sov-map-overlay"'):]
+    pick = pick[:pick.index("</select>")]
+    for v in ("security", "jumps", "ship_kills", "npc_kills", "pod_kills", "adm",
+              "sci_manufacturing", "incursion", "last_mined"):
+        assert f'value="{v}"' in pick
+    rid = client.get(f"/api/sov/system/{held}").json()["region_id"]
+    d = client.get(f"/api/sov/region-map?region_id={rid}").json()
+    assert d["overlays"]["values"][str(held)]["adm"] == 4.5
+
+
+def test_map_activity_is_a_scheduled_job(client, app_module):
+    assert "map-activity" in {j["key"] for j in client.get("/api/activity").json()["jobs"]}

@@ -10161,6 +10161,24 @@ async def _job_client_logs(report) -> dict:
     return await asyncio.to_thread(work)
 
 
+async def _job_map_activity(report) -> dict:
+    conn = get_conn()
+    try:
+        res = await sov_api.refresh_activity(conn, report)
+        _mark_ok(conn, "map-activity")
+        return res
+    finally:
+        conn.close()
+
+
+def _map_activity_last_ok() -> float | None:
+    conn = get_conn()
+    try:
+        return sov_api.activity_last_ok(conn)
+    finally:
+        conn.close()
+
+
 def _client_logs_apply() -> str | None:
     return None if client_logs_api.logs_dirs() else "no EVE client logs on this computer"
 
@@ -10281,6 +10299,7 @@ async def api_sov_region_map(region_id: int):
     conn = get_conn()
     try:
         d = sov_api.region_map(conn, region_id)
+        d["overlays"] = sov_api.region_overlays(conn, [x["id"] for x in d["systems"]])
         names = await sov_api.alliance_names(
             conn, {x["alliance_id"] for x in d["systems"] if x["alliance_id"]})
         d["names"] = {str(k): v for k, v in names.items()}
@@ -10362,6 +10381,10 @@ def _register_background() -> None:
         every=sov_api.SOV_TTL, run=_job_sov, last_ok=_sov_last_ok,
         applies=_characters_apply,
         describe=lambda p: (p.get("pct"), p.get("detail") or ""), href="/sov"))
+    bg.register(bg.Job(
+        key="map-activity", title="Map: jumps, kills and incursions", group="universe",
+        every=60 * 60, run=_job_map_activity, last_ok=_map_activity_last_ok,
+        describe=lambda p: (p.get("pct"), p.get("detail") or ""), href="/sov#map"))
     bg.register(bg.Job(
         key="client-logs", title="Mining from the game client's logs", group="local-files",
         every=10 * 60, run=_job_client_logs, applies=_client_logs_apply,

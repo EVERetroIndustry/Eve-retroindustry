@@ -14,7 +14,7 @@
   .sov-planets { font-size: .78rem; white-space: nowrap; }
   .sov-planets span + span::before { content: " \00b7 "; color: #6e7681; }
   .sov-a0 { color: #9fcbf2; font-weight: 600; }
-  #sov-map { width: 100%; height: 640px; background: #0b0f14; border-radius: 6px; cursor: grab; }
+  #sov-map { width: 100%; height: max(640px, 78vh); background: #0b0f14; border-radius: 6px; cursor: grab; }
   #sov-map .lnk { stroke: #30363d; stroke-width: 1; vector-effect: non-scaling-stroke; }
   #sov-map .sys { fill: #7bb8ec; stroke: #0b0f14; stroke-width: 1; vector-effect: non-scaling-stroke; cursor: pointer; }
   #sov-map .sys.nohub { fill: #6e7681; }
@@ -26,6 +26,10 @@
   #sov-map text { fill: #c9d1d9; font-size: 15px; pointer-events: none; paint-order: stroke;
                   stroke: #0b0f14; stroke-width: 3px; }
   #sov-map text.dim { display: none; }
+  #sov-map text.val { font-size: 12px; fill: #e3b341; }
+  .sov-ramp { display: inline-block; width: 120px; height: 10px; border-radius: 2px;
+              background: linear-gradient(90deg, #2b3442, #e3b341); vertical-align: middle; }
+  .sov-chip { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; }
   tr.sov-row.sel td { background: rgba(227,179,65,.08); }
 </style>
 
@@ -175,13 +179,40 @@
 <div id="tab-map" class="{{ 'd-none' if systems }}">
   <div class="d-flex flex-wrap gap-1 mb-2 align-items-center">
     <div class="d-flex flex-wrap gap-1" id="sov-map-regions"></div>
+    <select id="sov-map-overlay" class="form-select form-select-sm ms-2" style="width:auto" title="What the systems are coloured by">
+      <option value="sov">Sovereignty</option>
+      <option value="security">Security status</option>
+      <optgroup label="Last hour (ESI)">
+        <option value="jumps">Jumps</option>
+        <option value="ship_kills">Ships destroyed</option>
+        <option value="npc_kills">NPCs killed</option>
+        <option value="pod_kills">Pods destroyed</option>
+      </optgroup>
+      <optgroup label="Sovereignty">
+        <option value="adm">ADM of the hub</option>
+        <option value="contested">Contested (campaigns)</option>
+        <option value="upgrades">Upgrades marked</option>
+      </optgroup>
+      <optgroup label="Industry">
+        <option value="sci_manufacturing">Manufacturing cost index</option>
+        <option value="sci_reaction">Reaction cost index</option>
+        <option value="sci_invention">Invention cost index</option>
+        <option value="stations">NPC stations</option>
+      </optgroup>
+      <optgroup label="Other">
+        <option value="incursion">Incursions</option>
+        <option value="belts">Asteroid belts</option>
+        <option value="last_mined">Last mined by you (client logs)</option>
+      </optgroup>
+    </select>
     <select id="sov-map-pick" class="form-select form-select-sm" style="width:auto">
       <option value="">Any region...</option>
       {% for r in all_regions %}<option value="{{ r.id }}">{{ r.name }}</option>{% endfor %}
     </select>
   </div>
-  <div class="small text-muted mb-1">Scroll to zoom, drag to move. Filled: this alliance (blue with a hub, grey without, red contested). Hollow: everyone else, the ring coloured by security (green high, amber low, red null). Hover a system for who holds it, click it for its detail.{% if systems %} This alliance's systems outside the filter are dimmed.{% endif %}</div>
+  <div class="small text-muted mb-1">Scroll to zoom, drag to move. <span id="help-sov">Filled: this alliance (blue with a hub, grey without, red contested). Hollow: everyone else, the ring coloured by security (green high, amber low, red null).</span> Hover a system for who holds it, click it for its detail.{% if systems %} This alliance's systems outside the filter are dimmed.{% endif %}</div>
   <div class="small mb-1" id="sov-map-summary"></div>
+  <div class="small mb-1 d-flex align-items-center gap-2 flex-wrap" id="sov-map-legend"></div>
   <svg id="sov-map" xmlns="http://www.w3.org/2000/svg"></svg>
 </div>
 
@@ -409,6 +440,8 @@
       c.setAttribute('class', cls);
       if (!own) c.style.stroke = secColour(s.security);
       c.dataset.id = s.id;
+      c.dataset.own = own ? '1' : '';
+      c.dataset.sec = s.security == null ? '' : s.security;
       const t = document.createElementNS(NS, 'title');
       t.textContent = s.name + (s.security != null ? ' (' + s.security.toFixed(1) + ')' : '')
         + ' - ' + holder(s, d.names)
@@ -425,8 +458,97 @@
       g.appendChild(lab);
     });
     svg.appendChild(g);
+    lastMap = d;
     summary(d);
+    paint();
     apply();
+  }
+
+  // Overlays: what each dot is coloured by. The values come with the region.
+  const OVERLAYS = {
+    jumps: {label: 'Jumps in the last hour', src: 'jumps'},
+    ship_kills: {label: 'Ships destroyed in the last hour', src: 'kills'},
+    npc_kills: {label: 'NPCs killed in the last hour', src: 'kills'},
+    pod_kills: {label: 'Pods destroyed in the last hour', src: 'kills'},
+    adm: {label: 'Activity Defense Multiplier of the Sovereignty Hub (1 to 6)', fixed: [1, 6], fmt: v => v.toFixed(1)},
+    sci_manufacturing: {label: 'Manufacturing cost index', src: 'sci', fmt: v => (v * 100).toFixed(2) + ' %'},
+    sci_reaction: {label: 'Reaction cost index', src: 'sci', fmt: v => (v * 100).toFixed(2) + ' %'},
+    sci_invention: {label: 'Invention cost index', src: 'sci', fmt: v => (v * 100).toFixed(2) + ' %'},
+    stations: {label: 'NPC stations (static data)'},
+    belts: {label: 'Asteroid belts (static data)'},
+    upgrades: {label: 'Hub upgrades you have marked'},
+  };
+  let lastMap = null;
+  const RAMP_LO = [0x2b, 0x34, 0x42], RAMP_HI = [0xe3, 0xb3, 0x41];
+  const ramp = t => 'rgb(' + RAMP_LO.map((lo, i) => Math.round(lo + (RAMP_HI[i] - lo) * t)).join(',') + ')';
+  // The client's own security colours, by the shown (rounded) status.
+  const SEC = {'1.0': '#2c75e1', '0.9': '#399aeb', '0.8': '#4ecef8', '0.7': '#60dba3', '0.6': '#71e554',
+               '0.5': '#f3fd82', '0.4': '#dc6d07', '0.3': '#ce440f', '0.2': '#bb1116', '0.1': '#722020'};
+  const secCol = v => v == null ? '#6e7681' : (v <= 0 ? '#8d3264' : SEC[v.toFixed(1)] || '#8d3264');
+  const ago = ts => { const m = Math.round((Date.now() / 1000 - ts) / 60);
+    return m < 60 ? m + ' min' : m < 2880 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' d'; };
+
+  function paint() {
+    if (!lastMap) return;
+    const kind = $('sov-map-overlay').value;
+    const V = (lastMap.overlays || {}).values || {};
+    const meta = (lastMap.overlays || {}).meta || {};
+    svg.querySelectorAll('text.val').forEach(t => t.remove());
+    const legend = $('sov-map-legend');
+    const cs = Array.from(svg.querySelectorAll('circle.sys'));
+    let max = 0, min = Infinity;
+    const val = c => (V[c.dataset.id] || {})[kind];
+    const spec = OVERLAYS[kind];
+    if (spec) cs.forEach(c => { const v = val(c); if (v != null) { max = Math.max(max, v); min = Math.min(min, v); } });
+    if (spec && spec.fixed) [min, max] = spec.fixed;
+    for (const c of cs) {
+      const own = c.dataset.own === '1';
+      const sec = c.dataset.sec === '' ? null : +c.dataset.sec;
+      c.style.fill = ''; c.style.stroke = own ? '' : secColour(sec); c.style.strokeWidth = '';
+      if (kind === 'sov') continue;
+      let fill = '#2b3442', label = null;
+      const v = val(c);
+      if (kind === 'security') { fill = secCol(sec); label = sec == null ? null : sec.toFixed(1); }
+      else if (kind === 'contested') { fill = v ? '#f85149' : '#2b3442'; label = v ? 'contested' : null; }
+      else if (kind === 'incursion') { fill = v ? '#d2a8ff' : '#2b3442'; label = v || null; }
+      else if (kind === 'last_mined') {
+        if (v) { const h = (Date.now() / 1000 - v) / 3600; fill = ramp(Math.max(0, 1 - Math.log10(1 + h) / 3)); label = ago(v) + ' ago'; }
+      } else if (spec) {
+        if (v == null) fill = '#1a1f27';
+        else {
+          const t = max > min ? (v - min) / (max - min) : (v > 0 ? 1 : 0);
+          fill = v === 0 && !spec.fixed ? '#2b3442' : ramp(spec.fixed ? t : Math.sqrt(t));
+          label = spec.fmt ? spec.fmt(v) : String(v);
+        }
+      }
+      c.style.fill = fill;
+      c.style.stroke = own ? '#7bb8ec' : 'none';
+      c.style.strokeWidth = own ? '3px' : '';
+      if (label && label !== '0') {
+        const t = document.createElementNS(NS, 'text');
+        t.setAttribute('class', 'val');
+        t.setAttribute('x', c.getAttribute('cx')); t.setAttribute('y', +c.getAttribute('cy') + 24);
+        t.setAttribute('text-anchor', 'middle');
+        t.textContent = label;
+        c.parentNode.appendChild(t);
+      }
+    }
+    const E = escHtml;
+    let h = '';
+    if (kind === 'sov') h = '';
+    else if (kind === 'security') h = 'True security, coloured as the client shows it.';
+    else if (kind === 'contested') h = '<span class="sov-chip" style="background:#f85149"></span> a sovereignty campaign is running or scheduled';
+    else if (kind === 'incursion') h = '<span class="sov-chip" style="background:#d2a8ff"></span> infested by an incursion (state shown under the name)';
+    else if (kind === 'last_mined') h = 'When your characters last mined there, from the game client\'s logs on this computer: the brighter, the more recent.';
+    else if (spec) h = E(spec.label) + ': <span class="text-muted">' + (spec.fmt ? spec.fmt(min === Infinity ? 0 : min) : (min === Infinity ? 0 : min))
+      + '</span> <span class="sov-ramp"></span> <span class="text-muted">' + (spec.fmt ? spec.fmt(max) : max) + '</span>'
+      + (spec.fixed ? '' : ' <span class="text-muted">(scaled to this region)</span>');
+    const src = spec && spec.src ? meta[spec.src] : (kind === 'incursion' ? meta.incursions : null);
+    if (src && src.fetched_at) h += ' <span class="text-muted">&middot; from ESI' + (src.data_time ? ' (data of ' + E(src.data_time.replace(/:\d\d GMT$/, ' UTC')) + ')' : '') + ', read ' + ago(src.fetched_at) + ' ago</span>';
+    else if (spec && spec.src && spec.src !== 'sci') h += ' <span class="text-warning">&middot; not read yet - the map activity job fetches it hourly</span>';
+    if (kind !== 'sov' && kind !== 'security') h += ' <span class="text-muted">&middot; this alliance\'s systems ringed blue</span>';
+    legend.innerHTML = h;
+    $('help-sov').classList.toggle('d-none', kind !== 'sov');
   }
 
   // From the list or the detail: open the map on the system's region, zoomed
@@ -716,6 +838,15 @@
   };
 
   apply();
+  {
+    let o = new URLSearchParams(location.search).get('overlay');
+    if (!o) { try { o = localStorage.getItem('sovMapOverlay'); } catch (e) {} }
+    if (o && $('sov-map-overlay').querySelector('option[value="' + o + '"]')) $('sov-map-overlay').value = o;
+  }
+  $('sov-map-overlay').addEventListener('change', () => {
+    try { localStorage.setItem('sovMapOverlay', $('sov-map-overlay').value); } catch (e) {}
+    paint();
+  });
   $('sov-map-pick').addEventListener('change', e => { if (e.target.value) drawRegion(+e.target.value); });
   if (!table) drawMap();
   const hm = location.hash.match(/^#system=(\d+)$/);

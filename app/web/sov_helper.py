@@ -515,3 +515,142 @@ def system_detail(conn: sqlite3.Connection, system_id: int, alliance_ids) -> dic
         row["security"], row["region"],
         [u["name"] for u in row["upgrades"] + row["detected"]])
     return row
+
+
+# ── Map overlays: activity in each system ───────────────────────────────────
+#
+# What DOTLAN colours its maps by, from the same public ESI endpoints: jumps,
+# ship / NPC / pod kills in the last hour, plus incursions. ESI rebuilds them
+# hourly. A system missing from a list had none (the lists only carry systems
+# with activity), so after a successful read a missing system is 0, not
+# unknown.
+
+def ensure_activity_tables(conn: sqlite3.Connection) -> None:
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS map_activity (
+            system_id  INTEGER PRIMARY KEY,
+            ship_jumps INTEGER,
+            ship_kills INTEGER,
+            npc_kills  INTEGER,
+            pod_kills  INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS map_activity_meta (
+            kind       TEXT PRIMARY KEY,
+            fetched_at REAL,
+            data_time  TEXT
+        );
+        CREATE TABLE IF NOT EXISTS map_incursions (
+            system_id INTEGER PRIMARY KEY,
+            state     TEXT,
+            staging   INTEGER,
+            has_boss  INTEGER
+        );
+    """)
+
+
+async def refresh_activity(conn: sqlite3.Connection, report=None) -> dict:
+    """Jumps, kills and incursions; each list replaced only when read whole."""
+    ensure_activity_tables(conn)
+    report = report or (lambda **kw: None)
+    out = {}
+    async with esi_client(timeout=30) as client:
+        async def get(path):
+            r = await client.get(f"{_BASE}/{path}")
+            r.raise_for_status()
+            data = r.json()
+            if not isinstance(data, list):
+                raise RuntimeError(f"ESI /{path} answered with something that is not a list")
+            return data, r.headers.get("last-modified")
+        report(pct=10, detail="jumps")
+        jumps, jt = await get("universe/system_jumps")
+        report(pct=40, detail="kills")
+        kills, kt = await get("universe/system_kills")
+        report(pct=70, detail="incursions")
+        incs, it = await get("incursions")
+    now = time.time()
+    rows: dict[int, list] = {}
+    for j in jumps:
+        rows.setdefault(j["system_id"], [0, 0, 0, 0])[0] = j.get("ship_jumps") or 0
+    for k in kills:
+        r = rows.setdefault(k["system_id"], [0, 0, 0, 0])
+        r[1], r[2], r[3] = k.get("ship_kills") or 0, k.get("npc_kills") or 0, k.get("pod_kills") or 0
+    conn.execute("DELETE FROM map_activity")
+    conn.executemany("INSERT INTO map_activity VALUES (?,?,?,?,?)",
+                     [(sid, *v) for sid, v in rows.items()])
+    conn.execute("DELETE FROM map_incursions")
+    for inc in incs:
+        staging = inc.get("staging_solar_system_id")
+        for sid in inc.get("infested_solar_systems") or []:
+            conn.execute("INSERT OR REPLACE INTO map_incursions VALUES (?,?,?,?)",
+                         (sid, inc.get("state"), 1 if sid == staging else 0,
+                          1 if inc.get("has_boss") else 0))
+    conn.executemany("INSERT OR REPLACE INTO map_activity_meta VALUES (?,?,?)",
+                     [("jumps", now, jt), ("kills", now, kt), ("incursions", now, it)])
+    conn.commit()
+    report(pct=100, detail="")
+    out.update(systems=len(rows), incursions=len(incs))
+    return out
+
+
+def activity_last_ok(conn: sqlite3.Connection) -> float | None:
+    ensure_activity_tables(conn)
+    row = conn.execute("SELECT MIN(fetched_at) FROM map_activity_meta").fetchone()
+    return row[0] if row and row[0] else None
+
+
+def region_overlays(conn: sqlite3.Connection, system_ids) -> dict:
+    """Per system, every value the map can colour by, and when each was read."""
+    ensure_activity_tables(conn)
+    ensure_sov_tables(conn)
+    ids = list(system_ids)
+    if not ids:
+        return {"values": {}, "meta": {}}
+    ph = ",".join("?" * len(ids))
+    vals: dict[int, dict] = {sid: {} for sid in ids}
+    have_activity = conn.execute("SELECT COUNT(*) FROM map_activity_meta"
+                                 " WHERE kind IN ('jumps','kills')").fetchone()[0] == 2
+    if have_activity:
+        for sid in ids:
+            vals[sid].update(jumps=0, ship_kills=0, npc_kills=0, pod_kills=0)
+        for sid, j, sk, nk, pk in conn.execute(
+                f"SELECT * FROM map_activity WHERE system_id IN ({ph})", ids):
+            vals[sid].update(jumps=j, ship_kills=sk, npc_kills=nk, pod_kills=pk)
+    for sid, adm in conn.execute(
+            f"SELECT system_id, adm FROM sov_hubs WHERE system_id IN ({ph})", ids):
+        vals[sid]["adm"] = adm
+    try:
+        for sid, act, ci in conn.execute(
+                f"SELECT solar_system_id, activity, cost_index FROM sci_cache"
+                f" WHERE solar_system_id IN ({ph})"
+                f" AND activity IN ('manufacturing','reaction','invention')", ids):
+            vals[sid]["sci_" + act] = ci
+    except sqlite3.OperationalError:
+        pass
+    for sid, n in conn.execute(
+            f"SELECT system_id, COUNT(*) FROM sde_stations WHERE system_id IN ({ph})"
+            f" GROUP BY system_id", ids):
+        vals[sid]["stations"] = n
+    for (sid,) in conn.execute(
+            f"SELECT DISTINCT system_id FROM sov_campaigns WHERE system_id IN ({ph})", ids):
+        vals[sid]["contested"] = 1
+    for sid, state, staging in conn.execute(
+            f"SELECT system_id, state, staging FROM map_incursions WHERE system_id IN ({ph})", ids):
+        vals[sid]["incursion"] = state + (" (staging)" if staging else "")
+    for sid, belts in conn.execute(
+            f"SELECT system_id, belts FROM sde_map_systems WHERE system_id IN ({ph})", ids):
+        vals[sid]["belts"] = belts
+    from app.character.client_logs import last_mined
+    for sid, ts in last_mined(conn).items():
+        if sid in vals:
+            vals[sid]["last_mined"] = ts
+    for sid, n in conn.execute(
+            f"SELECT system_id, COUNT(*) FROM sov_upgrades_manual WHERE system_id IN ({ph})"
+            f" GROUP BY system_id", ids):
+        vals[sid]["upgrades"] = n
+    meta = {k: {"fetched_at": f, "data_time": d} for k, f, d in
+            conn.execute("SELECT kind, fetched_at, data_time FROM map_activity_meta")}
+    try:
+        meta["sci"] = {"fetched_at": conn.execute("SELECT MAX(cached_at) FROM sci_cache").fetchone()[0]}
+    except sqlite3.OperationalError:
+        pass
+    return {"values": {str(k): v for k, v in vals.items() if v}, "meta": meta}
