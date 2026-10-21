@@ -142,7 +142,7 @@ def test_official_data_supersedes_the_guess(conn, monkeypatch):
     conn.execute("UPDATE sde_types SET name='Official name' WHERE type_id=?", (ACCEL,))
     conn.commit()
 
-    ph._apply_discovered_types(conn)
+    ph._apply_discovered_types(conn, prune=True)      # right after a bundle refresh
 
     assert conn.execute("SELECT COUNT(*) FROM discovered_types WHERE type_id=?",
                         (ACCEL,)).fetchone()[0] == 0
@@ -158,7 +158,8 @@ def test_the_sde_refresh_puts_the_discoveries_back(app_module, monkeypatch):
     and every SDE update quietly loses the learned types again."""
     m = app_module
     called = []
-    monkeypatch.setattr(m, "_apply_discovered_types", lambda c: called.append(c) or 0)
+    monkeypatch.setattr(m, "_apply_discovered_types",
+                        lambda c, prune=False: called.append(prune) or 0)
 
     conn = m.get_conn()
     try:
@@ -171,7 +172,24 @@ def test_the_sde_refresh_puts_the_discoveries_back(app_module, monkeypatch):
 
         m._refresh_sde_from_bundle(conn)
 
-        assert called, "_refresh_sde_from_bundle must re-apply the discovered types"
+        assert called == [True], "_refresh_sde_from_bundle must re-apply (and only there prune)"
         assert conn.execute("SELECT COUNT(*) FROM sde_types").fetchone()[0] == before
     finally:
         conn.close()
+
+
+
+def test_a_later_discovery_keeps_the_earlier_ones(conn, monkeypatch):
+    """Reported by the numbers: 142 discovered types, then 1. Each discovery
+    re-applied the table, found the EARLIER discoveries in sde_types (put there
+    by itself) and deleted their records - so the next SDE update lost them."""
+    other = 99999901
+    table = {**ESI_TABLE, other: {"name": "Another New Thing", "group_id": 303,
+                                  "market_group_id": 2487, "published": True}}
+    _stub(monkeypatch, table, [])
+    asyncio.run(ph.discover_market_types(conn, [ACCEL]))
+    asyncio.run(ph.discover_market_types(conn, [ACCEL, other]))
+    assert {r[0] for r in conn.execute("SELECT type_id FROM discovered_types")} == {ACCEL, other}
+    # The bundle replaces sde_types and lacks both: both come back.
+    conn.execute("DELETE FROM sde_types WHERE type_id IN (?,?)", (ACCEL, other))
+    assert ph._apply_discovered_types(conn, prune=True) == 2

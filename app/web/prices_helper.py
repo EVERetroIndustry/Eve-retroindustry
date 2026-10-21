@@ -335,13 +335,20 @@ def ensure_discovered_types_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _apply_discovered_types(conn: sqlite3.Connection) -> int:
-    """Put discovered types into sde_types for anything the bundle still lacks.
+def _apply_discovered_types(conn: sqlite3.Connection, prune: bool = False) -> int:
+    """Put discovered types into sde_types for anything it still lacks.
 
     Everything that reads the type catalogue - the Prices table, the search,
     the suggest box, the refresh set - goes through sde_types, so writing there
-    means none of them need to know this mechanism exists. Rows the SDE has
-    since gained are dropped: the official data wins over our guess.
+    means none of them need to know this mechanism exists.
+
+    `prune` is for the moment right after sde_types was rebuilt from the
+    bundle, and only then: a type present at that moment is CCP's, and its
+    discovery row is dropped - the official data wins over our guess. At any
+    other time a type in sde_types may be one this function put there itself,
+    and treating that as "the SDE has it now" deleted the record of every
+    earlier discovery on the next one (measured: 142 rows down to 1), so the
+    next SDE update would have lost them all.
     """
     ensure_discovered_types_table(conn)
     rows = conn.execute(
@@ -353,7 +360,8 @@ def _apply_discovered_types(conn: sqlite3.Connection) -> int:
     superseded: list[int] = []
     for r in rows:
         if conn.execute("SELECT 1 FROM sde_types WHERE type_id=?", (r[0],)).fetchone():
-            superseded.append(r[0])
+            if prune:
+                superseded.append(r[0])
             continue
         conn.execute(
             "INSERT INTO sde_types (type_id, name, group_id, published, market_group_id,"

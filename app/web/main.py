@@ -418,7 +418,7 @@ def _refresh_sde_from_bundle(conn: sqlite3.Connection) -> int:
     # them. Put back the ones this bundle still lacks; the ones it now has are
     # dropped from the discovery table, because official data beats ours.
     try:
-        _apply_discovered_types(conn)
+        _apply_discovered_types(conn, prune=True)
     except Exception as exc:
         print(f"[sde] re-applying discovered types failed: {exc}", flush=True)
     return conn.execute("SELECT COUNT(*) FROM sde_types").fetchone()[0]
@@ -3311,6 +3311,7 @@ def _entry_volume(asset, facts: dict[int, dict]) -> tuple[float | None, float | 
 @app.get("/assets", response_class=HTMLResponse)
 async def assets_page(request: Request, search: str = "", view: str = ""):
     conn = get_conn()
+    names_problems: list[int] = []     # ids whose names ESI did not give now
     all_chars = list_characters(conn)
     stations: list[dict] = []
     corp_stations: list[dict] = []
@@ -3665,7 +3666,7 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                     continue
                 owner_assets = assets_raw_by_char.get(owner_id, [])
                 owner_info = await _resolve_container_names(
-                    owner_id, tok, all_container_ids, owner_assets,
+                    owner_id, tok, all_container_ids, owner_assets, names_problems,
                 )
                 # First non-empty wins for each container
                 for k, v in owner_info.items():
@@ -3767,7 +3768,7 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
                 for cid in dv["containers"]
             ]
             corp_container_info = await _resolve_corp_container_names(
-                corp_id, token, all_corp_container_ids, corp_assets_raw
+                corp_id, token, all_corp_container_ids, corp_assets_raw, names_problems
             ) if all_corp_container_ids else {}
 
             corp_container_labels = {
@@ -3863,6 +3864,7 @@ async def assets_page(request: Request, search: str = "", view: str = ""):
 
     conn.close()
     return _tr("assets.html", request, {
+        "names_stale": sum(names_problems),
         "stations": stations,
         "corp_stations": corp_stations,
         "search": search,
@@ -3965,11 +3967,81 @@ def _location_above_items(asset_map: dict[int, dict], start_loc: int) -> int:
     return loc
 
 
+_ASSET_NAMES_CHUNK = 1000         # ESI takes at most 1000 ids per call
+
+
+def _ensure_asset_name_cache(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS asset_name_cache (
+        item_id   INTEGER PRIMARY KEY,
+        name      TEXT,
+        cached_at REAL)""")
+
+
+async def _fetch_asset_names(url: str, token: str, ids: list[int],
+                             problems: list | None = None) -> dict[int, str]:
+    """Custom names of ships and containers, from ESI or, when ESI fails, from
+    the last answer it gave.
+
+    Measured: /assets/names/ answering 504 "Timeout contacting tranquility"
+    made every ship of a character fall back to its bare hull type, with no
+    word on the page. Now a failed call is retried once, the names of the
+    batch come from the stored copy, and `problems` is told so the page can
+    say whose names are not fresh.
+    """
+    names: dict[int, str] = {}
+    failed: list[int] = []
+    async with esi_client() as client:
+        for i in range(0, len(ids), _ASSET_NAMES_CHUNK):
+            chunk = ids[i:i + _ASSET_NAMES_CHUNK]
+            got = None
+            for attempt in range(2):
+                try:
+                    r = await client.post(
+                        url, params={"datasource": "tranquility"},
+                        headers={"Authorization": f"Bearer {token}",
+                                 "Content-Type": "application/json"},
+                        content=json.dumps(chunk), timeout=20)
+                    if r.status_code == 200:
+                        got = {e["item_id"]: e["name"] for e in r.json()}
+                        break
+                    if r.status_code < 500 and r.status_code != 420:
+                        break                         # a refusal will not change
+                except Exception:
+                    pass
+                if attempt == 0:
+                    await asyncio.sleep(1)
+            if got is None:
+                failed.extend(chunk)
+            else:
+                names.update(got)
+    conn = get_conn()
+    try:
+        _ensure_asset_name_cache(conn)
+        if names:
+            now = _time.time()
+            conn.executemany("INSERT OR REPLACE INTO asset_name_cache VALUES (?,?,?)",
+                             [(k, v, now) for k, v in names.items()])
+            conn.commit()
+        if failed:
+            for j in range(0, len(failed), 500):
+                part = failed[j:j + 500]
+                ph = ",".join("?" * len(part))
+                names.update(dict(conn.execute(
+                    f"SELECT item_id, name FROM asset_name_cache WHERE item_id IN ({ph})",
+                    part)))
+            if problems is not None:
+                problems.append(len(failed))
+    finally:
+        conn.close()
+    return names
+
+
 async def _resolve_corp_container_names(
     corp_id: int,
     token: str,
     container_ids: list[int],
     corp_assets_raw: list[dict],
+    problems: list | None = None,
 ) -> dict[int, tuple[str, int]]:
     """Corp variant of _resolve_container_names using corp ESI endpoint."""
     asset_map = {item["item_id"]: item for item in corp_assets_raw}
@@ -3984,18 +4056,9 @@ async def _resolve_corp_container_names(
     if not owned_ids:
         return result
 
-    try:
-        async with esi_client() as client:
-            r = await client.post(
-                f"https://esi.evetech.net/latest/corporations/{corp_id}/assets/names/",
-                params={"datasource": "tranquility"},
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                content=json.dumps(owned_ids),
-                timeout=10,
-            )
-            custom_names = {e["item_id"]: e["name"] for e in r.json()} if r.status_code == 200 else {}
-    except Exception:
-        custom_names = {}
+    custom_names = await _fetch_asset_names(
+        f"https://esi.evetech.net/latest/corporations/{corp_id}/assets/names/",
+        token, owned_ids, problems)
 
     type_id_set = {asset_map[cid]["type_id"] for cid in container_ids if cid in asset_map}
     type_names: dict[int, str] = {}
@@ -4267,6 +4330,7 @@ async def _resolve_container_names(
     token: str,
     container_ids: list[int],
     assets: list[dict],
+    problems: list | None = None,
 ) -> dict[int, tuple[str, int]]:
     """For container item_ids, return {container_id: (display_name, parent_location_id)}.
 
@@ -4290,18 +4354,9 @@ async def _resolve_container_names(
     if not owned_ids:
         return result
 
-    try:
-        async with esi_client() as client:
-            r = await client.post(
-                f"https://esi.evetech.net/latest/characters/{char_id}/assets/names/",
-                params={"datasource": "tranquility"},
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                content=json.dumps(owned_ids),
-                timeout=10,
-            )
-            custom_names = {e["item_id"]: e["name"] for e in r.json()} if r.status_code == 200 else {}
-    except Exception:
-        custom_names = {}
+    custom_names = await _fetch_asset_names(
+        f"https://esi.evetech.net/latest/characters/{char_id}/assets/names/",
+        token, owned_ids, problems)
 
     type_id_set = {asset_map[cid]["type_id"] for cid in container_ids if cid in asset_map}
     type_names: dict[int, str] = {}
@@ -4330,6 +4385,7 @@ async def _resolve_container_names(
 @app.get("/blueprints", response_class=HTMLResponse)
 async def blueprints_page(request: Request, search: str = "", view: str = ""):
     conn = get_conn()
+    names_problems: list[int] = []     # ids whose names ESI did not give now
     all_chars = list_characters(conn)
 
     # Resolve selected character(s) - same toggle pattern as /assets
@@ -4430,7 +4486,7 @@ async def blueprints_page(request: Request, search: str = "", view: str = ""):
                 continue
             owner_assets = assets_by_char.get(owner_id, [])
             owner_info = await _resolve_container_names(
-                owner_id, tok, container_ids, owner_assets,
+                owner_id, tok, container_ids, owner_assets, names_problems,
             )
             for k, v in owner_info.items():
                 container_info.setdefault(k, v)
@@ -4479,6 +4535,7 @@ async def blueprints_page(request: Request, search: str = "", view: str = ""):
 
     conn.close()
     return _tr("blueprints.html", request, {
+        "names_stale": sum(names_problems),
         "stations": stations,
         "search": search,
         "total": len(bp_list),
