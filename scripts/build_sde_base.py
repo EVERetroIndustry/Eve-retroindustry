@@ -46,6 +46,7 @@ SDE_TABLES = {
     "sde_stargate_links",
     "sde_system_planets",
     "sde_sov_upgrades",
+    "sde_ice_belts",
     META_TABLE,
 }
 

@@ -267,6 +267,7 @@ _SDE_TABLES_TO_REFRESH = (
     "sde_stargate_links",
     "sde_system_planets",
     "sde_sov_upgrades",
+    "sde_ice_belts",
 )
 
 

@@ -14,6 +14,7 @@
   .sov-planets { font-size: .78rem; white-space: nowrap; }
   .sov-planets span + span::before { content: " \00b7 "; color: #6e7681; }
   .sov-a0 { color: #9fcbf2; font-weight: 600; }
+  .sov-ice { color: #6cb6ff; font-weight: 600; }
   #sov-map { display: block; width: 100%; height: max(640px, 78vh); background: #0b0f14; border-radius: 6px; cursor: grab; }
   #sov-map-tip { position: absolute; pointer-events: none; background: rgba(13,17,23,.95); border: 1px solid #3b4452;
                  color: #e6edf3; font-size: .8rem; padding: 3px 7px; border-radius: 4px; white-space: nowrap; z-index: 5; }
@@ -97,6 +98,7 @@
     <div class="col-auto form-check form-check-inline ms-2"><input class="form-check-input" type="checkbox" id="f-a0"><label class="form-check-label small" for="f-a0">A0 star</label></div>
     <div class="col-auto form-check form-check-inline"><input class="form-check-input" type="checkbox" id="f-hub"><label class="form-check-label small" for="f-hub">Has a hub</label></div>
     <div class="col-auto form-check form-check-inline"><input class="form-check-input" type="checkbox" id="f-camp"><label class="form-check-label small" for="f-camp">Contested</label></div>
+    <div class="col-auto form-check form-check-inline"><input class="form-check-input" type="checkbox" id="f-ice"><label class="form-check-label small" for="f-ice">Ice belts</label></div>
     <div class="col-auto form-check form-check-inline"><input class="form-check-input" type="checkbox" id="f-mined"><label class="form-check-label small" for="f-mined">Mined in (30 d)</label></div>
     <div class="col text-end small text-muted" id="f-count"></div>
   </div>
@@ -121,7 +123,7 @@
     <th data-key="star" data-type="str" class="sortable" title="The system's star, as the client names it">Star</th>
     <th data-key="adm" data-type="num" class="sortable text-end" title="Activity Defense Multiplier of the Sovereignty Hub">ADM</th>
     <th data-key="vuln" data-type="str" class="sortable" title="The hub's current vulnerability window (UTC)">Vulnerable</th>
-    <th data-key="belts" data-type="num" class="sortable text-end" title="Asteroid belts in the static data">Belts</th>
+    <th data-key="belts" data-type="num" class="sortable text-end" title="Asteroid belts (static data) + ice belts (DOTLAN)">Belts</th>
     <th>Planets</th>
     <th data-key="ups" data-type="num" class="sortable">Upgrades</th>
     <th data-key="mined" data-type="num" class="sortable text-end" title="Units your characters mined here in the last 30 days (ESI mining ledger)">Mined 30 d</th>
@@ -134,7 +136,7 @@
   <tr class="sov-row" id="sys-{{ s.system_id }}" data-id="{{ s.system_id }}" data-rid="{{ s.region_id }}"
       data-name="{{ s.name }}" data-sec="{{ s.security if s.security is not none else '' }}"
       data-const="{{ s.constellation }}" data-region="{{ s.region }}" data-star="{{ s.star_class }}"
-      data-adm="{{ s.adm if s.adm is not none else '' }}" data-vuln="{{ vuln }}" data-belts="{{ s.belts }}"
+      data-adm="{{ s.adm if s.adm is not none else '' }}" data-vuln="{{ vuln }}" data-belts="{{ s.belts }}" data-ice="{{ s.ice_belts }}"
       {% set all_ups = (s.upgrades + s.detected) | map(attribute='type_id') | unique | list %}
       data-ups="{{ all_ups | length }}" data-upids="{{ all_ups | join(',') }}"
       data-manual="{{ s.upgrades | map(attribute='type_id') | join(',') }}"
@@ -151,7 +153,7 @@
     <td class="{{ 'sov-a0' if s.a0 }}" title="{{ 'Spectral class ' ~ s.spectral if s.spectral }}">{% if s.a0 %}&#9733; {% endif %}{{ s.star_class or '-' }}</td>
     <td class="text-end">{{ '%.1f' | format(s.adm) if s.adm is not none else '-' }}</td>
     <td>{{ vuln or ('no hub' if not s.hub else '-') }}</td>
-    <td class="text-end">{{ s.belts }}</td>
+    <td class="text-end text-nowrap">{{ s.belts }}{% if s.ice_belts %} <span class="sov-ice" title="Ice belts (DOTLAN)">+{{ s.ice_belts }}</span>{% endif %}</td>
     <td class="sov-planets">{% for k, n in s.planets | dictsort %}<span>{{ k }} {{ n }}</span>{% endfor %}</td>
     <td><span class="sov-ups">{% for u in s.upgrades %}<span class="badge sov-up g{{ u.group_id }}" title="{{ u.group }}: {{ u.description }}">{{ u.name }}</span>{% endfor %}</span>{% for u in s.detected %}<span class="badge sov-up g{{ u.group_id }}" title="Read from corporation assets ({{ u.state }}): {{ u.description }}"><i class="bi bi-building-check me-1"></i>{{ u.name }}{% if u.state != 'active' %} ({{ u.state }}){% endif %}</span>{% endfor %}</td>
     <td class="text-end">{% if s.mined %}<span title="last mined {{ s.mined.last }}">{{ s.mined.units | count_eu }}</span>{% else %}-{% endif %}</td>
@@ -192,7 +194,8 @@
       <optgroup label="Other">
         <option value="incursion">Incursions</option>
         <option value="a0">A0 star (blue)</option>
-        <option value="belts">Asteroid belts</option>
+        <option value="ice">Ice belts</option>
+        <option value="belts">Asteroid and ice belts</option>
         <option value="last_mined">Last mined by you (client logs)</option>
       </optgroup>
     </select>
@@ -312,6 +315,7 @@
     if ($('f-hub').checked && d.hub !== '1') return false;
     if ($('f-camp').checked && d.camp !== '1') return false;
     if ($('f-mined').checked && d.mined === '0') return false;
+    if ($('f-ice').checked && d.ice === '0') return false;
     return true;
   }
 
@@ -327,7 +331,7 @@
     $('f-count').textContent = n === rows.length ? rows.length + ' systems' : n + ' of ' + rows.length + ' shown';
     setMapDim(shown);
   }
-  if (table) ['f-q', 'f-region', 'f-up', 'f-planet', 'f-a0', 'f-hub', 'f-camp', 'f-mined'].forEach(id => {
+  if (table) ['f-q', 'f-region', 'f-up', 'f-planet', 'f-a0', 'f-hub', 'f-camp', 'f-mined', 'f-ice'].forEach(id => {
     $(id).addEventListener(id === 'f-q' ? 'input' : 'change', apply);
   });
 
@@ -674,6 +678,7 @@
         else t2 = sec != null && sec > 0 ? '' : 'no holder';
         if (vs.adm != null) t3 = 'ADM ' + vs.adm.toFixed(1);
         if (vs.contested) { fill = '#5a1d1d'; t3 = 'contested'; }
+        if (vs.ice_belts) t3 = (t3 ? t3 + ' \u00b7 ' : '') + '\u2744' + vs.ice_belts;
       } else if (kind === 'security') {
         fill = secCol(sec); t2 = sec == null ? '' : 'true ' + sec.toFixed(3);
       } else if (kind === 'contested') {
@@ -689,7 +694,9 @@
       } else if (kind === 'belts') {
         const v = vs.belts || 0;
         fill = v ? ramp(max > 0 ? Math.sqrt(v / max) : 0) : '#1a1f27';
-        t2 = v + ' belt' + (v === 1 ? '' : 's');
+        t2 = v + ' belt' + (v === 1 ? '' : 's') + (vs.ice_belts ? ' +' + vs.ice_belts + ' ice' : '');
+      } else if (kind === 'ice') {
+        if (vs.ice_belts) { fill = '#2f6fa8'; t2 = '\u2744 ' + vs.ice_belts + ' ice belt' + (vs.ice_belts === 1 ? '' : 's'); }
       } else if (spec) {
         const v = vs[kind];
         if (v == null) { fill = '#14181e'; t2 = 'no data'; }
@@ -709,7 +716,8 @@
     else if (kind === 'incursion') h = '<span class="sov-chip" style="background:#5b3e8a"></span> infested by an incursion';
     else if (kind === 'last_mined') h = 'When your characters last mined there, from the game client\'s logs on this computer: the brighter, the more recent. What was mined is in the system\'s detail.';
     else if (kind === 'a0') h = '<span class="sov-chip" style="background:#2c75e1"></span> \u2605 system with an A0 star (its type, as the client shows it); other systems show their star.';
-    else if (kind === 'belts') h = 'Asteroid belts in the static data. Ice belts are not counted: they are anomalies the server spawns, and neither the static data, ESI nor the client\'s files say where.';
+    else if (kind === 'belts' || kind === 'ice') h = (kind === 'ice' ? '<span class="sov-chip" style="background:#2f6fa8"></span> \u2744 systems with ice belts. ' : 'Asteroid belts from the static data, ice belts after the +. ')
+      + 'Ice belt counts: ' + E(lastMap.ice_source || 'not in this installation\'s static data') + ' - CCP publishes them nowhere (static data, ESI or the client\'s files).';
     else if (spec) h = E(spec.label) + ': <span class="text-muted">' + (spec.fmt ? spec.fmt(min === Infinity ? 0 : min) : (min === Infinity ? 0 : min))
       + '</span> <span class="sov-ramp"></span> <span class="text-muted">' + (spec.fmt ? spec.fmt(max) : max) + '</span>'
       + (spec.fixed ? '' : ' <span class="text-muted">(scaled across New Eden)</span>');
@@ -929,7 +937,7 @@
       + (d.spectral ? ' <span class="text-muted" title="Spectral class in the star\'s statistics">' + E(d.spectral) + '</span>' : ''));
     fact('Sovereignty Hub', d.hub ? 'ADM ' + (d.adm != null ? d.adm.toFixed(1) : '-') : 'none');
     fact('Vulnerable (UTC)', d.vuln_start ? E(d.vuln_start.slice(11, 16)) + '-' + E(d.vuln_end.slice(11, 16)) : '-');
-    fact('Asteroid belts', d.belts);
+    fact('Belts', d.belts + (d.ice_belts ? ' <span class="sov-ice">+' + d.ice_belts + ' ice</span>' : ''));
     h += '</div>';
     const pl = Object.entries(d.planets).sort();
     h += '<div class="mb-3"><span class="text-muted">Planets:</span> ' + (pl.length ? pl.map(([k, n]) => E(k) + ' ' + n).join(' &middot; ') : 'none') + '</div>';

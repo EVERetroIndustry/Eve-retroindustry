@@ -333,6 +333,7 @@ def _map_tables(conn: sqlite3.Connection) -> None:
         DROP TABLE IF EXISTS sde_stargate_links;
         DROP TABLE IF EXISTS sde_system_planets;
         DROP TABLE IF EXISTS sde_sov_upgrades;
+        DROP TABLE IF EXISTS sde_ice_belts;
         CREATE TABLE sde_regions (
             region_id INTEGER PRIMARY KEY,
             name      TEXT
@@ -377,6 +378,13 @@ def _map_tables(conn: sqlite3.Connection) -> None:
         CREATE TABLE sde_sov_upgrades (
             type_id     INTEGER PRIMARY KEY,
             description TEXT
+        );
+        -- Ice belts per system. Not from CCP: no static data, ESI or client
+        -- file says where ice fields spawn. From DOTLAN, fetched once by
+        -- scripts/fetch_dotlan_ice.py (the count does not change).
+        CREATE TABLE sde_ice_belts (
+            system_id INTEGER PRIMARY KEY,
+            ice_belts INTEGER
         );
         CREATE INDEX idx_sde_map_systems_region ON sde_map_systems(region_id);
     """)
@@ -462,6 +470,17 @@ def import_map(conn: sqlite3.Connection, zip_path: str | None = None) -> str | N
         key = (p.get("solarSystemID"), m.group(1))
         kinds[key] = kinds.get(key, 0) + 1
     conn.executemany("INSERT INTO sde_sov_upgrades VALUES (?,?)", upgrade_text)
+    ice_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts",
+                            "ice_belts_dotlan.json")
+    if os.path.exists(ice_file):
+        import json
+        with open(ice_file, encoding="utf-8") as f:
+            ice = json.load(f)
+        conn.executemany("INSERT INTO sde_ice_belts VALUES (?,?)",
+                         [(int(k), int(v)) for k, v in ice["ice_belts"].items()])
+        conn.execute("CREATE TABLE IF NOT EXISTS sde_meta (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute("INSERT OR REPLACE INTO sde_meta VALUES ('ice_source', ?)",
+                     (f"{ice['source']}, fetched {ice['fetched']}",))
     conn.executemany("INSERT INTO sde_system_planets VALUES (?,?,?)",
                      [(sid, kind, n) for (sid, kind), n in sorted(kinds.items())])
     conn.commit()

@@ -657,3 +657,48 @@ def test_security_is_shown_to_two_decimals(client, held, app_module, monkeypatch
     shown = "%.2f" % round(me["true_sec"], 2)
     assert f">{shown}</span>" in row
     assert "const sec2" in html and "sec2(x.true_sec)" in html
+
+
+# ── Ice belts (from DOTLAN, once, into the static data) ─────────────────────
+
+def test_the_dotlan_region_table_is_read():
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(REPO, "scripts"))
+    from fetch_dotlan_ice import parse_region
+    row = ('<tr class="tlr0"><td>x</td><td><a href="/system/L-1SW8" class="igb link-5-30004593">'
+           'L-1SW8</a></td><td>-0.47</td><td>11</td>'
+           '<td align="right">6<span style="font-weight: bold; color: blue;">+3</span></td>'
+           '<td align="right"><b>31</b></td></tr>'
+           '<tr class="tlr1"><td>x</td><td><a href="/system/U-SOH2" class="igb link-5-30004594">'
+           'U-SOH2</a></td><td>8</td><td align="right">5</td><td>9</td></tr>'
+           '<tr class="tlr0"><td>x</td><td><a href="/system/X" class="igb link-5-30000001">X</a>'
+           '</td><td>1</td><td align="right"></td><td>0</td></tr>')
+    assert parse_region(row) == {30004593: (6, 3), 30004594: (5, 0), 30000001: (0, 0)}
+
+
+def test_ice_belts_are_in_the_bundle_and_shown(client, held):
+    conn = sqlite3.connect(f"file:{os.path.join(REPO, 'sde_base.db')}?immutable=1", uri=True)
+    try:
+        n, total = conn.execute("SELECT COUNT(*), SUM(ice_belts) FROM sde_ice_belts").fetchone()
+        assert n > 700 and total > n
+        assert conn.execute("SELECT ice_belts FROM sde_ice_belts WHERE system_id=30004593"
+                            ).fetchone() == (3,)                         # L-1SW8
+        assert "DOTLAN" in conn.execute("SELECT value FROM sde_meta WHERE key='ice_source'"
+                                        ).fetchone()[0]
+    finally:
+        conn.close()
+    from app.web import main
+    assert "sde_ice_belts" in main._SDE_TABLES_TO_REFRESH
+    d = client.get("/api/sov/system/30004593").json()
+    assert d["ice_belts"] == 3 and d["belts"] == 6
+    assert 'value="ice"' in client.get("/sov").text
+
+
+def test_an_install_without_the_ice_table_still_works():
+    conn = _bundle_db()
+    conn.execute("DROP TABLE sde_ice_belts")
+    held = _system(conn, "L-1SW8")
+    conn.execute("INSERT INTO sov_map_cache VALUES (?,?,NULL,1)", (held, ALLY))
+    assert SOV.systems_for(conn, [ALLY])[0]["ice_belts"] == 0
+    assert SOV.universe_map(conn)["systems"]
+    assert "ice_belts" not in SOV.region_overlays(conn, [held])["values"][str(held)]

@@ -259,6 +259,23 @@ def set_manual_upgrades(conn: sqlite3.Connection, system_id: int, type_ids) -> l
     return keep
 
 
+_ICE_COL = "ib.ice_belts"
+
+
+def _ice_join(conn: sqlite3.Connection) -> str:
+    """Ice belts come from DOTLAN, one-time, into the bundled static data; an
+    install that has not refreshed its static data yet has no such table."""
+    has = conn.execute("SELECT 1 FROM sqlite_master WHERE name='sde_ice_belts'").fetchone()
+    return ("LEFT JOIN sde_ice_belts ib ON ib.system_id = ms.system_id" if has
+            else "LEFT JOIN (SELECT NULL AS system_id, NULL AS ice_belts) ib ON 0")
+
+
+def ice_source(conn: sqlite3.Connection) -> str:
+    row = conn.execute("SELECT value FROM sde_meta WHERE key='ice_source'").fetchone() \
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='sde_meta'").fetchone() else None
+    return row[0] if row else ""
+
+
 def star_label(type_name: str | None) -> str:
     """'Sun A0 (Blue Small)' -> 'A0 (Blue Small)', as the client names the star."""
     if not type_name:
@@ -297,9 +314,10 @@ def _systems(conn: sqlite3.Connection, where: str, params) -> list[dict]:
     rows = conn.execute(f"""
         SELECT ms.system_id, m.alliance_id, s.name, ms.security, st.name,
                ms.belts, ms.x2d, ms.y2d, c.name, r.name, ms.region_id,
-               ms.constellation_id, ms.star_class
+               ms.constellation_id, ms.star_class, {_ICE_COL}
           FROM sde_map_systems ms
           LEFT JOIN sde_types st ON st.type_id = ms.star_type_id
+          {_ice_join(conn)}
           LEFT JOIN sov_map_cache m ON m.system_id = ms.system_id
           LEFT JOIN sde_systems s ON s.system_id = ms.system_id
           LEFT JOIN sde_constellations c ON c.constellation_id = ms.constellation_id
@@ -347,13 +365,13 @@ def _systems(conn: sqlite3.Connection, where: str, params) -> list[dict]:
         pass                              # no ledger read yet
 
     out = []
-    for (sid, aid, name, sec, star, belts, x, y, const, region, rid, cid, spectral) in rows:
+    for (sid, aid, name, sec, star, belts, x, y, const, region, rid, cid, spectral, ice) in rows:
         hub = hubs.get(sid)
         out.append({
             "system_id": sid, "alliance_id": aid, "name": name or str(sid),
             "security": sec, "security_shown": security_display(sec),
             "star_class": star_label(star), "spectral": spectral or "", "a0": is_a0(star),
-            "belts": belts or 0, "x": x, "y": y,
+            "belts": belts or 0, "ice_belts": ice or 0, "x": x, "y": y,
             "constellation": const or "", "constellation_id": cid,
             "region": region or "", "region_id": rid,
             "hub": bool(hub), "adm": hub[1] if hub else None,
@@ -660,6 +678,8 @@ def region_overlays(conn: sqlite3.Connection, system_ids) -> dict:
         vals[sid]["incursion"] = state + (" (staging)" if staging else "")
     for sid, belts in rows("SELECT system_id, belts FROM sde_map_systems"):
         vals[sid]["belts"] = belts
+    for sid, n in rows("SELECT system_id, ice_belts FROM sde_ice_belts"):
+        vals[sid]["ice_belts"] = n
     from app.character.client_logs import last_mined
     for sid, ts in last_mined(conn).items():
         if sid in vals:
@@ -685,11 +705,12 @@ def universe_map(conn: sqlite3.Connection) -> dict:
         {"id": sid, "name": name or str(sid), "x": x, "y": y, "region_id": rid,
          "alliance_id": aid, "faction_id": fid, "security": security_display(sec),
          "true_sec": sec,
-         "star_class": star_label(star), "a0": is_a0(star)}
-        for sid, name, x, y, rid, aid, fid, sec, star in conn.execute("""
+         "star_class": star_label(star), "a0": is_a0(star), "ice": ice or 0}
+        for sid, name, x, y, rid, aid, fid, sec, star, ice in conn.execute(f"""
             SELECT ms.system_id, s.name, ms.x2d, ms.y2d, ms.region_id, m.alliance_id,
-                   m.faction_id, ms.security, st.name
+                   m.faction_id, ms.security, st.name, {_ICE_COL}
               FROM sde_map_systems ms
+              {_ice_join(conn)}
               LEFT JOIN sde_systems s ON s.system_id = ms.system_id
               LEFT JOIN sov_map_cache m ON m.system_id = ms.system_id
               LEFT JOIN sde_types st ON st.type_id = ms.star_type_id
@@ -698,7 +719,7 @@ def universe_map(conn: sqlite3.Connection) -> dict:
     links = [(a, b) for a, b in conn.execute("SELECT a, b FROM sde_stargate_links")
              if a in ids and b in ids]
     regions = {rid: name for rid, name in conn.execute("SELECT region_id, name FROM sde_regions")}
-    return {"systems": systems, "links": links,
+    return {"systems": systems, "links": links, "ice_source": ice_source(conn),
             "regions": {str(r): regions.get(r, str(r)) for r in {s["region_id"] for s in systems}}}
 
 
