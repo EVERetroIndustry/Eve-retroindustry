@@ -705,6 +705,12 @@
                '0.5': '#f3fd82', '0.4': '#dc6d07', '0.3': '#ce440f', '0.2': '#bb1116', '0.1': '#722020'};
   // True security to two decimals; never "-0.00".
   const sec2 = v => { const t = v.toFixed(2); return t === '-0.00' ? '0.00' : t; };
+  // The client paints all of null security one colour. Here null is graded
+  // in steps of 0.1 of true security, light magenta at 0.0 to deep violet at
+  // -1.0, so -0.1 and -0.9 no longer look alike.
+  const NULL_STOPS = ['#d06aa8', '#c25a9f', '#b24c96', '#a1408e', '#8f3586', '#7c2c7e',
+                      '#6a2475', '#591d6b', '#481760', '#381255', '#2a0e48'];
+  const nullCol = ts => NULL_STOPS[Math.min(10, Math.max(0, Math.round(-ts * 10)))];
   const secCol = v => v == null ? '#6e7681' : (v <= 0 ? '#8d3264' : SEC[v.toFixed(1)] || '#8d3264');
   const ago = ts => { const m = Math.round((Date.now() / 1000 - ts) / 60);
     return m < 60 ? m + ' min' : m < 2880 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' d'; };
@@ -781,7 +787,9 @@
         if (vs.contested) { fill = '#5a1d1d'; t3 = 'contested'; }
         if (vs.ice_belts) t3 = (t3 ? t3 + ' \u00b7 ' : '') + '\u2744' + vs.ice_belts;
       } else if (kind === 'security') {
-        fill = secCol(sec); t2 = sec == null ? '' : 'true ' + sec.toFixed(3);
+        const ts = b.src.true_sec;
+        fill = ts != null && sec != null && sec <= 0 ? nullCol(ts) : secCol(sec);
+        t2 = ts == null ? '' : 'true ' + ts.toFixed(3);
       } else if (kind === 'contested') {
         if (vs.contested) { fill = '#8b2323'; t2 = 'campaign'; }
       } else if (kind === 'incursion') {
@@ -815,7 +823,8 @@
     }
     const E = escHtml;
     let h = '';
-    if (kind === 'security') h = 'True security, coloured as the client shows it.';
+    if (kind === 'security') h = 'Security: high and low sec in the client\'s colours; null graded by true security'
+      + NULL_STOPS.map((c, i) => ' <span class="sov-chip" style="background:' + c + '"></span>' + (i === 0 ? ' 0.0' : i === 10 ? ' -1.0' : '')).join('');
     else if (kind === 'contested') h = '<span class="sov-chip" style="background:#8b2323"></span> a sovereignty campaign is running or scheduled';
     else if (kind === 'incursion') h = '<span class="sov-chip" style="background:#5b3e8a"></span> infested by an incursion';
     else if (kind === 'last_mined') h = 'When your characters last mined there, from the game client\'s logs on this computer: the brighter, the more recent. What was mined is in the system\'s detail.';
