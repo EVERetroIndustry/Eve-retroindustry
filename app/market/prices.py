@@ -302,6 +302,10 @@ _NO_HISTORY = '"no-history"'
 # (region_id, type_id) -> (etag, {date: volume}, expires_at epoch)
 _hist_etags: dict[tuple[int, int], tuple[str, dict[str, int], float]] = {}
 _hist_etags_dirty: set[tuple[int, int]] = set()
+# (region_id, type_id) -> {date: average price}, the same days as _hist_etags.
+# Kept apart so the volume side keeps its shape; volume x average per day is
+# what the market actually turned over, which the ISK/7d columns show.
+_hist_avgs: dict[tuple[int, int], dict[str, float]] = {}
 
 
 def ensure_hist_etag_table(conn: sqlite3.Connection) -> None:
@@ -319,6 +323,8 @@ def ensure_hist_etag_table(conn: sqlite3.Connection) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(market_hist_etag)")}
     if "expires_at" not in cols:                    # migrate older caches
         conn.execute("ALTER TABLE market_hist_etag ADD COLUMN expires_at REAL")
+    if "avg_json" not in cols:
+        conn.execute("ALTER TABLE market_hist_etag ADD COLUMN avg_json TEXT")
     conn.commit()
 
 
@@ -326,8 +332,9 @@ def load_hist_etags(conn: sqlite3.Connection, region_id: int) -> int:
     """Load a region's stored ETags into memory before a volume phase."""
     ensure_hist_etag_table(conn)
     n = 0
-    for tid, etag, days_json, expires_at in conn.execute(
-        "SELECT type_id, etag, days_json, expires_at FROM market_hist_etag WHERE region_id=?",
+    for tid, etag, days_json, expires_at, avg_json in conn.execute(
+        "SELECT type_id, etag, days_json, expires_at, avg_json FROM market_hist_etag"
+        " WHERE region_id=?",
         (region_id,),
     ):
         if not etag:
@@ -337,6 +344,11 @@ def load_hist_etags(conn: sqlite3.Connection, region_id: int) -> int:
         except Exception:
             days = {}
         _hist_etags[(region_id, tid)] = (etag, days, expires_at or 0.0)
+        if avg_json:
+            try:
+                _hist_avgs[(region_id, tid)] = json.loads(avg_json)
+            except Exception:
+                pass
         n += 1
     return n
 
@@ -359,16 +371,20 @@ def flush_hist_etags(conn: sqlite3.Connection, clear: bool = True) -> int:
         entry = _hist_etags.get(key)
         if not entry:
             continue
-        rows.append((key[0], key[1], entry[0], json.dumps(entry[1]), now, entry[2]))
+        avgs = _hist_avgs.get(key)
+        rows.append((key[0], key[1], entry[0], json.dumps(entry[1]), now, entry[2],
+                     json.dumps(avgs) if avgs is not None else None))
     conn.executemany(
         "INSERT OR REPLACE INTO market_hist_etag "
-        "(region_id, type_id, etag, days_json, cached_at, expires_at) VALUES (?,?,?,?,?,?)",
+        "(region_id, type_id, etag, days_json, cached_at, expires_at, avg_json)"
+        " VALUES (?,?,?,?,?,?,?)",
         rows,
     )
     conn.commit()
     _hist_etags_dirty.clear()
     if clear:
         _hist_etags.clear()
+        _hist_avgs.clear()
     return len(rows)
 
 
@@ -377,6 +393,30 @@ def _window_sum(days: dict[str, int]) -> int:
     import datetime
     cutoff = (datetime.date.today() - datetime.timedelta(days=_HIST_WINDOW_DAYS)).isoformat()
     return sum(v for d, v in days.items() if d >= cutoff)
+
+
+def _window_isk(days: dict[str, int], avgs: dict[str, float] | None) -> float | None:
+    """ISK traded inside the 7-day window: each day's volume at that day's
+    average price. None when a traded day in the window has no average stored
+    (a record from before averages were kept) - a partial sum would understate."""
+    import datetime
+    cutoff = (datetime.date.today() - datetime.timedelta(days=_HIST_WINDOW_DAYS)).isoformat()
+    total = 0.0
+    for d, v in days.items():
+        if d < cutoff or not v:
+            continue
+        avg = (avgs or {}).get(d)
+        if avg is None:
+            return None
+        total += v * avg
+    return total
+
+
+def _recent_avgs(history: list[dict]) -> dict[str, float]:
+    """The daily average prices for the same days _recent_days keeps."""
+    tail = history[-_ETAG_KEEP_DAYS:] if len(history) > _ETAG_KEEP_DAYS else history
+    return {e["date"]: e["average"] for e in tail
+            if e.get("date") and e.get("average") is not None}
 
 
 def _recent_days(history: list[dict]) -> dict[str, int]:
@@ -448,6 +488,11 @@ async def _fetch_region_volume(client: httpx.AsyncClient, region_id: int, type_i
     """
     key = (region_id, type_id)
     cached = _hist_etags.get(key)
+    # A record stored before daily averages were kept can only be completed by
+    # a full body: a 304 (or the Expires skip) would keep it volume-only forever.
+    # One full fetch per such type, once.
+    if cached and cached[1] and key not in _hist_avgs:
+        cached = None
     # ESI rebuilds market history once a day and tells us when the current copy
     # stops being authoritative (Expires). While that hasn't passed, a refetch is
     # guaranteed to return the same bytes - so skip the round trip entirely and
@@ -497,12 +542,14 @@ async def _fetch_region_volume(client: httpx.AsyncClient, region_id: int, type_i
                     etag = r.headers.get("etag")
                     if etag:
                         _hist_etags[key] = (etag, {}, _parse_http_date(r.headers.get("expires")))
+                        _hist_avgs[key] = {}
                         _hist_etags_dirty.add(key)
                     return 0
                 etag = r.headers.get("etag")
                 days = _recent_days(history)
                 if etag:
                     _hist_etags[key] = (etag, days, _parse_http_date(r.headers.get("expires")))
+                    _hist_avgs[key] = _recent_avgs(history)
                     _hist_etags_dirty.add(key)
                 return _window_sum(days)
             # 429 reaches here only after the shared token-bucket governor has
@@ -981,6 +1028,43 @@ def _region_volume_from_etags(conn: sqlite3.Connection, region_id: int,
             out[int(tid)] = _window_sum(json.loads(days_json))
         except (ValueError, TypeError, AttributeError):
             continue      # one malformed row must not cost the whole region
+    return out
+
+
+def region_traded_isk(conn: sqlite3.Connection, region_id: int,
+                      type_ids) -> dict[int, float]:
+    """{type_id: ISK traded in the region over the last 7 days} from the stored
+    daily history (volume x that day's average). Same freshness rule as the
+    volumes the page shows next to it; types without stored averages are left
+    out so the caller can fall back to an estimate."""
+    out: dict[int, float] = {}
+    type_ids = list(type_ids)
+    if not region_id or not type_ids:
+        return out
+    ensure_hist_etag_table(conn)         # older caches lack avg_json
+    now = time.time()
+    try:
+        for i in range(0, len(type_ids), 900):
+            chunk = type_ids[i:i + 900]
+            ph = ",".join("?" * len(chunk))
+            rows = conn.execute(
+                "SELECT type_id, days_json, avg_json FROM market_hist_etag"
+                f" WHERE region_id=? AND type_id IN ({ph})"
+                " AND (expires_at > ? OR cached_at > ?)",
+                (region_id, *chunk, now, now - _REGION_VOLUME_MAX_AGE)).fetchall()
+            for tid, days_json, avg_json in rows:
+                try:
+                    days = json.loads(days_json) if days_json else {}
+                    avgs = json.loads(avg_json) if avg_json is not None else None
+                except (ValueError, TypeError):
+                    continue
+                if avgs is None and days:
+                    continue          # stored before averages were kept
+                isk = _window_isk(days, avgs)
+                if isk is not None:
+                    out[int(tid)] = isk
+    except sqlite3.OperationalError:
+        pass
     return out
 
 

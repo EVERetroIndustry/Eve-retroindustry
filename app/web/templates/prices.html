@@ -131,6 +131,7 @@
               <th class="fw-normal text-center px-2">Sell</th>
               <th class="fw-normal text-center px-2">Buy</th>
               <th class="fw-normal text-center px-2">Vol</th>
+              <th class="fw-normal text-center px-2" title="ISK traded over the last 7 days">ISK</th>
               <th class="fw-normal text-center px-2">Avail</th>
             </tr>
           </thead>
@@ -140,6 +141,7 @@
               <td class="text-center px-2"><input type="checkbox" class="col-cb form-check-input" data-hub="jita" data-metric="sell"></td>
               <td class="text-center px-2"><input type="checkbox" class="col-cb form-check-input" data-hub="jita" data-metric="buy"></td>
               <td class="text-center px-2"><input type="checkbox" class="col-cb form-check-input" data-hub="jita" data-metric="vol"></td>
+              <td class="text-center px-2"><input type="checkbox" class="col-cb form-check-input" data-hub="jita" data-metric="isk"></td>
               <td class="text-center px-2"><input type="checkbox" class="col-cb form-check-input" data-hub="jita" data-metric="avail"></td>
             </tr>
             {% for h in downloaded_hubs %}
@@ -148,6 +150,7 @@
               <td class="text-center px-2"><input type="checkbox" class="col-cb form-check-input" data-hub="{{ h.region_id }}" data-metric="sell"></td>
               <td class="text-center px-2"><input type="checkbox" class="col-cb form-check-input" data-hub="{{ h.region_id }}" data-metric="buy"></td>
               <td class="text-center px-2"><input type="checkbox" class="col-cb form-check-input" data-hub="{{ h.region_id }}" data-metric="vol"></td>
+              <td class="text-center px-2"><input type="checkbox" class="col-cb form-check-input" data-hub="{{ h.region_id }}" data-metric="isk"></td>
               <td class="text-center px-2"><input type="checkbox" class="col-cb form-check-input" data-hub="{{ h.region_id }}" data-metric="avail"></td>
             </tr>
             {% endfor %}
@@ -157,6 +160,7 @@
               <td class="text-center px-2"><input type="checkbox" class="col-cb form-check-input" data-hub="s{{ st.location_id }}" data-metric="sell"></td>
               <td class="text-center px-2 text-muted" title="Only sell orders are read for a station">-</td>
               <td class="text-center px-2"><input type="checkbox" class="col-cb form-check-input" data-hub="s{{ st.location_id }}" data-metric="vol"></td>
+              <td class="text-center px-2"><input type="checkbox" class="col-cb form-check-input" data-hub="s{{ st.location_id }}" data-metric="isk"></td>
               <td class="text-center px-2"><input type="checkbox" class="col-cb form-check-input" data-hub="s{{ st.location_id }}" data-metric="avail"></td>
             </tr>
             {% endfor %}
@@ -210,12 +214,13 @@
   (function () {
     try {
       var p = JSON.parse(localStorage.getItem('priceColPrefs')) || {};
-      var cells = p.cells || {}, rules = [];
+      // ISK/7d columns are opt-in: hidden unless ticked.
+      var cells = p.cells || {}, rules = ['#price-table .pm-isk{display:none}'];
       for (var k in cells) {
-        if (cells[k] === false) {
-          var q = k.split(':');
-          if (q[0] && q[1]) rules.push('#price-table .pm-' + q[1] + '.ph-' + q[0] + '{display:none}');
-        }
+        var q = k.split(':');
+        if (!q[0] || !q[1]) continue;
+        if (cells[k] === false) rules.push('#price-table .pm-' + q[1] + '.ph-' + q[0] + '{display:none}');
+        else if (cells[k] === true && q[1] === 'isk') rules.push('#price-table .pm-isk.ph-' + q[0] + '{display:table-cell}');
       }
       var st = document.createElement('style');
       st.id = 'colprefs-style';
@@ -245,23 +250,26 @@
     </style>
     <table class="table table-sm table-hover mb-0" id="price-table">
       <thead class="sticky-top" style="top:0; background:var(--bs-body-bg);">
-        {% set ns = namespace(c=6) %}
+        {% set ns = namespace(c=7) %}
         <tr>
           <th style="width:36px"></th>
           <th class="sortable" data-col="1" data-sort-type="text" style="cursor:pointer;user-select:none">Name <span class="sort-indicator"></span></th>
           <th class="text-end sortable pricecol pm-sell ph-jita" data-col="2" data-sort-type="num" style="cursor:pointer;user-select:none" title="Lowest sell order in The Forge. An item the market never carries - a supercarrier, a titan - has none, and then the cheapest single-item contract we have indexed is shown instead (c), or CCP's adjusted price (est). Neither is a Jita price, so neither takes part in the sort.">Jita sell <span class="sort-indicator"></span></th>
           <th class="text-end sortable pricecol pm-buy ph-jita" data-col="3" data-sort-type="num" style="cursor:pointer;user-select:none">Jita buy <span class="sort-indicator"></span></th>
           <th class="text-end sortable pricecol pm-vol ph-jita" data-col="4" data-sort-type="num" style="cursor:pointer;user-select:none" title="Traded volume over the last 7 days at Jita (from ESI history)">Jita vol/7d <span class="sort-indicator"></span></th>
-          <th class="text-end sortable pricecol pm-avail ph-jita" data-col="5" data-sort-type="num" style="cursor:pointer;user-select:none" title="Available units in sell orders at Jita 4-4">Jita available <span class="sort-indicator"></span></th>
+          <th class="text-end sortable pricecol pm-isk ph-jita" data-col="5" data-sort-type="num" style="cursor:pointer;user-select:none" title="ISK traded over the last 7 days: each day's volume at that day's average price (ESI market history). ~ marks an estimate - volume at the current sell price - until the history is refreshed with daily averages.">Jita ISK/7d <span class="sort-indicator"></span></th>
+          <th class="text-end sortable pricecol pm-avail ph-jita" data-col="6" data-sort-type="num" style="cursor:pointer;user-select:none" title="Available units in sell orders at Jita 4-4">Jita available <span class="sort-indicator"></span></th>
           {% for h in downloaded_hubs %}
           <th class="text-end sortable pricecol hubcol pm-sell ph-{{ h.region_id }}" data-col="{{ ns.c }}" data-sort-type="num" style="cursor:pointer;user-select:none" title="Best sell across {{ h.name }}'s region">{{ h.name }} sell <span class="sort-indicator"></span></th>{% set ns.c = ns.c + 1 %}
           <th class="text-end sortable pricecol hubcol pm-buy ph-{{ h.region_id }}" data-col="{{ ns.c }}" data-sort-type="num" style="cursor:pointer;user-select:none" title="Best buy across {{ h.name }}'s region">{{ h.name }} buy <span class="sort-indicator"></span></th>{% set ns.c = ns.c + 1 %}
           <th class="text-end sortable pricecol hubcol pm-vol ph-{{ h.region_id }}" data-col="{{ ns.c }}" data-sort-type="num" style="cursor:pointer;user-select:none" title="7-day region trade volume for {{ h.name }}">{{ h.name }} vol/7d <span class="sort-indicator"></span></th>{% set ns.c = ns.c + 1 %}
+          <th class="text-end sortable pricecol hubcol pm-isk ph-{{ h.region_id }}" data-col="{{ ns.c }}" data-sort-type="num" style="cursor:pointer;user-select:none" title="7-day region ISK traded for {{ h.name }}. ISK traded over the last 7 days: each day's volume at that day's average price (ESI market history). ~ marks an estimate - volume at the current sell price - until the history is refreshed with daily averages.">{{ h.name }} ISK/7d <span class="sort-indicator"></span></th>{% set ns.c = ns.c + 1 %}
           <th class="text-end sortable pricecol hubcol pm-avail ph-{{ h.region_id }}" data-col="{{ ns.c }}" data-sort-type="num" style="cursor:pointer;user-select:none" title="Units in sell orders at {{ h.name }}'s main station">{{ h.name }} available <span class="sort-indicator"></span></th>{% set ns.c = ns.c + 1 %}
           {% endfor %}
           {% for st in stations %}
           <th class="text-end sortable pricecol stncol pm-sell ph-s{{ st.location_id }}" data-col="{{ ns.c }}" data-sort-type="num" style="cursor:pointer;user-select:none" title="Best sell order at {{ st.name }}">{{ st.label }} sell <span class="sort-indicator"></span></th>{% set ns.c = ns.c + 1 %}
           <th class="text-end sortable pricecol stncol pm-vol ph-s{{ st.location_id }}" data-col="{{ ns.c }}" data-sort-type="num" style="cursor:pointer;user-select:none" title="Trade volume over the last 7 days across the whole REGION of {{ st.name }} (ESI market history). Fenris Creations does not publish trade history for individual stations or player structures, so this is region-wide demand - not sales at this station.">{{ st.label }} region vol/7d <i class="bi bi-info-circle ms-1" style="opacity:.5;font-size:.75rem"></i> <span class="sort-indicator"></span></th>{% set ns.c = ns.c + 1 %}
+          <th class="text-end sortable pricecol stncol pm-isk ph-s{{ st.location_id }}" data-col="{{ ns.c }}" data-sort-type="num" style="cursor:pointer;user-select:none" title="ISK traded over the last 7 days across the whole REGION of {{ st.name }} - region-wide, like the volume next to it. ISK traded over the last 7 days: each day's volume at that day's average price (ESI market history). ~ marks an estimate - volume at the current sell price - until the history is refreshed with daily averages.">{{ st.label }} region ISK/7d <span class="sort-indicator"></span></th>{% set ns.c = ns.c + 1 %}
           <th class="text-end sortable pricecol stncol pm-avail ph-s{{ st.location_id }}" data-col="{{ ns.c }}" data-sort-type="num" style="cursor:pointer;user-select:none" title="Units in sell orders at {{ st.name }}">{{ st.label }} available <span class="sort-indicator"></span></th>{% set ns.c = ns.c + 1 %}
           {% endfor %}
         </tr>
@@ -271,7 +279,7 @@
          build is 99% of this page's client-side cost (measured). #}
       <tbody>
 {% for item in items -%}
-<tr data-name="{{ item.name | lower }}" data-id="{{ item.type_id }}" data-jita-sell="{{ item.sell_price if item.sell_price is not none else '' }}"><td class="py-1"><img src="/icon/{{ item.type_id }}?size=32" width="24" height="24" class="rounded-1" loading="lazy" onerror="this.style.visibility='hidden'"></td><td class="py-1 align-middle item-hist" role="button" tabindex="0" title="Show price history">{{ item.name }}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-sell ph-jita{% if item.sell_price is none %} text-muted{% endif %}" data-v="{{ item.sell_price if item.sell_price is not none else '' }}"{% if item.sell_price is none and item.get('alt_price') %} data-alt="{{ item.alt_price }}" data-alt-src="{{ item.alt_source }}"{% if item.alt_where %} data-alt-where="{{ item.alt_where }}"{% endif %}{% endif %}>{% if item.sell_price is not none %}{{ item.sell_price | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-buy ph-jita{% if item.buy_price is none %} text-muted{% endif %}" data-v="{{ item.buy_price if item.buy_price is not none else '' }}">{% if item.buy_price is not none %}{{ item.buy_price | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-vol ph-jita{% if item.volume is none %} text-muted{% endif %}" data-v="{{ item.volume if item.volume is not none else '' }}">{% if item.volume is not none %}{{ item.volume | count_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-avail ph-jita{% if item.jita_available is none %} text-muted{% endif %}" data-v="{{ item.jita_available if item.jita_available is not none else '' }}">{% if item.jita_available is not none %}{{ item.jita_available | count_eu }}{% else %}-{% endif %}</td>{% set ihubs = item.get('hubs') or {} %}{% for h in downloaded_hubs %}{% set hd = ihubs.get(h.region_id) %}<td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-sell ph-{{ h.region_id }}{% if hd and hd.sell is none %} text-muted{% endif %}" data-v="{{ hd.sell if hd and hd.sell is not none else '' }}">{% if hd and hd.sell is not none %}{{ hd.sell | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-buy ph-{{ h.region_id }}{% if hd and hd.buy is none %} text-muted{% endif %}" data-v="{{ hd.buy if hd and hd.buy is not none else '' }}">{% if hd and hd.buy is not none %}{{ hd.buy | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-vol ph-{{ h.region_id }}{% if hd and hd.volume is none %} text-muted{% endif %}" data-v="{{ hd.volume if hd and hd.volume is not none else '' }}">{% if hd and hd.volume is not none %}{{ hd.volume | count_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-avail ph-{{ h.region_id }}{% if hd and hd.available is none %} text-muted{% endif %}" data-v="{{ hd.available if hd and hd.available is not none else '' }}">{% if hd and hd.available is not none %}{{ hd.available | count_eu }}{% else %}-{% endif %}</td>{% endfor %}{% set istn = item.get('stations') or {} %}{% for st in stations %}{% set sd = istn.get(st.location_id) %}<td class="text-end py-1 align-middle font-monospace small pricecol stncol pm-sell ph-s{{ st.location_id }}{% if not sd or sd.sell is none %} text-muted{% endif %}" data-v="{{ sd.sell if sd and sd.sell is not none else '' }}">{% if sd and sd.sell is not none %}{{ sd.sell | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol stncol pm-vol ph-s{{ st.location_id }}{% if not sd or sd.volume is none %} text-muted{% endif %}" data-v="{{ sd.volume if sd and sd.volume is not none else '' }}">{% if sd and sd.volume is not none %}{{ sd.volume | count_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol stncol pm-avail ph-s{{ st.location_id }}{% if not sd or sd.available is none %} text-muted{% endif %}" data-v="{{ sd.available if sd and sd.available is not none else '' }}">{% if sd and sd.available is not none %}{{ sd.available | count_eu }}{% else %}-{% endif %}</td>{% endfor %}</tr>
+<tr data-name="{{ item.name | lower }}" data-id="{{ item.type_id }}" data-jita-sell="{{ item.sell_price if item.sell_price is not none else '' }}"><td class="py-1"><img src="/icon/{{ item.type_id }}?size=32" width="24" height="24" class="rounded-1" loading="lazy" onerror="this.style.visibility='hidden'"></td><td class="py-1 align-middle item-hist" role="button" tabindex="0" title="Show price history">{{ item.name }}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-sell ph-jita{% if item.sell_price is none %} text-muted{% endif %}" data-v="{{ item.sell_price if item.sell_price is not none else '' }}"{% if item.sell_price is none and item.get('alt_price') %} data-alt="{{ item.alt_price }}" data-alt-src="{{ item.alt_source }}"{% if item.alt_where %} data-alt-where="{{ item.alt_where }}"{% endif %}{% endif %}>{% if item.sell_price is not none %}{{ item.sell_price | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-buy ph-jita{% if item.buy_price is none %} text-muted{% endif %}" data-v="{{ item.buy_price if item.buy_price is not none else '' }}">{% if item.buy_price is not none %}{{ item.buy_price | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-vol ph-jita{% if item.volume is none %} text-muted{% endif %}" data-v="{{ item.volume if item.volume is not none else '' }}">{% if item.volume is not none %}{{ item.volume | count_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-isk ph-jita{% if item.isk is not defined %} text-muted{% endif %}" data-v="{{ item.isk if item.isk is defined else '' }}"{% if item.isk_est %} data-est="1"{% endif %}>{% if item.isk is defined %}{{ item.isk | count_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol pm-avail ph-jita{% if item.jita_available is none %} text-muted{% endif %}" data-v="{{ item.jita_available if item.jita_available is not none else '' }}">{% if item.jita_available is not none %}{{ item.jita_available | count_eu }}{% else %}-{% endif %}</td>{% set ihubs = item.get('hubs') or {} %}{% for h in downloaded_hubs %}{% set hd = ihubs.get(h.region_id) %}<td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-sell ph-{{ h.region_id }}{% if hd and hd.sell is none %} text-muted{% endif %}" data-v="{{ hd.sell if hd and hd.sell is not none else '' }}">{% if hd and hd.sell is not none %}{{ hd.sell | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-buy ph-{{ h.region_id }}{% if hd and hd.buy is none %} text-muted{% endif %}" data-v="{{ hd.buy if hd and hd.buy is not none else '' }}">{% if hd and hd.buy is not none %}{{ hd.buy | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-vol ph-{{ h.region_id }}{% if hd and hd.volume is none %} text-muted{% endif %}" data-v="{{ hd.volume if hd and hd.volume is not none else '' }}">{% if hd and hd.volume is not none %}{{ hd.volume | count_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-isk ph-{{ h.region_id }}{% if not hd or hd.isk is not defined %} text-muted{% endif %}" data-v="{{ hd.isk if hd and hd.isk is defined else '' }}"{% if hd and hd.isk_est %} data-est="1"{% endif %}>{% if hd and hd.isk is defined %}{{ hd.isk | count_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-avail ph-{{ h.region_id }}{% if hd and hd.available is none %} text-muted{% endif %}" data-v="{{ hd.available if hd and hd.available is not none else '' }}">{% if hd and hd.available is not none %}{{ hd.available | count_eu }}{% else %}-{% endif %}</td>{% endfor %}{% set istn = item.get('stations') or {} %}{% for st in stations %}{% set sd = istn.get(st.location_id) %}<td class="text-end py-1 align-middle font-monospace small pricecol stncol pm-sell ph-s{{ st.location_id }}{% if not sd or sd.sell is none %} text-muted{% endif %}" data-v="{{ sd.sell if sd and sd.sell is not none else '' }}">{% if sd and sd.sell is not none %}{{ sd.sell | price_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol stncol pm-vol ph-s{{ st.location_id }}{% if not sd or sd.volume is none %} text-muted{% endif %}" data-v="{{ sd.volume if sd and sd.volume is not none else '' }}">{% if sd and sd.volume is not none %}{{ sd.volume | count_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol stncol pm-isk ph-s{{ st.location_id }}{% if not sd or sd.isk is not defined %} text-muted{% endif %}" data-v="{{ sd.isk if sd and sd.isk is defined else '' }}"{% if sd and sd.isk_est %} data-est="1"{% endif %}>{% if sd and sd.isk is defined %}{{ sd.isk | count_eu }}{% else %}-{% endif %}</td><td class="text-end py-1 align-middle font-monospace small pricecol stncol pm-avail ph-s{{ st.location_id }}{% if not sd or sd.available is none %} text-muted{% endif %}" data-v="{{ sd.available if sd and sd.available is not none else '' }}">{% if sd and sd.available is not none %}{{ sd.available | count_eu }}{% else %}-{% endif %}</td>{% endfor %}</tr>
 {% endfor -%}
       </tbody>
     </table>
@@ -396,19 +404,23 @@
   }
   const colPrefs = loadColPrefs();
   const cellKey = (h, m) => h + ':' + m;
-  const cellOn  = (h, m) => colPrefs.cells[cellKey(h, m)] !== false;   // default visible
+  // Default visible, except the opt-in metrics (ISK/7d) - default hidden.
+  const OPT_IN = new Set(['isk']);
+  const cellOn  = (h, m) => OPT_IN.has(m) ? colPrefs.cells[cellKey(h, m)] === true
+                                          : colPrefs.cells[cellKey(h, m)] !== false;
   // Column visibility is driven by ONE <style> element (see the pre-paint script
   // above the table), not per-cell inline styles. Two reasons: the inline
   // version had to touch ~7,800 cells - and it could only run after the table
   // was already painted, so hidden columns visibly flashed on every load. CSS
   // also covers rows added later (search results) with no extra work.
   function applyColumnPrefs() {
-    const rules = [];
+    const rules = [...OPT_IN].map(m => `#price-table .pm-${m}{display:none}`);
     for (const k in colPrefs.cells) {
-      if (colPrefs.cells[k] === false) {
-        const [h, m] = k.split(':');
-        if (h && m) rules.push(`#price-table .pm-${m}.ph-${h}{display:none}`);
-      }
+      const [h, m] = k.split(':');
+      if (!h || !m) continue;
+      if (colPrefs.cells[k] === false) rules.push(`#price-table .pm-${m}.ph-${h}{display:none}`);
+      else if (colPrefs.cells[k] === true && OPT_IN.has(m))
+        rules.push(`#price-table .pm-${m}.ph-${h}{display:table-cell}`);
     }
     let st = document.getElementById('colprefs-style');
     if (!st) {
@@ -485,6 +497,12 @@
       const isPrice = td.classList.contains('pm-sell') || td.classList.contains('pm-buy');
       td.classList.toggle('text-muted', v == null);
       if (v == null && td.hasAttribute('data-alt') && paintAltPrice(td, compact)) return;
+      if (v != null && td.hasAttribute('data-est')) {
+        td.innerHTML = '<span class="text-warning" title="Estimate: 7-day volume at the'
+          + ' current sell price. Exact once the history is refreshed with daily averages">~</span>'
+          + fmtNum(v, isPrice, compact);
+        return;
+      }
       td.textContent = fmtNum(v, isPrice, compact);
     });
   }
@@ -576,6 +594,8 @@
   const fmtInt = n => n != null && n > 0 ? euro(n, false) : '<span class="text-muted">-</span>';
   const na = '<span class="text-muted">-</span>';
 
+  const iskCell = (cls, ph, d) =>
+    `<td class="text-end py-1 align-middle font-monospace small pricecol ${cls}pm-isk ph-${ph}" data-v="${d && d.isk != null ? d.isk : ''}"${d && d.isk_est ? ' data-est="1"' : ''}></td>`;
   function makeGroupRow(item) {
     return `<tr data-name="${escHtml(item.name.toLowerCase())}" data-id="${item.type_id}"
                 data-jita-sell="${item.sell_price != null ? item.sell_price : ''}">
@@ -593,9 +613,10 @@
       <td class="text-end py-1 align-middle font-monospace small pricecol pm-sell ph-jita" data-v="${item.sell_price != null ? item.sell_price : ''}"${item.sell_price == null && item.alt_price ? ` data-alt="${item.alt_price}" data-alt-src="${item.alt_source}"${item.alt_where ? ` data-alt-where="${item.alt_where}"` : ''}` : ''}></td>
       <td class="text-end py-1 align-middle font-monospace small pricecol pm-buy ph-jita" data-v="${item.buy_price != null ? item.buy_price : ''}"></td>
       <td class="text-end py-1 align-middle font-monospace small pricecol pm-vol ph-jita" data-v="${item.volume != null ? item.volume : ''}"></td>
+      ${iskCell('', 'jita', item)}
       <td class="text-end py-1 align-middle font-monospace small pricecol pm-avail ph-jita" data-v="${item.jita_available != null ? item.jita_available : ''}"></td>
-      ${DL_HUBS.map(h => { const hd=(item.hubs||{})[h.id]||{}; const dv=x=>x!=null?x:''; return `<td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-sell ph-${h.id}" data-v="${dv(hd.sell)}"></td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-buy ph-${h.id}" data-v="${dv(hd.buy)}"></td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-vol ph-${h.id}" data-v="${dv(hd.volume)}"></td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-avail ph-${h.id}" data-v="${dv(hd.available)}"></td>`; }).join('')}
-      ${DL_STATIONS.map(id => { const sd=(item.stations||{})[id]||{}; const dv=x=>x!=null?x:''; return `<td class="text-end py-1 align-middle font-monospace small pricecol stncol pm-sell ph-s${id}" data-v="${dv(sd.sell)}"></td><td class="text-end py-1 align-middle font-monospace small pricecol stncol pm-vol ph-s${id}" data-v="${dv(sd.volume)}"></td><td class="text-end py-1 align-middle font-monospace small pricecol stncol pm-avail ph-s${id}" data-v="${dv(sd.available)}"></td>`; }).join('')}
+      ${DL_HUBS.map(h => { const hd=(item.hubs||{})[h.id]||{}; const dv=x=>x!=null?x:''; return `<td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-sell ph-${h.id}" data-v="${dv(hd.sell)}"></td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-buy ph-${h.id}" data-v="${dv(hd.buy)}"></td><td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-vol ph-${h.id}" data-v="${dv(hd.volume)}"></td>${iskCell('hubcol ', h.id, hd)}<td class="text-end py-1 align-middle font-monospace small pricecol hubcol pm-avail ph-${h.id}" data-v="${dv(hd.available)}"></td>`; }).join('')}
+      ${DL_STATIONS.map(id => { const sd=(item.stations||{})[id]||{}; const dv=x=>x!=null?x:''; return `<td class="text-end py-1 align-middle font-monospace small pricecol stncol pm-sell ph-s${id}" data-v="${dv(sd.sell)}"></td><td class="text-end py-1 align-middle font-monospace small pricecol stncol pm-vol ph-s${id}" data-v="${dv(sd.volume)}"></td>${iskCell('stncol ', 's' + id, sd)}<td class="text-end py-1 align-middle font-monospace small pricecol stncol pm-avail ph-s${id}" data-v="${dv(sd.available)}"></td>`; }).join('')}
     </tr>`;
   }
 
@@ -957,7 +978,7 @@
       try {
         await fetch('/api/prices/stations/' + encodeURIComponent(btn.dataset.loc), {method: 'DELETE'});
         // Forget its column choices too, so a re-added station starts visible.
-        ['sell', 'vol', 'avail'].forEach(m => delete colPrefs.cells['s' + btn.dataset.loc + ':' + m]);
+        ['sell', 'vol', 'isk', 'avail'].forEach(m => delete colPrefs.cells['s' + btn.dataset.loc + ':' + m]);
         localStorage.setItem('priceColPrefs', JSON.stringify(colPrefs));
       } catch {}
       window.location.reload();

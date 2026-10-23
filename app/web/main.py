@@ -70,6 +70,7 @@ from app.web import background as bg
 from app.web.prices_helper import (
     _apply_discovered_types,
     attach_off_market_prices,
+    attach_traded_isk,
     fill_missing_sell_prices,
     get_prices_for_ids,
     get_cached_prices_for_ids,
@@ -4589,6 +4590,7 @@ async def prices_page(request: Request):
                                         [s["location_id"] for s in stations])
         for it in items:
             it["stations"] = stn_prices.get(it["type_id"], {})
+    attach_traded_isk(conn, items, stations)
     conn.close()
     return _tr("prices.html", request, {
         "stats": stats,
@@ -5832,6 +5834,7 @@ async def prices_search(q: str = ""):
             for r in rows
         ]
         attach_off_market_prices(conn, items)
+        attach_traded_isk(conn, items, _tracked_stations(conn))
         conn.close()
         return {
             "mode": "group",
@@ -5887,6 +5890,7 @@ async def prices_search(q: str = ""):
         for r in rows
     ]
     attach_off_market_prices(conn, items)
+    attach_traded_isk(conn, items, _tracked_stations(conn))
     conn.close()
     return {"mode": "name", "group_name": None, "items": items}
 

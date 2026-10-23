@@ -19,6 +19,7 @@ from app.market.prices import (
     fetch_region_book,
     persist_station_book,
     region_volumes_for,
+    region_traded_isk,
     _cached_region_volume,
     ensure_price_table,
     PRICE_CACHE_TTL,
@@ -262,6 +263,48 @@ def fill_missing_sell_prices(conn: sqlite3.Connection,
         prices[tid] = (got["price"], prices[tid][1])
         sources[tid] = got["source"]
     return sources
+
+
+def attach_traded_isk(conn: sqlite3.Connection, items: list[dict],
+                      stations: list[dict] | None = None) -> None:
+    """ISK traded over the last 7 days next to every 7-day volume on the rows:
+    `isk` for Jita, `isk` inside each hub and station entry.
+
+    Exact where the stored daily history has average prices (sum of volume x
+    that day's average - what ESI says actually changed hands). A history stored
+    before averages were kept has only volumes; until its next refresh the value
+    is the volume at the current sell price, flagged `isk_est`.
+    """
+    if not items:
+        return
+    ids = [it["type_id"] for it in items]
+
+    def _put(target: dict, exact: dict, tid: int, vol, price) -> None:
+        if tid in exact:
+            target["isk"] = exact[tid]
+        elif vol is not None and price is not None:
+            target["isk"], target["isk_est"] = vol * price, True
+        elif vol == 0:
+            target["isk"] = 0.0
+
+    jita = region_traded_isk(conn, JITA_REGION, ids)
+    hub_regions = {rid for it in items for rid in (it.get("hubs") or {})}
+    hubs = {rid: region_traded_isk(conn, rid, ids) for rid in hub_regions}
+    stn_region = {st["location_id"]: st.get("region_id") for st in stations or []}
+    regions = {rid: (jita if rid == JITA_REGION else hubs.get(rid))
+               for rid in set(stn_region.values()) if rid}
+    for rid in regions:
+        if regions[rid] is None:
+            regions[rid] = region_traded_isk(conn, rid, ids)
+    for it in items:
+        tid = it["type_id"]
+        _put(it, jita, tid, it.get("volume"), it.get("sell_price"))
+        for rid, hd in (it.get("hubs") or {}).items():
+            _put(hd, hubs.get(rid, {}), tid, hd.get("volume"),
+                 hd.get("sell") if hd.get("sell") is not None else it.get("sell_price"))
+        for lid, sd in (it.get("stations") or {}).items():
+            _put(sd, regions.get(stn_region.get(lid)) or {}, tid, sd.get("volume"),
+                 sd.get("sell") if sd.get("sell") is not None else it.get("sell_price"))
 
 
 def attach_off_market_prices(conn: sqlite3.Connection, items: list[dict]) -> None:

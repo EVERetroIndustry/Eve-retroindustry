@@ -241,14 +241,16 @@ def test_every_station_gets_columns_a_chip_and_a_row_in_the_column_picker(client
     conn.close()
     html = client.get("/prices").text
     for loc in (AMARR, JITA_44):
-        assert html.count(f'data-hub="s{loc}"') == 3          # sell, vol, avail
+        assert html.count(f'data-hub="s{loc}"') == 4          # sell, vol, isk, avail
         assert f'class="stn-chip" data-loc="{loc}"' in html
-        for metric in ("sell", "vol", "avail"):
+        for metric in ("sell", "vol", "isk", "avail"):
             assert f'pm-{metric} ph-s{loc}" data-col=' in html
     # The seeded row carries the station's numbers, priced like the hub cells.
     assert f'pm-sell ph-s{JITA_44}" data-v="3.25"' in html
     assert f'pm-avail ph-s{JITA_44}" data-v="7"' in html
     assert f'pm-vol ph-s{JITA_44}" data-v="90"' in html
+    # No stored daily averages for the region: volume at the station's sell, flagged.
+    assert f'pm-isk ph-s{JITA_44}" data-v="292.5" data-est="1"' in html
 
 
 def test_two_stations_in_one_system_are_told_apart(client, m):
@@ -269,7 +271,8 @@ def test_search_results_carry_station_prices(client, m):
     conn.close()
     items = client.get("/api/prices/search?q=tritanium").json()["items"]
     trit = next(i for i in items if i["type_id"] == 34)
-    assert trit["stations"] == {str(JITA_44): {"sell": 3.25, "volume": 90, "available": 7}}
+    assert trit["stations"] == {str(JITA_44): {"sell": 3.25, "volume": 90, "available": 7,
+                                               "isk": 292.5, "isk_est": True}}
 
 
 def test_the_one_browser_station_of_older_versions_is_taken_over():
