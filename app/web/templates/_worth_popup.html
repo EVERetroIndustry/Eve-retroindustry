@@ -169,7 +169,7 @@
       }
     } else {
       const d = data.worth || {}, e = data.estimate || {};
-      series = (d.points || []).map(p => ({ t: p.t, v: p.net, w: p.wallet, a: p.assets }));
+      series = (d.points || []).map(p => ({ t: p.t, v: p.net, w: p.wallet, a: p.assets, h: p.held }));
       est = (e.status === 'ready' ? (e.points || []) : []).map(p => ({
         t: p.t, v: (p.net_lo + p.net_hi) / 2, lo: p.net_lo, hi: p.net_hi,
         w: p.wallet, a: (p.assets_lo + p.assets_hi) / 2 }));
@@ -182,6 +182,13 @@
       } else {
         const bits = [];
         if (d.recording_since) bits.push(`Sampled hourly since ${dt(d.recording_since)}.`);
+        // Sell orders, buy order escrow, open contracts and industry jobs were
+        // not counted at first, so the line steps up where counting began.
+        const heldFrom = series.find(p => p.h != null && p.h > 0);
+        if (heldFrom && series[0] !== heldFrom) {
+          bits.push(`What is on the market, in contracts and in industry jobs is `
+            + `counted from ${dt(heldFrom.t)}; the step there is that, not a gain.`);
+        }
         if (est.length) {
           bits.push(`Before that it is <b>estimated</b> (dashed): today's holdings with `
             + `every movement ESI records undone - market trades in kind, industry jobs `
@@ -355,7 +362,8 @@
       + (tr != null ? `<br><span class="k">trend</span> <span class="s">${iskF(tr)}</span>` : '')
       + (tab === 'worth' && p.w != null
          ? `<br><span class="k">wallet</span> <span class="s">${iskF(p.w)}</span>`
-           + `<br><span class="k">assets</span> <span class="s">${iskF(p.a || 0)}</span>` : '');
+           + `<br><span class="k">assets</span> <span class="s">${iskF(p.a || 0)}</span>`
+           + (p.h ? `<br><span class="k">market, contracts, jobs</span> <span class="s">${iskF(p.h)}</span>` : '') : '');
     // Keep the readout inside the chart. It is centred on the point and does not
     // wrap, so near either edge half of it used to hang outside the window and
     // the numbers on that side were unreadable - which is the side you look at

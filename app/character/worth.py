@@ -43,24 +43,31 @@ def ensure_worth_tables(conn: sqlite3.Connection) -> None:
         )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_net_worth_ts"
                  " ON net_worth_history(ts)")
+    # What is on the market, in contracts and in industry jobs (app.character.
+    # held). Samples from before it was counted have NULL, not 0: the chart
+    # steps up where counting started rather than claiming nothing was there.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(net_worth_history)")}
+    if "held" not in cols:
+        conn.execute("ALTER TABLE net_worth_history ADD COLUMN held REAL")
     conn.commit()
 
 
 def record_worth(conn: sqlite3.Connection, samples: list[tuple]) -> int:
-    """Store one hourly sample per character. samples: (char_id, wallet, assets).
+    """Store one hourly sample per character. samples: (char_id, wallet, assets)
+    or (char_id, wallet, assets, held).
 
     REPLACE rather than IGNORE: within an hour the later reading is the better
     one, and the dashboard may compute several.
     """
     ensure_worth_tables(conn)
     bucket = (time.time() // _BUCKET) * _BUCKET
-    rows = [(bucket, int(cid), w, a) for cid, w, a in samples
-            if w is not None or a is not None]
+    rows = [(bucket, int(s[0]), s[1], s[2], s[3] if len(s) > 3 else None)
+            for s in samples if s[1] is not None or s[2] is not None]
     if not rows:
         return 0
     conn.executemany(
-        "INSERT OR REPLACE INTO net_worth_history (ts, character_id, wallet, asset_value)"
-        " VALUES (?,?,?,?)", rows)
+        "INSERT OR REPLACE INTO net_worth_history"
+        " (ts, character_id, wallet, asset_value, held) VALUES (?,?,?,?,?)", rows)
     conn.commit()
     return len(rows)
 
@@ -87,31 +94,32 @@ def worth_series(conn: sqlite3.Connection, days: float) -> dict:
     until = time.time()
     since = until - days * 86400.0
     rows = conn.execute(
-        "SELECT ts, character_id, wallet, asset_value FROM net_worth_history"
+        "SELECT ts, character_id, wallet, asset_value, held FROM net_worth_history"
         " WHERE ts >= ? ORDER BY ts", (since,)).fetchall()
     first = conn.execute("SELECT MIN(ts) FROM net_worth_history").fetchone()[0]
 
     by_ts: dict[float, dict[int, tuple]] = {}
-    for ts, cid, w, a in rows:
-        by_ts.setdefault(ts, {})[cid] = (w, a)
+    for ts, cid, w, a, h in rows:
+        by_ts.setdefault(ts, {})[cid] = (w, a, h)
 
-    last: dict[int, tuple[float, float | None, float | None]] = {}
+    last: dict[int, tuple] = {}
     points = []
     for ts in sorted(by_ts):
-        for cid, (w, a) in by_ts[ts].items():
-            last[cid] = (ts, w, a)
-        wallet = assets = 0.0
+        for cid, (w, a, h) in by_ts[ts].items():
+            last[cid] = (ts, w, a, h)
+        wallet = assets = held = 0.0
         seen = 0
-        for cid, (seen_ts, w, a) in last.items():
+        for cid, (seen_ts, w, a, h) in last.items():
             if ts - seen_ts > _CARRY_MAX:
                 continue
             seen += 1
             wallet += w or 0.0
             assets += a or 0.0
+            held += h or 0.0
         if not seen:
             continue
-        points.append({"t": int(ts), "wallet": wallet, "assets": assets,
-                       "net": wallet + assets, "chars": seen})
+        points.append({"t": int(ts), "wallet": wallet, "assets": assets, "held": held,
+                       "net": wallet + assets + held, "chars": seen})
     return {"points": points, "recording_since": int(first) if first else None}
 
 

@@ -85,6 +85,14 @@ def app_module():
 
     m.fetch_location = _loc
     m.fetch_skill_queue = _sq
+
+    # Orders, contracts and industry jobs for net worth: nothing open.
+    async def _none(*_a, **_k):
+        return []
+    m.held_api._fetch_orders = _none
+    m.held_api._fetch_contracts = _none
+    m.held_api._fetch_jobs = _none
+    m.held_api._fetch_contract_items = _none
     # Never actually launch a browser from a test.
     m._open_in_external_browser = lambda url: True
 

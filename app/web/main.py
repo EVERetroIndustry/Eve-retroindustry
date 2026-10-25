@@ -40,6 +40,7 @@ from app.character.blueprints import fetch_blueprints, ensure_bp_table
 from app.character import wallet as wallet_api
 from app.character import income as income_api
 from app.character import worth as worth_api
+from app.character import held as held_api
 from app.character import history_store as hist_api
 from app.web.page_cache import (
     ensure_page_cache, get_cached, put_cached, drop_cached, age_label,
@@ -1719,6 +1720,42 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
         assets_by_char[cid] = [a for a in raw if not a.get("is_singleton", False)]
         all_type_ids_set.update(a["type_id"] for a in raw)
 
+    # What is on the market, in contracts and in industry jobs: ESI takes it out
+    # of both the assets and the wallet, so without this net worth drops by the
+    # value of every sell order placed. Stored answers only on the instant
+    # render; the live one asks ESI when they have aged.
+    held_by_char: dict[int, dict] = {}
+    try:
+        _own_items: dict[int, set[int]] = {}
+        for cid, _ in chars:
+            ids = {a["item_id"] for a in all_assets_by_char[cid] if a.get("item_id")}
+            _bp = conn.execute("SELECT data_json FROM char_blueprints_cache"
+                               " WHERE character_id=?", (cid,)).fetchone()
+            if _bp and _bp[0]:
+                try:
+                    ids.update(b["item_id"] for b in json.loads(_bp[0]) if b.get("item_id"))
+                except (ValueError, TypeError, KeyError):
+                    pass
+            _own_items[cid] = ids
+
+        async def _held(cid: int, client):
+            return cid, await held_api.collect(conn, cid, tokens.get(cid) if live else None,
+                                               _own_items[cid], client)
+
+        if live:
+            async with esi_client() as _hc:
+                _res = await asyncio.gather(*[_held(c, _hc) for c, _ in chars],
+                                            return_exceptions=True)
+        else:
+            _res = await asyncio.gather(*[_held(c, None) for c, _ in chars],
+                                        return_exceptions=True)
+        held_by_char = {cid: h for r in _res if not isinstance(r, BaseException)
+                        for cid, h in [r]}
+    except Exception:
+        held_by_char = {}
+    for h in held_by_char.values():
+        all_type_ids_set.update(held_api.type_ids(h))
+
     # Prices: full (ESI adjusted for missing) when live, cache-only otherwise.
     prices: dict[int, tuple] = {}
     if all_type_ids_set:
@@ -1846,6 +1883,8 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
                 f"SELECT type_id, name FROM sde_types WHERE type_id IN ({_ph})", list(_skill_ids)
             ).fetchall()}
 
+    _bp_types = {t for t in all_type_ids_set if type_group.get(t) in bp_group_ids}
+
     # Per-character cards.
     for cid, cname in chars:
         char_row = char_rows[cid]
@@ -1870,9 +1909,11 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
             char_value = priced_sum
 
         wallet = wallet_balances.get(cid)
+        held = (held_api.value(held_by_char[cid], prices, _bp_types)
+                if cid in held_by_char else None)
         net_worth: float | None = None
         if char_value is not None or wallet is not None:
-            net_worth = (char_value or 0.0) + (wallet or 0.0)
+            net_worth = (char_value or 0.0) + (wallet or 0.0) + (held["total"] if held else 0.0)
 
         last_sync_at = char_row.get("last_sync_at")
         corp_id = char_row.get("corporation_id")
@@ -1958,6 +1999,8 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
             "asset_value": char_value,
             "wallet":      wallet,
             "net_worth":   net_worth,
+            "held":        held,
+            "held_unknown": held_by_char.get(cid, {}).get("unknown", []),
             "last_sync_at": last_sync_at,
             "is_active":   cid == active_char_id,
             "location_name":  location_name,
@@ -2069,6 +2112,12 @@ def _dash_live_json(ctx: dict) -> dict:
             "wallet_str":      _s(c["wallet"]),
             "asset_value_str": _s(c["asset_value"]),
             "net_worth_str":   _s(c["net_worth"]),
+            # Nothing tied up shows nothing, not a row of zeros on every card.
+            "held_str":        (_s(c["held"]["total"])
+                                if c.get("held") and c["held"]["total"] else None),
+            "held_parts":      ({k: _s(v) for k, v in c["held"].items() if k != "total"}
+                                if c.get("held") else None),
+            "held_unknown":    c.get("held_unknown") or [],
             "has_worth":       c["net_worth"] is not None or c["asset_value"] is not None,
             "location_name":   c["location_name"],
             "location_state":  c["location_state"],
@@ -2101,7 +2150,9 @@ async def _dash_live_build(request: Request) -> dict:
         # and the hourly bucket means opening the dashboard often costs nothing.
         try:
             worth_api.record_worth(conn, [
-                (c["char_id"], c["wallet"], c["asset_value"]) for c in ctx["char_cards"]])
+                (c["char_id"], c["wallet"], c["asset_value"],
+                 c["held"]["total"] if c.get("held") else None)
+                for c in ctx["char_cards"]])
         except Exception:
             pass                      # a missing sample must never break the page
         return payload

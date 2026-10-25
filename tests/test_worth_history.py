@@ -144,7 +144,8 @@ def test_worth_sums_characters_and_carries_an_unseen_one_forward():
     _char(conn, 1, "A", 0.0)
     _char(conn, 2, "B", 0.0)
     h = (time.time() // 3600) * 3600
-    conn.executemany("INSERT INTO net_worth_history VALUES (?,?,?,?)", [
+    conn.executemany("INSERT INTO net_worth_history (ts, character_id, wallet, asset_value)"
+                     " VALUES (?,?,?,?)", [
         (h - 7200, 1, 100.0, 1000.0), (h - 7200, 2, 50.0, 500.0),
         (h - 3600, 1, 120.0, 1100.0),                      # B missing this hour
     ])
@@ -161,7 +162,8 @@ def test_a_stale_character_stops_being_carried_forward():
     _char(conn, 1, "A", 0.0)
     _char(conn, 2, "B", 0.0)
     h = (time.time() // 3600) * 3600
-    conn.executemany("INSERT INTO net_worth_history VALUES (?,?,?,?)", [
+    conn.executemany("INSERT INTO net_worth_history (ts, character_id, wallet, asset_value)"
+                     " VALUES (?,?,?,?)", [
         (h - worth._CARRY_MAX - 7200, 2, 50.0, 500.0),     # long gone
         (h - 3600, 1, 120.0, 1100.0),
     ])
@@ -443,3 +445,23 @@ def test_the_net_worth_chart_carries_a_trend_line(client):
     # 42.65b in the data it was meant to describe.
     assert "points[points.length - 1].t - points[0].t" in html
     assert "trendOf(plot)" in html and "trendOf(plot, days)" not in html
+
+
+def test_what_is_held_adds_to_net_worth_and_old_samples_stay_without_it():
+    conn = _db()
+    worth.record_worth(conn, [(1, 100.0, 900.0)])
+    conn.execute("UPDATE net_worth_history SET ts = ts - 7200")
+    worth.record_worth(conn, [(1, 100.0, 900.0, 500.0)])
+    pts = worth.worth_series(conn, 7)["points"]
+    assert [p["net"] for p in pts] == [1000.0, 1500.0]
+    assert pts[-1]["held"] == 500.0
+    assert conn.execute("SELECT held FROM net_worth_history ORDER BY ts").fetchone()[0] is None
+
+
+def test_an_old_history_table_gains_the_held_column():
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE net_worth_history (ts REAL NOT NULL, character_id INTEGER"
+                 " NOT NULL, wallet REAL, asset_value REAL, PRIMARY KEY (ts, character_id))")
+    conn.execute("INSERT INTO net_worth_history VALUES (1, 1, 10.0, 20.0)")
+    worth.ensure_worth_tables(conn)
+    assert conn.execute("SELECT held FROM net_worth_history").fetchone() == (None,)

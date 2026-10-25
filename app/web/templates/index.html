@@ -241,15 +241,29 @@
     }
     return h;
   }
+  // What sits outside the hangar and the wallet: sell orders, buy order
+  // escrow, own open contracts and undelivered industry jobs.
+  function heldTitle(c) {
+    const p = c.held_parts || {};
+    const lines = ['Not in assets or wallet, counted in net worth:',
+      `On the market (sell orders, Jita sell): ${p.market || '0'}`,
+      `Buy order escrow: ${p.escrow || '0'}`,
+      `Own open contracts (items and ISK): ${p.contracts || '0'}`,
+      `Industry jobs not delivered yet (product): ${p.jobs || '0'}`];
+    if ((c.held_unknown || []).length)
+      lines.push(`Not known yet, left out: ${c.held_unknown.join(', ')}`);
+    return lines.join('\n');
+  }
   function worthHtml(c) {
     if (c && c.net_worth_str) {
       let h = `<div class="mb-3 p-2 rounded" style="background:#1c2128">`
         + `<div class="d-flex justify-content-between align-items-baseline mb-1">`
         + `<div class="text-muted" style="font-size:.7rem;text-transform:uppercase;letter-spacing:.04em">Est. Net Worth</div></div>`
         + `<div class="text-isk fw-semibold" style="font-size:1rem">${esc(c.net_worth_str)} ISK</div>`
-        + `<div class="d-flex gap-3 mt-1" style="font-size:.72rem;color:#8b949e">`;
+        + `<div class="d-flex flex-wrap column-gap-3 mt-1" style="font-size:.72rem;color:#8b949e">`;
       if (c.asset_value_str) h += `<span title="Asset value"><i class="bi bi-box-seam me-1"></i>${esc(c.asset_value_str)}</span>`;
       if (c.wallet_str) h += `<span title="Wallet ISK"><i class="bi bi-wallet2 me-1"></i>${esc(c.wallet_str)}</span>`;
+      if (c.held_str) h += `<span title="${esc(heldTitle(c))}"><i class="bi bi-hourglass-split me-1"></i>${esc(c.held_str)}</span>`;
       h += `</div></div>`;
       return h;
     }
