@@ -1,7 +1,7 @@
 """FastAPI web application for EVE Retroindustry."""
 from __future__ import annotations
 
-APP_VERSION = "0.11.38"
+APP_VERSION = "0.11.39"
 
 import asyncio
 import datetime
