@@ -13,6 +13,10 @@ pywebview>=5.0
 # Qt backend (PyQt6 + QtWebEngine) on both Linux and Windows. Self-contained
 # bundled Chromium; on Windows avoids the pythonnet/.NET path that breaks
 # under PyInstaller. macOS would use its native WKWebView (not packaged here).
-PyQt6>=6.6
-PyQt6-WebEngine>=6.6
+# PyQt6 and PyQt6-WebEngine must be the same minor: WebEngine is built against
+# one Qt, and PyQt6 6.12.0 shipped while WebEngine was still 6.11 - the Windows
+# build then failed to load QtWebEngineWidgets ("procedure could not be found").
+# Raise both caps together once PyQt6-WebEngine 6.12 is on PyPI.
+PyQt6>=6.6,<6.12
+PyQt6-WebEngine>=6.6,<6.12
 QtPy>=2.4
