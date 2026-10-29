@@ -1655,7 +1655,48 @@ def active_ship_items(conn: sqlite3.Connection) -> dict[int, float]:
     return out
 
 
-async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
+# Which corporation a character is in. ESI caches the public character sheet for
+# hours and a move is rare, so the full dashboard refresh asks at most this often
+# per character; the Refresh icon on a card always asks.
+_CORP_CHECK_KIND = "char_corp_check"
+_CORP_CHECK_TTL = 6 * 3600
+
+
+async def _fetch_character_corp(client, cid: int) -> int | None:
+    """corporation_id from the public /characters/{id}/ sheet, or None."""
+    r = await client.get(f"https://esi.evetech.net/latest/characters/{cid}/",
+                         headers={"Accept": "application/json"})
+    if r.status_code != 200:
+        return None
+    corp = r.json().get("corporation_id")
+    return int(corp) if corp else None
+
+
+async def _refresh_corp_ids(conn, char_rows: dict[int, dict], cids: list[int],
+                            *, force: bool) -> None:
+    """Store a changed corporation_id, and patch char_rows to match."""
+    due = []
+    for cid in cids:
+        seen = None if force else get_cached(conn, _CORP_CHECK_KIND, cid)
+        if seen is None or seen[1] >= _CORP_CHECK_TTL:
+            due.append(cid)
+    if not due:
+        return
+    async with esi_client(timeout=5) as client:
+        res = await asyncio.gather(*[_fetch_character_corp(client, c) for c in due],
+                                   return_exceptions=True)
+    for cid, corp in zip(due, res):
+        if isinstance(corp, BaseException) or not corp:
+            continue                  # unknown is not "no corporation": keep it
+        put_cached(conn, _CORP_CHECK_KIND, cid, {"corporation_id": corp})
+        row = char_rows.setdefault(cid, {})
+        if row.get("corporation_id") != corp:
+            update_corporation_id(conn, cid, corp)
+            row["corporation_id"] = corp
+
+
+async def _compute_dashboard(request: Request, conn, *, live: bool,
+                             only: int | None = None) -> dict:
     """Build the dashboard context.
 
     live=False → everything from the local cache/DB, NO ESI call, renders
@@ -1663,6 +1704,10 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
     wallet, location, skill queue, adjusted prices); used by /api/dashboard/live.
     Splitting it this way means a slow or rate-limited ESI can never make the
     dashboard (or the whole app) appear frozen.
+
+    only=<character id> limits the ESI calls to that one character (the Refresh
+    icon on its card). The other cards come out without their live fields; the
+    caller takes just this character's card and merges it into the stored set.
     """
     logged_in = has_any_character(conn)
     price_stats: dict = {}
@@ -1685,15 +1730,24 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
 
     # Access tokens - fetched once per char, OFF the event loop (live only).
     # return_exceptions so one char's refresh error can't blow up the endpoint.
+    # The characters ESI is asked about: all of them, or the one being refreshed.
+    live_cids = [cid for cid, _ in chars if only is None or cid == only] if live else []
     tokens: dict[int, str | None] = {}
     if live:
-        _cids = [cid for cid, _ in chars]
+        _cids = live_cids
         _tok_res = await asyncio.gather(*[_valid_token_async(c) for c in _cids], return_exceptions=True)
         tokens = {c: (t if isinstance(t, str) else None) for c, t in zip(_cids, _tok_res)}
 
-    # Corporation names via ESI bulk (live only).
+    # Corporation membership, then names via ESI bulk (live only). Membership is
+    # otherwise only learned at login or during an asset sync, so a pilot who
+    # changed corporation kept the old one on the dashboard.
     if live:
-        corp_ids = list({row.get("corporation_id") for row in char_rows.values() if row.get("corporation_id")})
+        try:
+            await _refresh_corp_ids(conn, char_rows, live_cids, force=only is not None)
+        except Exception:
+            pass
+        corp_ids = list({char_rows[c].get("corporation_id") for c in live_cids
+                         if char_rows[c].get("corporation_id")})
         if corp_ids:
             try:
                 async with esi_client(timeout=5) as client:
@@ -1744,7 +1798,10 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
 
         if live:
             async with esi_client() as _hc:
-                _res = await asyncio.gather(*[_held(c, _hc) for c, _ in chars],
+                # A character outside the refresh gets no token: its stored
+                # answers only, the same as the instant render.
+                _res = await asyncio.gather(*[_held(c, _hc) if c in live_cids else _held(c, None)
+                                              for c, _ in chars],
                                             return_exceptions=True)
         else:
             _res = await asyncio.gather(*[_held(c, None) for c, _ in chars],
@@ -1783,8 +1840,8 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
     # Wallet balances (live only, 5-min cache).
     wallet_balances: dict[int, float | None] = {cid: None for cid, _ in chars}
     if live:
-        _cids = [cid for cid, _ in chars]
-        wallet_balances = dict(zip(_cids, await asyncio.gather(*[
+        _cids = live_cids
+        wallet_balances.update(zip(_cids, await asyncio.gather(*[
             _fetch_wallet_balance(conn, c, tokens.get(c)) for c in _cids
         ])))
         _wallets = [w for w in wallet_balances.values() if w is not None]
@@ -1799,7 +1856,7 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
     sys_names: dict[int, str] = {}
     skill_names: dict[int, str] = {}
     if live:
-        _char_ids = [cid for cid, _ in chars]
+        _char_ids = live_cids
 
         async def _fetch_loc_sq(cid: int):
             tok = tokens.get(cid)
@@ -1832,7 +1889,7 @@ async def _compute_dashboard(request: Request, conn, *, live: bool) -> dict:
             _tok_ok = sum(1 for t in tokens.values() if t)
             _loc_ok = sum(1 for v in loc_sq.values() if v[0])
             _trn_ok = sum(1 for v in loc_sq.values() if v[1])
-            print(f"[dash-live] chars={len(chars)} tokens_ok={_tok_ok}/{len(chars)} "
+            print(f"[dash-live] chars={len(_char_ids)} tokens_ok={_tok_ok}/{len(_char_ids)} "
                   f"located={_loc_ok} training={_trn_ok}", flush=True)
         except Exception:
             pass
@@ -2119,6 +2176,11 @@ def _dash_live_json(ctx: dict) -> dict:
                                 if c.get("held") else None),
             "held_unknown":    c.get("held_unknown") or [],
             "has_worth":       c["net_worth"] is not None or c["asset_value"] is not None,
+            # Raw numbers behind the totals, so a refresh of one card can redo
+            # the all-characters sums without asking ESI about the others.
+            "wallet_isk":      c["wallet"],
+            "worth_isk":       (c["net_worth"] if c["net_worth"] is not None
+                                else c["asset_value"]),
             "location_name":   c["location_name"],
             "location_state":  c["location_state"],
             "ship_label":      c.get("ship_label"),
@@ -2131,6 +2193,58 @@ def _dash_live_json(ctx: dict) -> dict:
         "agg_value_str": _isk0(ctx["agg_value"]) if ctx["agg_value"] else None,
         "chars": chars_out,
     }
+
+
+def _dash_merge_char(stored: dict, cid: int, card: dict) -> dict | None:
+    """The stored payload with one character's card replaced and the totals
+    redone. None when the stored one predates the raw numbers (or is missing),
+    since the sums cannot be redone from formatted strings."""
+    if not isinstance(stored, dict) or not stored.get("logged_in"):
+        return None
+    chars = dict(stored.get("chars") or {})
+    if any("wallet_isk" not in c for k, c in chars.items() if k != str(cid)):
+        return None
+    chars[str(cid)] = card
+    wallets = [c["wallet_isk"] for c in chars.values() if c.get("wallet_isk") is not None]
+    worths = [c["worth_isk"] for c in chars.values() if c.get("worth_isk") is not None]
+    agg_value = sum(worths) if worths else None
+    return {
+        **{k: v for k, v in stored.items()
+           if k not in ("age_s", "cached", "stale", "slow", "failed", "throttled", "wait_s")},
+        "agg_wallet_str": _isk0(sum(wallets)) if wallets else None,
+        "agg_value_str": _isk0(agg_value) if agg_value else None,
+        "chars": chars,
+    }
+
+
+async def _dash_live_build_char(request: Request, cid: int) -> dict:
+    """Refresh one character's card, merged into the stored set. Falls back to
+    the full refresh when there is no stored set to merge into."""
+    conn = get_conn()
+    try:
+        ctx = await _compute_dashboard(request, conn, live=True, only=cid)
+        if not ctx["logged_in"]:
+            return {"logged_in": False}
+        card_ctx = next((c for c in ctx["char_cards"] if c["char_id"] == cid), None)
+        if card_ctx is None:             # not one of ours: refresh everything
+            return None
+        card = _dash_live_json({**ctx, "char_cards": [card_ctx]})["chars"][str(cid)]
+        # Read the stored set only now: a full refresh that finished meanwhile
+        # must not be overwritten with the older copy.
+        stored = get_cached(conn, _DASH_LIVE_KIND, _DASH_LIVE_KEY)
+        payload = _dash_merge_char(stored[0] if stored else None, cid, card)
+        if payload is None:
+            return None
+        put_cached(conn, _DASH_LIVE_KIND, _DASH_LIVE_KEY, payload)
+        try:
+            worth_api.record_worth(conn, [
+                (cid, card_ctx["wallet"], card_ctx["asset_value"],
+                 card_ctx["held"]["total"] if card_ctx.get("held") else None)])
+        except Exception:
+            pass
+        return payload
+    finally:
+        conn.close()
 
 
 async def _dash_live_build(request: Request) -> dict:
@@ -2173,15 +2287,37 @@ def _dash_live_flight(request: Request):
     return task
 
 
+# One-card refreshes in flight, per character. A full refresh already on its way
+# covers the card too, so that one is joined instead.
+_DASH_CHAR_FLIGHT: dict[int, asyncio.Task] = {}
+
+
+def _dash_char_flight(request: Request, cid: int):
+    full = _DASH_FLIGHT[0]
+    if full is not None and not full.done():
+        return full
+    task = _DASH_CHAR_FLIGHT.get(cid)
+    if task is None or task.done():
+        async def _run():
+            payload = await _dash_live_build_char(request, cid)
+            if payload is None:           # nothing stored to merge into
+                payload = await _dash_live_flight(request)
+            return payload
+        task = asyncio.create_task(_run())
+        _DASH_CHAR_FLIGHT[cid] = task
+    return task
+
+
 @app.get("/api/dashboard/live")
-async def api_dashboard_live(request: Request, force: int = 0):
+async def api_dashboard_live(request: Request, force: int = 0, char: int = 0):
     """ESI-backed dashboard data (corp names, wallet, location, skill queue,
     refined prices), fetched by the dashboard right after the instant render.
 
     Three states, and the page is told which one it got: fresh (just fetched),
     stored (inside the TTL, or older because a refresh could not happen), and
-    nothing-yet. `force=1` is the Refresh icon on a card - when someone asks for
-    current numbers they get them.
+    nothing-yet. `force=1` bypasses the stored copy (the retry link); `char=<id>`
+    is the Refresh icon on that character's card: only that character is asked
+    for, the others keep their stored values.
 
     Whatever it answers, answering is what opens the background scheduler's
     startup gate: this is the data the first screen waits for, so background
@@ -2189,12 +2325,12 @@ async def api_dashboard_live(request: Request, force: int = 0):
     ESI outage must not keep them from ever starting.
     """
     try:
-        return await _dashboard_live(request, force)
+        return await _dashboard_live(request, force, char)
     finally:
         bg.GATE.delivered()
 
 
-async def _dashboard_live(request: Request, force: int):
+async def _dashboard_live(request: Request, force: int, char: int = 0):
     conn = get_conn()
     try:
         if not has_any_character(conn):
@@ -2203,7 +2339,7 @@ async def _dashboard_live(request: Request, force: int):
     finally:
         conn.close()
 
-    if stored and not force:
+    if stored and not force and not char:
         payload, age = stored
         if age < _DASH_LIVE_TTL and isinstance(payload, dict):
             return {**payload, "age_s": int(age), "cached": True}
@@ -2228,7 +2364,7 @@ async def _dashboard_live(request: Request, force: int):
     if throttle["paused"]:
         return _fallback(throttled=True, wait_s=int(throttle.get("seconds") or 0))
 
-    task = _dash_live_flight(request)
+    task = _dash_char_flight(request, char) if char else _dash_live_flight(request)
     try:
         # Shielded: this task is shared, so one client's deadline must not cancel
         # the fetch the others are waiting for - and when it lands it still fills
@@ -8738,7 +8874,12 @@ async def planets_page(request: Request):
 # ── Character portraits / corp logos: local cache with a long TTL ────────────
 # Same reasoning as type icons, but these CAN change (a player updates a portrait,
 # a corp changes its logo), so they get a long TTL instead of being immutable.
-_PORTRAIT_TTL = 30 * 86400          # 30 days on disk and in the browser
+# The browser keeps them for a day only: asking our own server costs nothing,
+# and a copy refreshed on disk would otherwise stay hidden behind a month-long
+# browser cache.
+_PORTRAIT_TTL = 30 * 86400          # 30 days on disk
+_PORTRAIT_BROWSER_TTL = 86400       # 1 day in the browser
+_PORTRAIT_REFRESH_MIN = 60          # refresh=1 re-downloads at most once a minute
 _PORTRAIT_KINDS = {                 # url segment -> (esi path, flavour)
     "characters":   "portrait",
     "corporations": "logo",
@@ -8747,19 +8888,24 @@ _PORTRAIT_KINDS = {                 # url segment -> (esi path, flavour)
 
 
 @app.get("/portrait/{kind}/{entity_id}")
-async def entity_portrait(kind: str, entity_id: int, size: int = 32):
-    """Serve a character portrait / corp or alliance logo from the local cache."""
+async def entity_portrait(kind: str, entity_id: int, size: int = 32, refresh: int = 0):
+    """Serve a character portrait / corp or alliance logo from the local cache.
+
+    refresh=1 (the Refresh icon on a character card) skips the TTL and asks the
+    image server again; a failed fetch still falls back to the stored copy.
+    """
     from fastapi.responses import Response, FileResponse
     flavour = _PORTRAIT_KINDS.get(kind)
     if not flavour:
         return Response(status_code=404)
     if size not in _ICON_SIZES:
         size = 32
-    headers = {"Cache-Control": f"public, max-age={_PORTRAIT_TTL}"}
+    headers = {"Cache-Control": f"public, max-age={_PORTRAIT_BROWSER_TTL}"}
 
     variant = f"{kind}-{flavour}"
     hit = _cached_icon(entity_id, size, variant)
-    if hit and (_time.time() - os.path.getmtime(hit[0])) < _PORTRAIT_TTL:
+    max_age = _PORTRAIT_REFRESH_MIN if refresh else _PORTRAIT_TTL
+    if hit and (_time.time() - os.path.getmtime(hit[0])) < max_age:
         return FileResponse(hit[0], media_type=hit[1], headers=headers)
 
     try:
@@ -8782,6 +8928,13 @@ async def entity_portrait(kind: str, entity_id: int, size: int = 32):
         with open(tmp, "wb") as fh:
             fh.write(r.content)
         os.replace(tmp, path)
+        # _cached_icon tries png before jpg, so an old copy in another format
+        # would keep winning over the one just stored.
+        if hit and hit[0] != path:
+            try:
+                os.remove(hit[0])
+            except OSError:
+                pass
         return Response(content=r.content, media_type=mime, headers=headers)
     except Exception as exc:
         print(f"[portrait] {kind}/{entity_id} failed: {exc}", flush=True)

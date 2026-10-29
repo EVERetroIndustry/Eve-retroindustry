@@ -86,6 +86,11 @@ def app_module():
     m.fetch_location = _loc
     m.fetch_skill_queue = _sq
 
+    # Corporation membership check on the live dashboard: unknown, keep stored.
+    async def _corp(client, cid):
+        return None
+    m._fetch_character_corp = _corp
+
     # Orders, contracts and industry jobs for net worth: nothing open.
     async def _none(*_a, **_k):
         return []

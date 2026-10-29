@@ -47,7 +47,7 @@ def test_a_dashboard_that_fails_still_opens_the_gate(client, m, monkeypatch):
     # from ever starting.
     bg.GATE._delivered = bg.GATE._opened = False
 
-    async def boom(request, force):
+    async def boom(request, *_a):
         raise RuntimeError("ESI is down")
     monkeypatch.setattr(m, "_dashboard_live", boom)
     with pytest.raises(RuntimeError):
