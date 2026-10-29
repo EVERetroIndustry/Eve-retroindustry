@@ -466,15 +466,25 @@ function refreshDashboardData(btn, cid) {
   else location.reload();
 }
 
-// Every portrait of this character on the page (card, navbar), at its own size:
-// refresh=1 makes the server ask the image server again, t= gets past the
-// browser's copy.
-function refreshPortraits(cid) {
+// Every portrait of this character, at every size the pages use: refresh=1 makes
+// the server ask the image server again. Then the plain URL - the one every page
+// loads - is fetched with cache:'reload', which replaces the browser's stored
+// copy; without that the next visit showed the old portrait for up to 30 days
+// (the browser TTL before 0.11.40). t= gets the images on this page past their
+// in-memory copy.
+async function refreshPortraits(cid) {
+  const imgs = [...document.querySelectorAll(`img[src^="/portrait/characters/${cid}?"]`)];
+  const sizeOf = img => new URL(img.src, location.href).searchParams.get('size') || '32';
+  const sizes = new Set(['32', '64', ...imgs.map(sizeOf)]);
+  const base = size => `/portrait/characters/${cid}?size=${size}`;
+  await Promise.all([...sizes].map(async size => {
+    try {
+      await fetch(base(size) + '&refresh=1', { cache: 'no-store' });
+      await fetch(base(size), { cache: 'reload' });
+    } catch (e) { /* the old picture stays; nothing to report */ }
+  }));
   const t = Date.now();
-  document.querySelectorAll(`img[src^="/portrait/characters/${cid}?"]`).forEach(img => {
-    const size = new URL(img.src, location.href).searchParams.get('size') || '32';
-    img.src = `/portrait/characters/${cid}?size=${size}&refresh=1&t=${t}`;
-  });
+  imgs.forEach(img => { img.src = `${base(sizeOf(img))}&t=${t}`; });
 }
 {% endif %}
 
