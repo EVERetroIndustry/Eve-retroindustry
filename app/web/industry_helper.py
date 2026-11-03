@@ -535,3 +535,72 @@ async def get_sci_for_system(
     return row[0] if row else 0.0
 
 
+
+
+# Hulls that need a shipyard service module. CCP enforces this in the game, not
+# in the static data, so the groups are listed here. Rules as players report
+# them on the official forum ("Capital Ship Production in High Sec", 2019) and
+# as EVE Ref lists the modules:
+# * Standup Capital Shipyard I - Azbel or Sotiyo, banned in high-sec. Needed
+#   for carriers, dreadnoughts (lancers included) and force auxiliaries.
+# * Standup Supercapital Shipyard I - Sotiyo only, onlined only with sovereignty
+#   and the Supercapital Construction Facilities upgrade in that system.
+# Freighters, jump freighters and the Orca are buildable in high-sec, and
+# nothing else is checked: the app cannot see which service modules a
+# structure has fitted, nor whether its owner lets you use them (the access
+# list is not in ESI), so it only says what the setup it knows rules out.
+_CAPITAL_SHIPYARD_GROUPS = frozenset({485, 547, 1538, 4594})
+_SUPERCAPITAL_GROUPS = frozenset({30, 659})
+_STRUCTURE_LABEL = {"raitaru": "Raitaru", "azbel": "Azbel", "sotiyo": "Sotiyo",
+                    "athanor": "Athanor", "tatara": "Tatara", "npc": "NPC station"}
+
+
+def _site_facts(conn: sqlite3.Connection, location_id: int) -> tuple[str | None, float | None]:
+    """(structure type as set up in the plan, true security) of a station."""
+    from app.web.location_resolver import get_cached_security
+
+    ensure_industry_tables(conn)
+    st = None
+    if location_id and location_id < 1_000_000_000:
+        st = "npc"                         # an NPC station id, not a structure
+    else:
+        row = conn.execute("SELECT structure_type FROM station_rigs WHERE location_id=?",
+                           (location_id,)).fetchone()
+        st = row[0] if row and row[0] else None
+    sec = None
+    row = conn.execute("SELECT solar_system_id FROM location_name_cache WHERE location_id=?",
+                       (location_id,)).fetchone()
+    if row and row[0]:
+        sec = get_cached_security(conn, row[0])
+    return st, sec
+
+
+def build_site_warning(conn: sqlite3.Connection, location_id: int,
+                       group_id: int | None) -> str | None:
+    """Why this station cannot build a hull of this group, or None when nothing
+    the app knows about rules it out."""
+    if group_id in _SUPERCAPITAL_GROUPS:
+        st, sec = _site_facts(conn, location_id)
+        why = []
+        if st != "sotiyo":
+            why.append(f"it is set up as {_STRUCTURE_LABEL[st]}" if st in _STRUCTURE_LABEL
+                       else "its structure type is not set in the plan")
+        if sec is not None and sec > 0.0:
+            why.append("it is not in null-sec")
+        if why:
+            return ("Supercarriers and titans are built in a Sotiyo with the Supercapital "
+                    "Shipyard, which needs sovereignty and the Supercapital Construction "
+                    "Facilities upgrade in that null-sec system; " + " and ".join(why) + ".")
+    elif group_id in _CAPITAL_SHIPYARD_GROUPS:
+        st, sec = _site_facts(conn, location_id)
+        why = []
+        if st not in ("azbel", "sotiyo"):
+            why.append(f"it is set up as {_STRUCTURE_LABEL[st]}" if st in _STRUCTURE_LABEL
+                       else "its structure type is not set in the plan")
+        if sec is not None and sec >= 0.45:
+            why.append("it is in high-sec")
+        if why:
+            return ("Carriers, dreadnoughts and force auxiliaries are built with the Capital "
+                    "Shipyard, which fits an Azbel or a Sotiyo and cannot be used in "
+                    "high-sec; " + " and ".join(why) + ".")
+    return None

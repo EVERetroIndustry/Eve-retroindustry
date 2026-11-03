@@ -326,6 +326,19 @@ def get_project_detail(conn: sqlite3.Connection, project_id: int) -> dict | None
                 "structure": (facility.get("rxn") or {}).get("structure"),
                 "rigs": (facility.get("rxn") or {}).get("rigs") or [],
             },
+            # The optional second manufacturing station, kept in the plan's own
+            # fees block (it has no column: older plans simply do not have it).
+            "has_station2": bool(fees.get("has_station2")),
+            "mf2": {
+                "station": fees.get("station2_name") or "",
+                "tax": fees.get("mf2_facility_tax"),
+                "sci": fees.get("mf2_sci"),
+                "cost_bonus_pct": fees.get("mf2_cost_bonus_pct"),
+                "me_pct": fees.get("mf2_me_pct"),
+                "te_pct": fees.get("mf2_te_pct"),
+                "structure": (facility.get("mf2") or {}).get("structure"),
+                "rigs": (facility.get("mf2") or {}).get("rigs") or [],
+            },
             "implant_name": fees.get("implant_mfg_name"),
             "implant_pct": fees.get("implant_mfg_pct") or 0,
         })
@@ -357,9 +370,15 @@ def get_project_detail(conn: sqlite3.Connection, project_id: int) -> dict | None
                 # when the plan was saved. Summed when the same item is built in
                 # more than one plan of this project, because those are separate
                 # jobs with separate fees.
-                facts = plan_job_facts.setdefault(key, {"duration_s": 0, "job_fee": 0.0})
+                facts = plan_job_facts.setdefault(key, {"duration_s": 0, "job_fee": 0.0,
+                                                        "sites": set()})
                 facts["duration_s"] += job.get("job_duration_seconds") or 0
                 facts["job_fee"] += job.get("job_fee") or 0.0
+                if job.get("station") == 2:
+                    site = ((pd.get("station_names") or {}).get("2")
+                            or (pd.get("fees") or {}).get("station2_name") or "")
+                    if site:
+                        facts["sites"].add(site)
                 if key not in plan_input_map:
                     plan_input_map[key] = {}
                 for inp in job.get("inputs", []):
@@ -409,6 +428,9 @@ def get_project_detail(conn: sqlite3.Connection, project_id: int) -> dict | None
         job["duration_s"] = facts.get("duration_s") or 0
         job["duration"] = format_duration(job["duration_s"]) if job["duration_s"] else None
         job["job_fee"] = facts.get("job_fee") or 0.0
+        # Only said when an item is built at a plan's second station; the rest
+        # are at the station shown with each plan.
+        job["second_site"] = ", ".join(sorted(facts.get("sites") or ()))
 
     steps_map: dict = defaultdict(list)
     for key, job in merged.items():

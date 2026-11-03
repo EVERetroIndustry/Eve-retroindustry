@@ -139,8 +139,8 @@
   </div>
   <div class="card-body py-2">
     <div class="row g-3">
-      {% for cfg, label, icon in [(plan.mfg, 'Manufacturing', 'bi-hammer'), (plan.rxn, 'Reaction', 'bi-moisture')] %}
-      {% if label == 'Manufacturing' or plan.sep_rxn_station %}
+      {% for cfg, label, icon in [(plan.mfg, 'Manufacturing', 'bi-hammer'), (plan.mf2, 'Second station', 'bi-hammer'), (plan.rxn, 'Reaction', 'bi-moisture')] %}
+      {% if label == 'Manufacturing' or (label == 'Reaction' and plan.sep_rxn_station) or (label == 'Second station' and plan.has_station2) %}
       <div class="col-12 col-lg-6">
         <div class="text-uppercase text-muted mb-1" style="font-size:.68rem;letter-spacing:.05em">
           <i class="bi {{ icon }} me-1"></i>{{ label }}
@@ -225,6 +225,7 @@
           {% endif %}
           <span class="fw-semibold me-3" style="flex:0 0 32ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ job.name }}</span>
           <span class="text-muted me-3" style="flex:0 0 10ch;font-variant-numeric:tabular-nums">×{{ job.quantity | int | format_number }}</span>
+          {% if job.second_site %}<span class="badge me-2" style="background:#0d2240;color:#58a6ff;font-size:.65rem" title="Built at the plan's second station: {{ job.second_site }}">2nd station</span>{% endif %}
           <span class="me-3" style="flex:0 0 12ch;font-variant-numeric:tabular-nums;color:#e3b341;font-size:.82rem"
                 title="Job duration as computed when this plan was saved">{{ job.duration or '-' }}</span>
           <span class="text-muted me-3" style="flex:0 0 14ch;font-variant-numeric:tabular-nums;font-size:.82rem"

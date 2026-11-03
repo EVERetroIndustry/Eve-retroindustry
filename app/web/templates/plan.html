@@ -35,6 +35,14 @@
   }
   .plan-form .facility-block.mfg { border-left: 3px solid #e3b341; }
   .plan-form .facility-block.rxn { border-left: 3px solid #b392f0; }
+  .plan-form .facility-block.mf2 { border-left: 3px solid #58a6ff; }
+  .site-chip { display:inline-block; min-width:1.3rem; text-align:center; border-radius:4px;
+               font-size:.72rem; font-weight:600; padding:0 .3rem; }
+  .site-chip.site-1 { background:#3d2c00; color:#e3b341; }
+  .site-chip.site-2 { background:#0d2240; color:#58a6ff; }
+  .site-pick .btn.active[data-site="1"] { background:#3d2c00; color:#e3b341; border-color:#e3b341; }
+  .site-pick .btn.active[data-site="2"] { background:#0d2240; color:#58a6ff; border-color:#58a6ff; }
+  .accordion-item.site-changed { box-shadow: inset 3px 0 0 #d29922; }
   .plan-form .me-te-mini { width: 64px; }
   .plan-form .me-te-mini::placeholder { color:#5d6670; font-size:.8rem }
   /* On wide screens the station group sits right of the parameters with a divider;
@@ -53,6 +61,10 @@
     <input type="hidden" name="reaction_me_bonus" id="rxn-me-bonus-input" value="{{ form_rxn_me_bonus or '0' }}">
     <input type="hidden" id="has-result" value="{{ 'true' if result else '' }}">
     <input type="hidden" name="stock_stations" id="stock-stations-input" value="{{ form_stock_stations or '' }}">
+    {# Items built at the second station. station2_set=1 only when the page
+       changed them; otherwise the server uses what it remembers for the product. #}
+    <input type="hidden" name="station2_types" id="station2-types-input" value="">
+    <input type="hidden" name="station2_set" id="station2-set-input" value="">
 
     {# Row 1: parameters (left) beside the station pickers (right); the station
        group drops onto its own line automatically below xl. #}
@@ -113,7 +125,7 @@
       {# Stations - wrap to their own line below xl #}
       <div class="col-12 col-xl plan-stations-group">
         <div class="row g-2 align-items-end">
-          <div class="col-12 col-md-4" style="position:relative">
+          <div class="col-12 col-md-6 col-xxl-3" style="position:relative">
         <label class="form-label">
           <i class="bi bi-hammer me-1" style="color:#e3b341"></i>Manufacturing station
         </label>
@@ -129,7 +141,28 @@
           font-size:.875rem; margin-top:2px;
         "></div>
       </div>
-      <div class="col-12 col-md-4 plan-rxn-section" style="position:relative">
+      <div class="col-12 col-md-6 col-xxl-3" style="position:relative">
+        <label class="form-label" title="Optional. Every item is built at the manufacturing station unless you move it here in the Manufacturing Steps tab - for example components in one structure and the capital hull in another.">
+          <i class="bi bi-hammer me-1" style="color:#58a6ff"></i>Second station
+          <span class="text-muted" style="font-size:.7rem;opacity:.6">- optional</span>
+        </label>
+        <div class="d-flex gap-1">
+          <input type="text" id="second-station-display" class="form-control form-control-sm station-input"
+                 placeholder="none…"
+                 value="{{ form_second_station_name or '' }}" autocomplete="off">
+          <button type="button" class="btn btn-sm btn-outline-secondary px-2" title="No second station"
+                  onclick="clearSecondStation()"><i class="bi bi-x-lg"></i></button>
+        </div>
+        <input type="hidden" name="second_station" id="second-station-id"
+               value="{{ form_second_station or '' }}">
+        <div id="second-station-suggestions" style="
+          display:none; position:absolute; z-index:1000; left:0; right:0;
+          background:#1c2128; border:1px solid #30363d; border-radius:6px;
+          box-shadow:0 8px 24px rgba(0,0,0,.5); max-height:340px; overflow-y:auto;
+          font-size:.875rem; margin-top:2px; min-width:260px;
+        "></div>
+      </div>
+      <div class="col-12 col-md-6 col-xxl-3 plan-rxn-section" style="position:relative">
         <label class="form-label">
           <i class="bi bi-arrows-angle-contract me-1" style="color:#b392f0"></i>Reaction station
           <span class="text-muted" style="font-size:.7rem;opacity:.6">- defaults to mfg</span>
@@ -146,7 +179,7 @@
           font-size:.875rem; margin-top:2px; min-width:260px;
         "></div>
       </div>
-      <div class="col-12 col-md-4" style="position:relative">
+      <div class="col-12 col-md-6 col-xxl-3" style="position:relative">
         <label class="form-label">
           <i class="bi bi-currency-exchange me-1 text-isk"></i>Sell station
           <span class="text-muted" style="font-size:.7rem;opacity:.6">- for pricing</span>
@@ -284,6 +317,57 @@
               </select>
               <select id="rxn-rig3-select" class="form-select form-select-sm rig-select"
                       onchange="onRigChange('rxn')">
+                <option value="">- Slot 3: none -</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-12 col-lg-6 {% if not form_second_station %}d-none{% endif %}" id="mf2-facility-col">
+        <div class="facility-block mf2">
+          <div class="fw-semibold mb-2" style="color:#58a6ff;font-size:.78rem">
+            <i class="bi bi-hammer me-1"></i>Second station facility
+          </div>
+          <div class="d-flex flex-wrap align-items-end gap-2">
+            <div>
+              <label class="form-label">Tax %</label>
+              <input type="number" name="second_facility_tax" id="mf2-facility-tax-input"
+                     class="form-control form-control-sm" style="width:70px"
+                     step="0.01" min="0" max="25" value="{{ form_second_facility_tax or form_facility_tax or '2.5' }}">
+            </div>
+            <div class="flex-grow-1" style="min-width:120px">
+              <label class="form-label">Structure</label>
+              <select id="mf2-structure-type" class="form-select form-select-sm"
+                      onchange="onStructureTypeChange('mf2', this.value)">
+                <option value="npc">NPC station</option>
+                <option value="raitaru">Raitaru (M-Set)</option>
+                <option value="azbel">Azbel (L-Set)</option>
+                <option value="sotiyo">Sotiyo (XL-Set)</option>
+              </select>
+            </div>
+            <span id="mf2-sci-display" class="d-none" style="font-size:.7rem;color:#8b949e;line-height:1.9rem">SCI
+              <span id="mf2-sci-val" class="fw-semibold" style="color:#58a6ff"></span>
+            </span>
+          </div>
+          <div id="mf2-rig-container" class="d-none mt-1 pt-1" style="border-top:1px dashed #21262d">
+            <div class="d-flex align-items-center justify-content-between mb-1">
+              <span class="text-muted" style="font-size:.7rem"><i class="bi bi-gear me-1"></i>Rigs</span>
+              <span class="badge" style="background:#0d2240;color:#58a6ff;font-size:.7rem">
+                ME <span id="mf2-me-bonus-display">-0%</span>
+              </span>
+            </div>
+            <div class="d-flex flex-column gap-1">
+              <select id="mf2-rig1-select" class="form-select form-select-sm rig-select"
+                      onchange="onRigChange('mf2')">
+                <option value="">- Slot 1: none -</option>
+              </select>
+              <select id="mf2-rig2-select" class="form-select form-select-sm rig-select"
+                      onchange="onRigChange('mf2')">
+                <option value="">- Slot 2: none -</option>
+              </select>
+              <select id="mf2-rig3-select" class="form-select form-select-sm rig-select"
+                      onchange="onRigChange('mf2')">
                 <option value="">- Slot 3: none -</option>
               </select>
             </div>
@@ -711,10 +795,24 @@ function switchPlanChar(charId) {
     &nbsp;·&nbsp; rxn. SCI {{ (result.fees.rxn_sci * 100) | round(2) }}% + tax {{ result.fees.rxn_facility_tax }}% + SCC 4.0%
     {% if result.fees.sep_rxn_station %}<span class="badge bg-secondary ms-1" style="font-size:.6rem">different station</span>{% endif %}
     {% endif %}
+    {% if result.fees.has_station2 %}
+    &nbsp;·&nbsp; 2nd station SCI {{ ((result.fees.mf2_sci or 0) * 100) | round(2) }}% + tax {{ result.fees.mf2_facility_tax }}% + SCC 4.0%
+    <span class="badge ms-1" style="font-size:.6rem;background:#0d2240;color:#58a6ff">{{ result.fees.station2_jobs }} job{{ 's' if result.fees.station2_jobs != 1 }}</span>
+    {% endif %}
     {% else %}SCI unknown · fac. tax {{ result.fees.facility_tax }}% + SCC 4.0%{% endif %}
   </div>
   {% endif %}
 
+</div>
+{% endif %}
+
+{% if result.site_warnings %}
+<div class="alert alert-warning py-2 small mb-3">
+  <i class="bi bi-exclamation-triangle me-1"></i>
+  {% for w in result.site_warnings %}
+  <div><b>{{ w.name }}</b> at {{ w.station }}: {{ w.text }}</div>
+  {% endfor %}
+  <div class="text-muted mt-1" style="font-size:.72rem">Checked against the structure type and security the plan knows. The owner's access settings and the service modules actually fitted are not visible to the app.</div>
 </div>
 {% endif %}
 
@@ -922,6 +1020,47 @@ function switchPlanChar(charId) {
   </button>
 </div>
 
+{% set _sn = result.station_names or {} %}
+{% if result.fees and result.fees.has_station2 %}
+{% set _groups = [] %}
+{% for step in result.manufacturing_steps %}{% for job in step.jobs %}
+  {% if job.activity != 'reaction' and job.group_name and job.group_name not in _groups %}{% set _ = _groups.append(job.group_name) %}{% endif %}
+{% endfor %}{% endfor %}
+<div class="card mb-3" style="background:#0d1117;border-color:#21262d">
+  <div class="card-body py-2 small">
+    <div class="d-flex flex-wrap align-items-center gap-3 mb-2">
+      <span><span class="site-chip site-1">1</span> {{ _sn['1'] }}</span>
+      <span><span class="site-chip site-2">2</span> {{ _sn['2'] }}</span>
+      <span class="text-muted" style="font-size:.75rem">Pick where each item is built with the 1 / 2 switch on its row. Reactions stay at the reaction station.</span>
+    </div>
+    <div class="d-flex flex-wrap align-items-center gap-2">
+      <button type="button" class="btn btn-sm btn-outline-secondary py-0" onclick="siteBulk('final')">Final product to 2</button>
+      <button type="button" class="btn btn-sm btn-outline-secondary py-0" onclick="siteBulk('all1')">Everything to 1</button>
+      {% if _groups %}
+      <span class="d-inline-flex align-items-center gap-1">
+        <select id="site-group-select" class="form-select form-select-sm py-0" style="width:auto">
+          {% for g in _groups | sort %}<option value="{{ g }}">{{ g }}</option>{% endfor %}
+        </select>
+        <button type="button" class="btn btn-sm btn-outline-secondary py-0" onclick="siteBulk('group', 2)">to 2</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary py-0" onclick="siteBulk('group', 1)">to 1</button>
+      </span>
+      {% endif %}
+      <span id="site-pending" class="ms-auto d-none align-items-center gap-2">
+        <span class="text-warning" id="site-pending-text"></span>
+        <button type="button" class="btn btn-sm btn-eve py-0" onclick="recalcSites()">
+          <i class="bi bi-arrow-repeat me-1"></i>Recalculate
+        </button>
+        <button type="button" class="btn btn-sm btn-link text-muted py-0" onclick="siteBulk('undo')">Undo</button>
+      </span>
+    </div>
+  </div>
+</div>
+{% else %}
+<div class="text-muted small mb-3" style="font-size:.75rem">
+  <i class="bi bi-info-circle me-1"></i>Building some items elsewhere, for example the capital hull? Pick a Second station in the form above.
+</div>
+{% endif %}
+
 {% for step in result.manufacturing_steps %}
 <div class="mb-3">
   {# Step header #}
@@ -942,8 +1081,8 @@ function switchPlanChar(charId) {
     {% for job in step.jobs %}
     {% set job_id = "step" ~ step.step ~ "job" ~ loop.index %}
     <div class="accordion-item" style="background:#161b22;border-color:#30363d">
-      <h2 class="accordion-header">
-        <button class="accordion-button {% if not loop.first or not step.is_final %}collapsed{% endif %}"
+      <h2 class="accordion-header d-flex align-items-stretch">
+        <button class="accordion-button flex-grow-1 {% if not loop.first or not step.is_final %}collapsed{% endif %}"
                 type="button" data-bs-toggle="collapse" data-bs-target="#{{ job_id }}"
                 style="background:#161b22;color:#e6edf3;border-color:#30363d;font-size:.875rem">
           <img loading="lazy" src="/icon/{{ job.type_id }}?size=32"
@@ -954,6 +1093,9 @@ function switchPlanChar(charId) {
           <span class="badge me-2 px-2" style="background:#3d2c00;color:#e3b341;font-size:.65rem;flex-shrink:0">MANUFACTURING</span>
           {% endif %}
           <span class="fw-semibold me-1">{{ job.name }}</span>
+          {% if job.site_warning %}
+          <i class="bi bi-exclamation-triangle text-warning me-1" title="{{ job.site_warning }}"></i>
+          {% endif %}
           {% if job.me is defined %}
           <span class="text-success small me-1" style="font-size:.7rem;flex-shrink:0"
                 title="ME read from your blueprint for this intermediate step (0 = you don't own the blueprint)">
@@ -977,6 +1119,21 @@ function switchPlanChar(charId) {
             </span>
           </span>
         </button>
+        {% if result.fees and result.fees.has_station2 %}
+        <span class="d-flex align-items-center px-2" style="background:#161b22;flex-shrink:0;width:5.2rem">
+          {% if job.activity != 'reaction' %}
+          <span class="btn-group btn-group-sm site-pick" data-type-id="{{ job.type_id }}" data-group="{{ job.group_name }}"
+                role="group" aria-label="Where {{ job.name }} is built">
+            <button type="button" class="btn btn-outline-secondary py-0" data-site="1"
+                    title="Build at {{ _sn['1'] }}" onclick="setSite({{ job.type_id }}, 1)">1</button>
+            <button type="button" class="btn btn-outline-secondary py-0" data-site="2"
+                    title="Build at {{ _sn['2'] }}" onclick="setSite({{ job.type_id }}, 2)">2</button>
+          </span>
+          {% else %}
+          <span class="text-muted" style="font-size:.7rem" title="Reactions run at the reaction station">rxn</span>
+          {% endif %}
+        </span>
+        {% endif %}
       </h2>
       <div id="{{ job_id }}" class="accordion-collapse collapse {% if loop.first and step.is_final %}show{% endif %}">
         <div class="accordion-body p-0">
@@ -1083,6 +1240,35 @@ function switchPlanChar(charId) {
   </div>
 </div>
 {% endfor %}
+
+{% if result.hauling %}
+{% set _haul_m3 = result.hauling | sum(attribute='volume_m3') %}
+<div class="card mb-3" style="background:#0d1117;border-color:#21262d">
+  <div class="card-header py-2 small d-flex align-items-center" style="background:#161b22">
+    <i class="bi bi-truck me-2"></i><span class="fw-semibold">Move between stations</span>
+    <span class="ms-auto text-muted">{{ result.hauling | length }} item{{ 's' if result.hauling | length != 1 }} &middot; {{ _haul_m3 | round(0) | int | format_number }} m3</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm mb-0 align-middle" style="font-size:.8rem;font-variant-numeric:tabular-nums">
+      <thead style="background:#1c2128">
+        <tr><th>Item</th><th>From</th><th>To</th><th class="text-end">Quantity</th><th class="text-end">Volume (m3)</th></tr>
+      </thead>
+      <tbody>
+        {% for m in result.hauling %}
+        <tr>
+          <td><img loading="lazy" src="/icon/{{ m.type_id }}?size=32" width="20" height="20" class="rounded me-1">{{ m.name }}</td>
+          <td class="text-muted">{{ m['from'] }}</td>
+          <td class="text-muted">{{ m.to }}</td>
+          <td class="text-end">{{ m.quantity | int | format_number }}</td>
+          <td class="text-end">{{ m.volume_m3 | round(0) | int | format_number }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="px-3 py-1 text-muted" style="font-size:.7rem">Built items made at one station and used at another. Volumes are packaged where the item has a packaged size.</div>
+</div>
+{% endif %}
 
 {% else %}
 <div class="text-muted p-3">Manufacturing steps not available.</div>
@@ -1254,8 +1440,8 @@ document.addEventListener('DOMContentLoaded', _refreshStockSummary);
 // === Restore last plan ===
 const _FORM_FIELD_NAMES = [
   'product','qty','form_me','form_te','mode','input_basis',
-  'station','reaction_station','selling_station',
-  'facility_tax','reaction_facility_tax',
+  'station','reaction_station','selling_station','second_station',
+  'facility_tax','reaction_facility_tax','second_facility_tax',
   'facility_me_bonus','reaction_me_bonus',
   'implant_mfg',      // Beancounter Industry implant - a character constant, keep it across plans
   'stock_stations',   // stock source station selection (hidden input) - keep it preserved
@@ -1271,6 +1457,7 @@ function savePlanState() {
   data._station_display     = document.getElementById('station-display')?.value     || '';
   data._rxn_station_display = document.getElementById('rxn-station-display')?.value || '';
   data._sell_station_display = document.getElementById('sell-station-display')?.value || '';
+  data._second_station_display = document.getElementById('second-station-display')?.value || '';
   localStorage.setItem('eve_plan_state', JSON.stringify(data));
 }
 
@@ -1330,6 +1517,8 @@ function restoreAndSubmitPlan() {
   if (sd && data._station_display)     sd.value = data._station_display;
   if (rd && data._rxn_station_display) rd.value = data._rxn_station_display;
   if (ld && data._sell_station_display) ld.value = data._sell_station_display;
+  const s2d = document.getElementById('second-station-display');
+  if (s2d && data._second_station_display) s2d.value = data._second_station_display;
   normalizeRunsPerJob();
   form.submit();
 }
@@ -1742,7 +1931,8 @@ makeStationSelector({
 // Submit fallback - if hidden is empty and display contains a number
 document.getElementById('plan-form')?.addEventListener('submit', () => {
   normalizeRunsPerJob();
-  ['station-display|station-id', 'rxn-station-display|rxn-station-id', 'sell-station-display|sell-station-id'].forEach(pair => {
+  ['station-display|station-id', 'rxn-station-display|rxn-station-id', 'sell-station-display|sell-station-id',
+   'second-station-display|second-station-id'].forEach(pair => {
     const [dId, hId] = pair.split('|');
     const d = document.getElementById(dId), h = document.getElementById(hId);
     if (d && h && !h.value && /^\d+$/.test(d.value.trim())) h.value = d.value.trim();
@@ -1767,6 +1957,29 @@ makeStationSelector({
     autoSelectStockSource(item.location_id);
   },
 });
+
+// === Second station ===
+function _loadSecondStationInfo(locationId) {
+  return loadStationInfo(locationId, {
+    taxId: 'mf2-facility-tax-input', sciDivId: 'mf2-sci-display',
+    sciMfgId: 'mf2-sci-val', rigPrefix: 'mf2',
+  });
+}
+makeStationSelector({
+  displayId: 'second-station-display', hiddenId: 'second-station-id', boxId: 'second-station-suggestions',
+  onSelect(item) {
+    document.getElementById('mf2-facility-col')?.classList.remove('d-none');
+    _loadSecondStationInfo(item.location_id);
+    autoSelectStockSource(item.location_id);
+  },
+});
+function clearSecondStation() {
+  const d = document.getElementById('second-station-display');
+  const h = document.getElementById('second-station-id');
+  if (d) d.value = '';
+  if (h) h.value = '';
+  document.getElementById('mf2-facility-col')?.classList.add('d-none');
+}
 
 // === Stock / no-stock toggle ===
 let _stockMode = 'with';
@@ -1938,7 +2151,7 @@ const _MFG_STRUCTURES = new Set(['raitaru', 'azbel', 'sotiyo']);
 const _RXN_STRUCTURES = new Set(['athanor', 'tatara']);
 
 function _isValidStructureForPrefix(structureType, prefix) {
-  if (prefix === 'mfg') return _MFG_STRUCTURES.has(structureType);
+  if (prefix === 'mfg' || prefix === 'mf2') return _MFG_STRUCTURES.has(structureType);
   if (prefix === 'rxn') return _RXN_STRUCTURES.has(structureType);
   return false;
 }
@@ -2037,6 +2250,8 @@ function onRigChange(prefix) {
 function _autoSaveRigs(prefix) {
   const locIdEl = prefix === 'mfg'
     ? document.getElementById('station-id')
+    : prefix === 'mf2'
+    ? document.getElementById('second-station-id')
     : (document.getElementById('rxn-station-id')?.value
         ? document.getElementById('rxn-station-id')
         : document.getElementById('station-id'));
@@ -2337,6 +2552,8 @@ document.addEventListener('DOMContentLoaded', () => {
     taxId: 'rxn-facility-tax-input', sciDivId: 'rxn-sci-display',
     sciRxnId: 'rxn-sci-val', rigPrefix: 'rxn',
   });
+  const s2Id = parseInt(document.getElementById('second-station-id')?.value);
+  if (s2Id) _loadSecondStationInfo(s2Id);
 });
 </script>
 
@@ -2395,7 +2612,8 @@ async function _doSavePlan(projectId) {
       station_name: _PLAN_STATION_NAME,
       facility_tax: _PLAN_FACILITY_TAX,
       rxn_station_name: _PLAN_RXN_STATION_NAME,
-      facility: { mfg: _facilityChoice('mfg'), rxn: _facilityChoice('rxn') },
+      facility: { mfg: _facilityChoice('mfg'), rxn: _facilityChoice('rxn'),
+                  ...((_PLAN_DATA.fees || {}).has_station2 ? { mf2: _facilityChoice('mf2') } : {}) },
     }),
   });
   const d = await r.json();
@@ -2433,6 +2651,64 @@ async function deleteProjectFromModal(projectId, projectName) {
 document.getElementById('save-new-project-name')?.addEventListener('keydown', e => {
   if (e.key === 'Enter') saveToNewProject();
 });
+
+// ── Second station: which items are built where ─────────────────────────────
+// The plan was computed with _PLAN_DATA.station2_types. Switching a row only
+// marks it; nothing is counted until Recalculate submits the form with the new
+// set, which the server also remembers for this product.
+(function initSitePicker() {
+  const picks = document.querySelectorAll('.site-pick');
+  if (!picks.length) return;
+  const computed = new Set((_PLAN_DATA.station2_types || []).map(Number));
+  const chosen = new Set(computed);
+  const inPlan = new Set([...picks].map(p => Number(p.dataset.typeId)));
+
+  function render() {
+    let changed = 0;
+    picks.forEach(p => {
+      const t = Number(p.dataset.typeId);
+      const on2 = chosen.has(t);
+      p.querySelectorAll('button').forEach(b =>
+        b.classList.toggle('active', (b.dataset.site === '2') === on2));
+      const diff = on2 !== computed.has(t);
+      p.closest('.accordion-item')?.classList.toggle('site-changed', diff);
+    });
+    inPlan.forEach(t => { if (chosen.has(t) !== computed.has(t)) changed++; });
+    const bar = document.getElementById('site-pending');
+    if (bar) {
+      bar.classList.toggle('d-none', !changed);
+      bar.classList.toggle('d-flex', !!changed);
+      const txt = document.getElementById('site-pending-text');
+      if (txt) txt.textContent = changed + (changed === 1 ? ' change' : ' changes') + ' not counted yet';
+    }
+  }
+  window.setSite = (typeId, site) => {
+    if (site === 2) chosen.add(Number(typeId)); else chosen.delete(Number(typeId));
+    render();
+  };
+  window.siteBulk = (kind, site) => {
+    if (kind === 'final') chosen.add(Number(_PLAN_DATA.product_type_id));
+    else if (kind === 'all1') inPlan.forEach(t => chosen.delete(t));
+    else if (kind === 'undo') { chosen.clear(); computed.forEach(t => chosen.add(t)); }
+    else if (kind === 'group') {
+      const g = document.getElementById('site-group-select')?.value;
+      picks.forEach(p => {
+        if (p.dataset.group !== g) return;
+        const t = Number(p.dataset.typeId);
+        if (site === 2) chosen.add(t); else chosen.delete(t);
+      });
+    }
+    render();
+  };
+  window.recalcSites = () => {
+    const form = document.getElementById('plan-form');
+    document.getElementById('station2-types-input').value = [...chosen].join(',');
+    document.getElementById('station2-set-input').value = '1';
+    normalizeRunsPerJob();
+    form.submit();
+  };
+  render();
+})();
 
 // ── Materials table - click-to-sort on any column header ────────────────────
 (function initMaterialsSort() {

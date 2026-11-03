@@ -194,6 +194,9 @@ def build_plan(
     input_basis: str = "sell",
     me_override: float | None = None,
     te_override: int | None = None,
+    mfg_facility2: StationFacility | None = None,
+    station2_types: frozenset[int] | set[int] = frozenset(),
+    rate_mfg2: float = 0.0,
 ) -> ManufacturingPlan:
     db_conn = sqlite3.connect(db_path)
 
@@ -208,7 +211,9 @@ def build_plan(
 
     resolver = BOMResolver(db_path, blueprints=blueprints, runs_per_job=runs_per_job,
                            adjusted_prices=adjusted_prices,
-                           rate_mfg=rate_mfg, rate_rxn=rate_rxn)
+                           rate_mfg=rate_mfg, rate_rxn=rate_rxn,
+                           mfg_facility2=mfg_facility2, station2_types=station2_types,
+                           rate_mfg2=rate_mfg2)
     root = resolver.resolve(
         product_type_id, quantity, me=float(me),
         mfg_facility=mfg_facility, rxn_facility=rxn_facility,

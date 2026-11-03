@@ -112,6 +112,7 @@ from app.web.industry_helper import (
     get_station_facility,
     get_product_te_multiplier,
     get_station_cost_bonus,
+    build_site_warning,
     populate_rig_bonuses,
     get_rig_types,
     save_station_rigs_full,
@@ -2549,6 +2550,10 @@ async def plan_result(
     stock_stations: str = Form(""),
     input_basis: str = Form("sell"),
     implant_mfg: str = Form("0"),
+    second_station: int = Form(0),
+    second_facility_tax: str = Form(""),
+    station2_types: str = Form(""),
+    station2_set: str = Form(""),
 ):
     conn = get_conn()
     input_basis = "buy" if input_basis == "buy" else "sell"
@@ -2668,7 +2673,10 @@ async def plan_result(
         # to the manufacturing station. Roll up containers to their station +
         # exclude ship cargo/fittings via _rollup_stock (so selecting a station
         # also counts container contents, but not a ship's fit/cargo).
-        effective_stock_ids = stock_station_ids if stock_explicit else {station}
+        # A second station is a production site too: what already lies there
+        # counts unless the stock stations were picked by hand.
+        effective_stock_ids = (stock_station_ids if stock_explicit
+                               else {station} | ({second_station} if second_station else set()))
         _station_types = _rollup_stock_from_charassets(all_assets)
         available = {}
         for sid in effective_stock_ids:
@@ -2741,10 +2749,45 @@ async def plan_result(
         rate_mfg = mfg_sci * (1.0 - mfg_cost_bonus) + fac_tax_rate + _SCC
         rate_rxn = rxn_sci * (1.0 - rxn_cost_bonus) + rxn_fac_tax_rate + _SCC
 
+        # The optional second manufacturing station. Which items are built there
+        # is chosen per product type and remembered per plan product, so
+        # reopening the titan plan keeps its split. Nothing moves there by
+        # itself: every item starts on the first station.
+        if station2_set == "1":
+            s2_chosen = {int(x) for x in station2_types.split(",") if x.strip().isdigit()}
+            plan_station2_save(conn, type_id, s2_chosen)
+        else:
+            s2_chosen = plan_station2_load(conn, type_id)
+        has_station2 = bool(second_station) and second_station != station
+        s2_types = frozenset(s2_chosen) if has_station2 else frozenset()
+        mf2_facility = None
+        mf2_sci = 0.0
+        mf2_cost_bonus = 0.0
+        mf2_te_mult = 1.0
+        mf2_me_mult = 1.0
+        mf2_tax_pct = fac_tax_pct
+        mf2_solar_system_id = None
+        rate_mfg2 = rate_mfg
+        if has_station2:
+            mf2_facility = get_station_facility(conn, second_station)
+            mf2_tax_pct = (_safe_pct(second_facility_tax, fac_tax_pct)
+                           if second_facility_tax.strip() else fac_tax_pct)
+            _r2 = conn.execute("SELECT solar_system_id FROM location_name_cache WHERE location_id=?",
+                               (second_station,)).fetchone()
+            mf2_solar_system_id = _r2[0] if _r2 and _r2[0] else None
+            mf2_sci = (await get_sci_for_system(conn, mf2_solar_system_id, "manufacturing")
+                       if mf2_solar_system_id else 0.0)
+            mf2_cost_bonus = get_station_cost_bonus(conn, second_station)
+            mf2_te_mult = get_station_te_multiplier(conn, second_station)
+            mf2_me_mult = get_station_me_multiplier(conn, second_station)
+            rate_mfg2 = mf2_sci * (1.0 - mf2_cost_bonus) + mf2_tax_pct / 100 + _SCC
+
         # The resolver gets all of the character's blueprints → per-product ME is
         # looked up for each intermediate step (Capital Armor Plates ME may differ from root ME).
         resolver = BOMResolver(DB_ABS, blueprints=blueprints, runs_per_job=rpj_int,
-                               adjusted_prices=adj_prices, rate_mfg=rate_mfg, rate_rxn=rate_rxn)
+                               adjusted_prices=adj_prices, rate_mfg=rate_mfg, rate_rxn=rate_rxn,
+                               mfg_facility2=mf2_facility, station2_types=s2_types,
+                               rate_mfg2=rate_mfg2)
         root = resolver.resolve(type_id, qty, me=me,
                                 mfg_facility=mfg_facility,
                                 rxn_facility=rxn_facility)
@@ -2774,6 +2817,9 @@ async def plan_result(
             # BOM resolutions of the same product).
             me_override=me,
             te_override=te,
+            mfg_facility2=mf2_facility,
+            station2_types=s2_types,
+            rate_mfg2=rate_mfg2,
         )
         plan_data = _plan_to_dict(plan, prices, type_name, conn=conn, input_basis=input_basis)
         # Override ME/TE in plan_data if entered manually
@@ -2821,6 +2867,22 @@ async def plan_result(
                 _prune_bought(root)
 
         plan_data["manufacturing_steps"] = _build_manufacturing_steps(root, prices, available, input_basis)
+
+        # Where each job runs: 1 or 2 for manufacturing, 0 for a reaction (the
+        # reaction station). The group lets the page move a whole group at once.
+        _step_tids = {j["type_id"] for st in plan_data["manufacturing_steps"] for j in st["jobs"]}
+        _grp: dict[int, tuple[int, str]] = {}
+        if _step_tids:
+            _ph = ",".join("?" * len(_step_tids))
+            _grp = {r[0]: (r[1], r[2]) for r in conn.execute(
+                f"SELECT t.type_id, t.group_id, g.name FROM sde_types t"
+                f" LEFT JOIN sde_groups g ON g.group_id = t.group_id"
+                f" WHERE t.type_id IN ({_ph})", list(_step_tids))}
+        for st in plan_data["manufacturing_steps"]:
+            for job in st["jobs"]:
+                is_rxn_job = job.get("activity") == "reaction"
+                job["station"] = 0 if is_rxn_job else (2 if job["type_id"] in s2_types else 1)
+                job["group_id"], job["group_name"] = _grp.get(job["type_id"], (None, ""))
 
         # === Manufacturing fees === (fee parameters were resolved up-front,
         # before build_plan, so the make-vs-buy optimizer could weigh them.)
@@ -2886,9 +2948,10 @@ async def plan_result(
             skip_fee = (mode == "components" and not step.get("is_final"))
             for job in step["jobs"]:
                 is_rxn   = job.get("activity") == "reaction"
-                sci      = rxn_sci      if is_rxn else mfg_sci
-                tax_rate = rxn_fac_tax_rate if is_rxn else fac_tax_rate
-                cost_bonus = rxn_cost_bonus if is_rxn else mfg_cost_bonus
+                on2      = job.get("station") == 2
+                sci      = rxn_sci if is_rxn else (mf2_sci if on2 else mfg_sci)
+                tax_rate = rxn_fac_tax_rate if is_rxn else (mf2_tax_pct / 100 if on2 else fac_tax_rate)
+                cost_bonus = rxn_cost_bonus if is_rxn else (mf2_cost_bonus if on2 else mfg_cost_bonus)
 
                 # EIV must use the BASE quantities from the SDE (not ME-reduced)
                 bp_id = job.get("blueprint_type_id")
@@ -2923,7 +2986,8 @@ async def plan_result(
                         )
                         job_te = te if not is_rxn else 0
                         # Per-product TE multiplier - an Equipment TE rig doesn't speed up building a ship
-                        prod_facility = rxn_facility if is_rxn else mfg_facility
+                        prod_facility = (rxn_facility if is_rxn
+                                         else mf2_facility if on2 else mfg_facility)
                         prod_te_mult = _te_mult_for(prod_facility, job["type_id"])
                         job_secs = calc_job_time(
                             base_time=base_time,
@@ -3024,7 +3088,41 @@ async def plan_result(
             "full_mat_cost":       full_mat_cost,
             "profit_market":       profit_market,
             "profit_stock":        profit_stock,
+            "has_station2":        has_station2,
+            "mf2_solar_system_id": mf2_solar_system_id,
+            "mf2_sci":             mf2_sci if has_station2 else None,
+            "mf2_facility_tax":    mf2_tax_pct if has_station2 else None,
+            "mf2_cost_bonus_pct":  round(mf2_cost_bonus * 100, 1) if has_station2 else None,
+            "mf2_te_pct":          round((1 - mf2_te_mult) * 100, 1) if has_station2 else None,
+            "mf2_me_pct":          round((1 - mf2_me_mult) * 100, 2) if has_station2 else None,
+            "station2_jobs":       sum(1 for st in plan_data["manufacturing_steps"]
+                                       for j in st["jobs"] if j.get("station") == 2),
         }
+
+        _names = load_location_names_from_db(conn)
+        _site = {1: station, 2: second_station if has_station2 else station, 0: eff_rxn_station}
+        plan_data["station_names"] = {
+            "1": _names.get(station, str(station)),
+            "2": _names.get(second_station, str(second_station)) if has_station2 else "",
+            "0": _names.get(eff_rxn_station, str(eff_rxn_station)),
+        }
+        plan_data["fees"]["station2_name"] = plan_data["station_names"]["2"]
+        # Remembered choice, also when the second station is not set right now:
+        # the page shows it again once one is.
+        plan_data["station2_types"] = sorted(s2_chosen)
+        plan_data["hauling"] = _hauling_between_sites(conn, plan_data["manufacturing_steps"],
+                                                      _site, plan_data["station_names"])
+        plan_data["site_warnings"] = []
+        for st in plan_data["manufacturing_steps"]:
+            for job in st["jobs"]:
+                if job.get("activity") == "reaction":
+                    continue
+                w = build_site_warning(conn, _site[job["station"]], job.get("group_id"))
+                if w:
+                    job["site_warning"] = w
+                    plan_data["site_warnings"].append(
+                        {"name": job["name"], "station": plan_data["station_names"][str(job["station"])],
+                         "text": w})
 
     except Exception as e:
         error = esi_error_message(e) or str(e)
@@ -3035,6 +3133,7 @@ async def plan_result(
     stock_station_options = await _build_stock_station_options(
         conn, plan_char_id_int, _stock_token,
         selected_ids=stock_station_ids, default_station=station, explicit=stock_explicit,
+        also_default=second_station,
     )
     location_ids = [o["location_id"] for o in stock_station_options]
 
@@ -3042,6 +3141,7 @@ async def plan_result(
     loc_names = load_location_names_from_db(conn)
     station_name = loc_names.get(station, str(station))
     rxn_station_name = loc_names.get(reaction_station, str(reaction_station)) if reaction_station else ""
+    second_station_name = loc_names.get(second_station, str(second_station)) if second_station else ""
 
     # Best sell price of the product at the selling station (from station_volume_cache)
     sell_loc = selling_station if selling_station else station
@@ -3080,6 +3180,9 @@ async def plan_result(
         "form_station_name": station_name,
         "form_rxn_station": reaction_station or "",
         "form_rxn_station_name": rxn_station_name,
+        "form_second_station": second_station or "",
+        "form_second_station_name": second_station_name,
+        "form_second_facility_tax": second_facility_tax if second_facility_tax.strip() else facility_tax,
         "form_qty": qty,
         "form_mode": mode,
         "form_input_basis": input_basis,
@@ -3190,6 +3293,7 @@ async def _build_stock_station_options(
     selected_ids: set[int],
     default_station: int,
     explicit: bool,
+    also_default: int = 0,
 ) -> list[dict]:
     """Stations where the planning character has non-singleton items - options for
     the stock-source picker. Names are resolved via ESI (resolve_station_names_bulk)
@@ -3240,12 +3344,79 @@ async def _build_stock_station_options(
             "location_id": lid,
             "name": _best_name(lid),
             "count": len(types),
-            "selected": (lid in selected_ids) if explicit else (lid == default_station),
+            "selected": (lid in selected_ids) if explicit
+                        else (lid == default_station or (also_default and lid == also_default)),
         }
         for lid, types in seen_types.items()
     ]
     options.sort(key=lambda o: (-o["count"], o["name"]))
     return options
+
+
+def _plan_station2_table(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS plan_station2_choice (
+        product_type_id INTEGER PRIMARY KEY,
+        type_ids        TEXT NOT NULL,
+        updated_at      REAL NOT NULL)""")
+
+
+def plan_station2_save(conn: sqlite3.Connection, product_type_id: int, type_ids: set[int]) -> None:
+    """Which items of this product's plan are built at the second station."""
+    _plan_station2_table(conn)
+    conn.execute("INSERT OR REPLACE INTO plan_station2_choice VALUES (?,?,?)",
+                 (product_type_id, json.dumps(sorted(type_ids)), _time.time()))
+    conn.commit()
+
+
+def plan_station2_load(conn: sqlite3.Connection, product_type_id: int) -> set[int]:
+    _plan_station2_table(conn)
+    row = conn.execute("SELECT type_ids FROM plan_station2_choice WHERE product_type_id=?",
+                       (product_type_id,)).fetchone()
+    try:
+        return {int(t) for t in json.loads(row[0])} if row else set()
+    except (ValueError, TypeError):
+        return set()
+
+
+def _hauling_between_sites(conn: sqlite3.Connection, steps: list[dict],
+                           site: dict[int, int], names: dict[str, str]) -> list[dict]:
+    """What has to be moved between production sites: every built input whose
+    job runs somewhere other than the job that consumes it. Raw materials are
+    not here - where to buy them is the shopping list's business.
+
+    Volumes are the packaged ones where the SDE has them (a hull hauled as an
+    input travels packaged), otherwise the plain volume.
+    """
+    where = {}                                   # type_id -> station key of its job
+    for st in steps:
+        for job in st["jobs"]:
+            where[job["type_id"]] = job.get("station", 1)
+    moves: dict[tuple[int, int, int], dict] = {}
+    for st in steps:
+        for job in st["jobs"]:
+            to_key = job.get("station", 1)
+            for inp in job.get("inputs", []):
+                from_key = where.get(inp["type_id"])
+                if from_key is None or site.get(from_key) == site.get(to_key):
+                    continue
+                k = (from_key, to_key, inp["type_id"])
+                m = moves.setdefault(k, {"type_id": inp["type_id"], "name": inp["name"],
+                                         "from": names.get(str(from_key), ""),
+                                         "to": names.get(str(to_key), ""),
+                                         "quantity": 0})
+                m["quantity"] += inp.get("quantity", 0)
+    if not moves:
+        return []
+    tids = list({m["type_id"] for m in moves.values()})
+    ph = ",".join("?" * len(tids))
+    vol = {r[0]: (r[2] or r[1] or 0.0) for r in conn.execute(
+        f"SELECT type_id, volume, packaged_volume FROM sde_types WHERE type_id IN ({ph})", tids)}
+    out = []
+    for m in moves.values():
+        m["volume_m3"] = vol.get(m["type_id"], 0.0) * m["quantity"]
+        out.append(m)
+    out.sort(key=lambda m: (m["from"], m["to"], m["name"]))
+    return out
 
 
 def _build_manufacturing_steps(root, prices: dict, available: dict,

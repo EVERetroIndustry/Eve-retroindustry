@@ -51,6 +51,7 @@ class BOMNode:
     job_fee: float = 0.0    # install fee for THIS job (0 if fee params not supplied) -
                             # lets the make-vs-buy optimizer compare all-in make cost
                             # (materials + fee) against the buy price, per node.
+    station: int = 1        # manufacturing: built at the first (1) or second (2) station
     children: list[BOMNode] = field(default_factory=list)
 
     def aggregate_leaves(self) -> dict[int, tuple[str, int]]:
@@ -78,8 +79,18 @@ class BOMResolver:
         adjusted_prices: dict[int, float] | None = None,
         rate_mfg: float = 0.0,
         rate_rxn: float = 0.0,
+        mfg_facility2: StationFacility | None = None,
+        station2_types: frozenset[int] | set[int] = frozenset(),
+        rate_mfg2: float = 0.0,
     ):
         self.conn = sqlite3.connect(db_path)
+        # The optional second manufacturing station. The types listed are built
+        # there - with its structure, rigs, security and install fee rate - and
+        # everything else stays at the first one. Reactions are not affected:
+        # they have a station of their own.
+        self._mfg_facility2 = mfg_facility2
+        self._station2_types = frozenset(station2_types) if mfg_facility2 is not None else frozenset()
+        self._rate_mfg2 = rate_mfg2
         self.conn.row_factory = sqlite3.Row
         # Per-job install-fee inputs (optional). When adjusted_prices is given,
         # each node gets job_fee = EIV × rate, where EIV = Σ(adjusted_price ×
@@ -319,7 +330,13 @@ class BOMResolver:
             effective_me = float(me)
 
         # Per-product facility multiplier - applies only rigs applicable to this product
-        facility = mfg_facility if activity == "manufacturing" else rxn_facility
+        on_second = activity == "manufacturing" and type_id in self._station2_types
+        if activity != "manufacturing":
+            facility = rxn_facility
+        elif on_second:
+            facility = self._mfg_facility2
+        else:
+            facility = mfg_facility
         prod_mult = self._product_facility_multiplier(type_id, facility)
 
         runs = ceil(quantity / product_qty_per_run)
@@ -331,12 +348,14 @@ class BOMResolver:
             blueprint_type_id=bp_type_id,
             me=int(effective_me),
             product_qty_per_run=int(product_qty_per_run),
+            station=2 if on_second else 1,
         )
 
         # Per-job install fee (EIV × rate) - EIV uses BASE (ME 0) quantities,
         # not the ME-reduced ones, matching the official job-cost formula.
         if self._adj_prices is not None:
-            rate = self._rate_rxn if activity == "reaction" else self._rate_mfg
+            rate = (self._rate_rxn if activity == "reaction"
+                    else self._rate_mfg2 if on_second else self._rate_mfg)
             if rate:
                 eiv = sum(
                     (self._adj_prices.get(mat["material_type_id"], 0.0) or 0.0)
