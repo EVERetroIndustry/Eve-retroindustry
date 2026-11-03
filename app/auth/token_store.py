@@ -54,6 +54,11 @@ def _refresh_lock_for(character_id: int) -> threading.Lock:
 # user; self-corrects (set on a 400 invalid_grant, cleared once a valid token is
 # obtained again, e.g. after re-login). Not persisted: a restart just re-detects.
 _invalid_refresh: set[int] = set()
+# When each rejection happened. Every page and background job asks for tokens,
+# and a dead refresh token used to get a new SSO round trip each time. Asking
+# again after a pause keeps a one-off SSO hiccup from locking a character out.
+_invalid_since: dict[int, float] = {}
+_INVALID_RETRY_S = 10 * 60
 
 
 def is_refresh_invalid(character_id: int) -> bool:
@@ -63,6 +68,7 @@ def is_refresh_invalid(character_id: int) -> bool:
 
 def clear_refresh_invalid(character_id: int) -> None:
     _invalid_refresh.discard(int(character_id))
+    _invalid_since.pop(int(character_id), None)
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +234,11 @@ def save_tokens(
         ),
     )
     conn.commit()
+    clear_refresh_invalid(character_id)
+    # A new login is where new scopes arrive: refusals ESI gave this character
+    # before must be asked again, not served from the HTTP cache.
+    from app.esi.http_cache import forget_refusals
+    forget_refusals(int(character_id))
 
 
 def delete_character(conn: sqlite3.Connection, character_id: int) -> None:
@@ -303,6 +314,8 @@ def get_valid_token(conn: sqlite3.Connection, character_id: int) -> str | None:
             return access
         if not refresh:
             return None
+        if time.time() - _invalid_since.get(int(character_id), 0.0) < _INVALID_RETRY_S:
+            return None         # rejected moments ago; only a re-login helps
 
         try:
             r = httpx.post(
@@ -326,6 +339,7 @@ def get_valid_token(conn: sqlite3.Connection, character_id: int) -> str | None:
             # transient - leave the flag alone so we don't nag on a blip.)
             if r.status_code == 400 and "invalid_grant" in r.text.lower():
                 _invalid_refresh.add(int(character_id))
+                _invalid_since[int(character_id)] = time.time()
             return None
 
         resp = r.json()

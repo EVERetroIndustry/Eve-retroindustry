@@ -6,6 +6,7 @@ Two modes:
   jita      - live Jita sell/buy prices, N parallel calls, 30 min cache
 """
 import asyncio
+import email.utils
 import functools
 import json
 import time
@@ -270,14 +271,22 @@ async def fetch_region_history(client: httpx.AsyncClient, region_id: int, type_i
             hist = r.json()
             if not isinstance(hist, list):
                 return None
-            return [
-                {"d": e.get("date"), "avg": e.get("average"),
-                 "low": e.get("lowest"), "high": e.get("highest"),
-                 "vol": e.get("volume", 0)}
-                for e in hist
-            ]
+            return _series_of(hist)
         except Exception:
             return None
+
+
+def _series_of(hist: list[dict]) -> list[dict]:
+    return [{"d": e.get("date"), "avg": e.get("average"), "low": e.get("lowest"),
+             "high": e.get("highest"), "vol": e.get("volume", 0)} for e in hist]
+
+
+# The volume phase downloads the same whole history body the price chart and
+# Deals keep (price_history_cache), and used to throw it away after taking the
+# last 12 days, so Deals downloaded thousands of them again the same day. The
+# series of types already kept there are refreshed from those bodies instead.
+_series_wanted: set[tuple[int, int]] = set()
+_series_out: dict[tuple[int, int], list[dict]] = {}
 
 
 # ── Market-history ETag cache ────────────────────────────────────────────────
@@ -350,6 +359,11 @@ def load_hist_etags(conn: sqlite3.Connection, region_id: int) -> int:
             except Exception:
                 pass
         n += 1
+    try:
+        _series_wanted.update((region_id, r[0]) for r in conn.execute(
+            "SELECT type_id FROM price_history_cache WHERE region_id=?", (region_id,)))
+    except sqlite3.OperationalError:
+        pass                    # no table yet: nothing is kept, nothing to refresh
     return n
 
 
@@ -362,6 +376,17 @@ def flush_hist_etags(conn: sqlite3.Connection, clear: bool = True) -> int:
     final call clears, because holding every region's map (~19k types each) in a
     desktop app is tens of MB.
     """
+    if _series_out:
+        series = dict(_series_out)
+        _series_out.clear()
+        conn.executemany(
+            "INSERT INTO price_history_cache (region_id, type_id, data_json, cached_at)"
+            " VALUES (?,?,?,?) ON CONFLICT(region_id, type_id) DO UPDATE SET"
+            " data_json = excluded.data_json, cached_at = excluded.cached_at",
+            [(k[0], k[1], json.dumps(v), time.time()) for k, v in series.items()])
+        conn.commit()
+    if clear:
+        _series_wanted.clear()
     if not _hist_etags_dirty:
         return 0
     ensure_hist_etag_table(conn)
@@ -547,6 +572,8 @@ async def _fetch_region_volume(client: httpx.AsyncClient, region_id: int, type_i
                     return 0
                 etag = r.headers.get("etag")
                 days = _recent_days(history)
+                if key in _series_wanted:
+                    _series_out[key] = _series_of(history)
                 if etag:
                     _hist_etags[key] = (etag, days, _parse_http_date(r.headers.get("expires")))
                     _hist_avgs[key] = _recent_avgs(history)
@@ -665,12 +692,19 @@ async def fetch_jita_prices_bulk(
 # Bulk Jita orders - fetch all active orders in the region at once (paginated)
 # ---------------------------------------------------------------------------
 
+class _PastTheEnd(Exception):
+    """The page asked for is beyond the book: ESI made a new, shorter snapshot
+    while the sweep was running."""
+
+
 async def _fetch_orders_page(
     client: httpx.AsyncClient,
     region_id: int,
     page: int,
-) -> tuple[list[dict], int]:
-    """Fetches a single page of orders and returns (orders, x_pages).
+    with_snapshot: bool = False,
+):
+    """Fetches a single page of orders and returns (orders, x_pages), plus the
+    snapshot it belongs to (Last-Modified) when with_snapshot is set.
 
     Raises IncompleteOrderBook when the page cannot be had, never an empty list:
     an empty page and an unreadable one must not look alike to the caller.
@@ -695,11 +729,18 @@ async def _fetch_orders_page(
                 retry_after = int(r.headers.get("Retry-After", 60))
                 await asyncio.sleep(min(retry_after, 120))
                 continue
+            if r.status_code == 404 and page > 1:
+                # Not an error to retry: three more tries cost 15 tokens and
+                # three errors and could only say the same.
+                raise _PastTheEnd(page)
             if r.status_code != 200:
                 if attempt < 2:
                     await asyncio.sleep(5)
                     continue
                 break
+            if with_snapshot:
+                return (r.json(), int(r.headers.get("x-pages", 1)),
+                        r.headers.get("last-modified", ""))
             return r.json(), int(r.headers.get("x-pages", 1))
     raise IncompleteOrderBook(
         f"ESI did not return page {page} of the order book ({status}).")
@@ -715,32 +756,83 @@ async def _fetch_all_region_orders(
     page. Shared between region-bulk and station-bulk aggregation.
 
     Every page or IncompleteOrderBook - see that class for why a partial book is
-    never returned."""
-    first, total_pages = await _fetch_orders_page(client, region_id, 1)
+    never returned.
 
-    pages_data: list[list[dict]] = [first]
+    All pages come from one ESI snapshot. ESI renews the book every 5 minutes,
+    and a sweep of ~400 pages can straddle that moment: pages of two snapshots
+    put together count an order that moved between pages twice or not at all,
+    and when the new snapshot is shorter its last pages 404. That used to throw
+    the whole sweep away (826 tokens for The Forge) and start again 5 minutes
+    later. Now the pages of the older snapshot are fetched again from the newer
+    one, and pages past its end are simply not there."""
+    first, total_pages, first_snap = await _fetch_orders_page(
+        client, region_id, 1, with_snapshot=True)
+
+    pages: dict[int, tuple[list[dict], str]] = {1: (first, first_snap)}
     if progress_cb:
         await _maybe_call(progress_cb, 1, total_pages)
 
-    remaining = list(range(2, total_pages + 1))
     completed = [1]
     lock = asyncio.Lock()
+    newest = {"snap": first_snap, "pages": total_pages}
+    past_end = [False]
 
     async def _one(p: int):
-        page_data, _ = await _fetch_orders_page(client, region_id, p)
+        try:
+            page_data, n, snap = await _fetch_orders_page(
+                client, region_id, p, with_snapshot=True)
+        except _PastTheEnd:
+            past_end[0] = True
+            return
         async with lock:
-            pages_data.append(page_data)
+            pages[p] = (page_data, snap)
+            if _http_time(snap) > _http_time(newest["snap"]):
+                newest.update(snap=snap, pages=n)
             completed[0] += 1
             if progress_cb:
                 await _maybe_call(progress_cb, completed[0], total_pages)
 
-    results = await asyncio.gather(*[_one(p) for p in remaining], return_exceptions=True)
-    failed = [r for r in results if isinstance(r, Exception)]
-    if failed:
-        raise IncompleteOrderBook(
-            f"ESI did not return {len(failed)} of {total_pages} pages of the order "
-            f"book ({failed[0]}).")
-    return pages_data
+    async def _sweep(wanted: list[int]) -> None:
+        results = await asyncio.gather(*[_one(p) for p in wanted], return_exceptions=True)
+        failed = [r for r in results if isinstance(r, Exception)]
+        if failed:
+            raise IncompleteOrderBook(
+                f"ESI did not return {len(failed)} of {total_pages} pages of the order "
+                f"book ({failed[0]}).")
+
+    await _sweep(list(range(2, total_pages + 1)))
+    def _stale() -> list[int]:
+        return [p for p in range(1, newest["pages"] + 1)
+                if p not in pages or pages[p][1] != newest["snap"]]
+
+    for _round in range(2):
+        if past_end[0] or 1 in _stale():
+            # A page past the end means a newer snapshot exists even if no page
+            # fetched so far came from it; page 1 says how long it is.
+            past_end[0] = False
+            data, n, snap = await _fetch_orders_page(client, region_id, 1, with_snapshot=True)
+            pages[1] = (data, snap)
+            if _http_time(snap) >= _http_time(newest["snap"]):
+                newest.update(snap=snap, pages=n)
+        stale = _stale()
+        if not stale:
+            break
+        for p in stale:
+            pages.pop(p, None)
+        await _sweep(stale)
+    else:
+        if any(p not in pages or pages[p][1] != newest["snap"]
+               for p in range(1, newest["pages"] + 1)):
+            raise IncompleteOrderBook("ESI renewed the order book faster than it "
+                                      "could be read; trying again later.")
+    return [pages[p][0] for p in range(1, newest["pages"] + 1)]
+
+
+def _http_time(value: str) -> float:
+    try:
+        return email.utils.parsedate_to_datetime(value).timestamp()
+    except Exception:
+        return 0.0
 
 
 async def fetch_station_orders_bulk(
@@ -913,10 +1005,28 @@ _BULK_ORDERS_THRESHOLD = 1000
 _region_cache: dict[int, int] = {}  # structure_id → region_id (in-memory)
 
 
-async def get_region_for_structure(structure_id: int) -> int | None:
-    """Resolves the region_id for a structure via ESI (system→constellation→region). Cached in memory."""
+async def get_region_for_structure(structure_id: int,
+                                   conn: sqlite3.Connection | None = None) -> int | None:
+    """Resolves the region_id for a structure or station. Cached in memory.
+
+    The bundled SDE first (every NPC station, and the system of a structure whose
+    name the resolver stored), then ESI system -> constellation -> region for
+    what the SDE does not have."""
     if structure_id in _region_cache:
         return _region_cache[structure_id]
+    if conn is not None:
+        from app.web.location_resolver import _region_from_sde
+        sys_id = None
+        try:
+            row = conn.execute("SELECT solar_system_id FROM location_name_cache"
+                               " WHERE location_id=?", (structure_id,)).fetchone()
+            sys_id = row[0] if row else None
+        except sqlite3.OperationalError:
+            pass
+        local = _region_from_sde(conn, structure_id, sys_id)
+        if local:
+            _region_cache[structure_id] = local
+            return local
     try:
         async with esi_client() as client:
             # NPC station: /universe/stations/{id}/ → system_id
@@ -1323,7 +1433,7 @@ async def fetch_structure_market(
         except Exception:
             pass
     if region_id is None:
-        region_id = await get_region_for_structure(structure_id)
+        region_id = await get_region_for_structure(structure_id, conn)
 
     history_map: dict[int, int | None] = {}
     if region_id and our_type_ids:
@@ -1463,6 +1573,33 @@ async def _fetch_orders_for_type(
     return volume, best_sell
 
 
+_book_pages: dict[int, tuple[int, float]] = {}
+
+
+async def _region_book_pages(region_id: int) -> int | None:
+    """How many pages the region's whole order book has (page 1's X-Pages).
+
+    A small region's whole book can be fewer requests than asking type by type:
+    300 types in a region of 12 pages were 300 calls where 12 give the same
+    orders. The Forge (400+ pages) still goes type by type below the threshold.
+    Remembered for an hour; one request when not known."""
+    hit = _book_pages.get(region_id)
+    if hit and time.time() - hit[1] < 3600:
+        return hit[0]
+    try:
+        async with esi_client() as client:
+            r = await client.get(f"{ESI_BASE}/markets/{region_id}/orders/",
+                                 params={"order_type": "all", "datasource": "tranquility",
+                                         "page": 1}, timeout=30)
+        if r.status_code != 200:
+            return None
+        n = int(r.headers.get("x-pages", 1))
+    except Exception:
+        return None
+    _book_pages[region_id] = (n, time.time())
+    return n
+
+
 @foreground
 async def fetch_station_volumes(
     conn: sqlite3.Connection,
@@ -1483,7 +1620,8 @@ async def fetch_station_volumes(
     #  - many types → bulk regional orders once + station filter (~2 s
     #    instead of ~37 s); crossover ~1000 types (bulk has a fixed ~2 s + 94MB overhead).
     order_map: dict[int, tuple] = {}
-    if len(type_ids) >= _BULK_ORDERS_THRESHOLD:
+    if len(type_ids) >= _BULK_ORDERS_THRESHOLD or (
+            len(type_ids) > 1 and (await _region_book_pages(region_id) or 10**9) <= len(type_ids)):
         async with esi_client() as client:
             station_orders = await fetch_station_orders_bulk(client, region_id, location_id)
         for tid in type_ids:

@@ -340,7 +340,12 @@ async def fill_public_items(conn: sqlite3.Connection, budget: int = 12000,
         "                    WHERE i.contract_id = c.contract_id)"
         "   AND NOT EXISTS (SELECT 1 FROM public_contract_items_absent a"
         "                    WHERE a.contract_id = c.contract_id)"
-        " ORDER BY c.price > 0 DESC, c.volume DESC LIMIT ?", (budget,)).fetchall()]
+        # Expired since the hourly listing: ESI answers 404, which costs 5
+        # tokens and one of the 100 errors a minute, and the next listing drops
+        # the contract anyway.
+        "   AND (c.date_expired IS NULL OR c.date_expired = '' OR c.date_expired > ?)"
+        " ORDER BY c.price > 0 DESC, c.volume DESC LIMIT ?",
+        (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), budget)).fetchall()]
     if not todo:
         return {"fetched": 0, "gone": 0, "remaining": 0}
     stored = [0]

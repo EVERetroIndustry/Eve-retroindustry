@@ -201,7 +201,16 @@ async def get_region_for_location(conn: sqlite3.Connection, location_id: int, to
     if not sys_id:
         return None
 
-    # system → constellation → region (2 ESI calls)
+    # The structure's system is known now, and the SDE has its region.
+    local = _region_from_sde(conn, location_id, sys_id)
+    if local:
+        conn.execute("UPDATE location_name_cache SET region_id=? WHERE location_id=?",
+                     (local, location_id))
+        conn.commit()
+        return local
+
+    # system → constellation → region (2 ESI calls) - only for a system the
+    # bundled SDE does not have yet.
     try:
         async with esi_client() as client:
             sys_r = await client.get(

@@ -16,6 +16,11 @@ import time
 
 import pytest
 
+# The ESI HTTP cache (app/esi/http_cache.py) lives under EVE_APP_DIR, which the
+# app fixture sets for the whole session. Scripted answers would otherwise be
+# remembered from one test to the next; its own tests switch it back on.
+os.environ["EVE_NO_HTTP_CACHE"] = "1"
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NPC_STATION = 60003760           # Jita IV-4 (resolves from the SDE, no ESI)
 JITA_SYSTEM = 30000142

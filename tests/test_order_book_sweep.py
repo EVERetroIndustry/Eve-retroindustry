@@ -219,3 +219,30 @@ def test_the_prices_page_shows_the_error_instead_of_waiting(marker):
     body = _handler_source(marker)
     assert "if (d.error)" in body, "no branch handles the error event"
     assert body.index("if (d.error)") < body.index("if (d.done)")
+
+
+def test_a_sweep_across_a_new_snapshot_is_read_from_the_new_one():
+    # ESI renews the book while the sweep runs, and the new one is a page
+    # shorter: page 3 now 404s. The sweep used to fail (and retry the 404) and
+    # throw everything away; now pages from the old snapshot are read again.
+    OLD, NEW = "Tue, 03 Nov 2026 20:00:00 GMT", "Tue, 03 Nov 2026 20:05:00 GMT"
+    asked = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        page = int(req.url.params.get("page", 1))
+        asked.append(page)
+        renewed = len(asked) > 2              # pages 1 and 2 came from the old one
+        if not renewed:
+            return httpx.Response(200, json=_orders((34, 4.0 + page)),
+                                  headers={"x-pages": "3", "last-modified": OLD})
+        if page > 2:
+            return httpx.Response(404, json={"error": "Requested page does not exist!"})
+        return httpx.Response(200, json=_orders((34, 9.0 + page)),
+                              headers={"x-pages": "2", "last-modified": NEW})
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+            return await P._fetch_all_region_orders(c, REGION)
+    pages = asyncio.run(go())
+    assert [p[0]["price"] for p in pages] == [10.0, 11.0]
+    assert asked.count(3) == 1                 # a page past the end is not retried

@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.request import pathname2url
 
 import httpx
+from app.esi.http_cache import forget_refusals
 from app.esi.client import (
     esi_client, esi_error_message, esi_throttle_status,
     set_market_token_provider as _esi_set_market_token_provider,
@@ -1343,6 +1344,7 @@ async def _bg_initial_sync():
             return
 
         all_loc_ids: set[int] = set()
+        item_ids: set[int] = set()
         any_token: str | None = None
         _sync_state["total"] = len(chars)
         _sync_state["phase"] = "characters"
@@ -1383,12 +1385,20 @@ async def _bg_initial_sync():
                         corp = []
                     all_loc_ids |= {a.location_id for a in personal}
                     all_loc_ids |= {a.location_id for a in corp}
+                    item_ids |= {a.item_id for a in personal}
+                    item_ids |= {a.item_id for a in corp}
                     update_last_sync(conn, char_id)
                 except Exception as exc:
                     print(f"[sync] character {char_id} sync failed: {exc}", flush=True)
                     _sync_state["failed"] += 1
                     continue
 
+        # An item inside a container or a ship has that container's item id as
+        # its location. Those ids sit in the structure id range, so each one went
+        # to /universe/structures/ and failed - on a real account 264 of 281 such
+        # ids, every sync, more than the whole ESI error budget of 100 a minute.
+        # Only ids that are not items of these assets can be stations or structures.
+        all_loc_ids -= item_ids
         if all_loc_ids and any_token:
             _sync_state.update({"phase": "locations", "step": "", "char": ""})
             try:
@@ -1422,6 +1432,8 @@ async def auth_sync(request: Request):
         # Same reasoning: a role granted since the last sync has to take effect
         # now, not when the six-hour refusal record ages out.
         clear_corp_denied(conn)
+        # And the refusals the HTTP cache remembers (roles, scopes, docking).
+        forget_refusals()
     finally:
         conn.close()
     if not _sync_state["running"] and not _sync_state["done"]:
@@ -1481,12 +1493,20 @@ async def api_delete_character(request: Request, char_id: int):
     return resp
 
 
+@app.get("/api/esi/stats")
+async def api_esi_stats():
+    """Which ESI routes answered 4xx since start, and what the HTTP cache saved."""
+    from app.esi.client import esi_stats
+    return esi_stats()
+
+
 @app.post("/api/sync/start")
 async def api_sync_start():
     """Manually trigger an ESI sync for all characters - the scheduler's
     "characters" job, so a sync started here shows in the panel like any other."""
     if _sync_state["running"]:
         return {"ok": False, "error": "Already running"}
+    forget_refusals()            # a manual sync asks again what ESI refused
     bg.run_now("characters")
     return {"ok": True}
 
@@ -4328,6 +4348,7 @@ def _location_above_items(asset_map: dict[int, dict], start_loc: int) -> int:
 
 
 _ASSET_NAMES_CHUNK = 1000         # ESI takes at most 1000 ids per call
+_ASSET_NAMES_FRESH = 10 * 60      # = the asset list's own cache time
 
 
 def _ensure_asset_name_cache(conn: sqlite3.Connection) -> None:
@@ -4350,6 +4371,23 @@ async def _fetch_asset_names(url: str, token: str, ids: list[int],
     """
     names: dict[int, str] = {}
     failed: list[int] = []
+    # Names asked for less than _ASSET_NAMES_FRESH ago are used as they are:
+    # never older than the asset list they name (also kept 10 minutes), and
+    # every Assets or Blueprints page load no longer posts all of them again.
+    conn = get_conn()
+    try:
+        _ensure_asset_name_cache(conn)
+        cutoff = _time.time() - _ASSET_NAMES_FRESH
+        for j in range(0, len(ids), 500):
+            part = ids[j:j + 500]
+            ph = ",".join("?" * len(part))
+            names.update(dict(conn.execute(
+                f"SELECT item_id, name FROM asset_name_cache WHERE item_id IN ({ph})"
+                " AND cached_at > ?", [*part, cutoff])))
+    finally:
+        conn.close()
+    ids = [i for i in ids if i not in names]
+    fetched: dict[int, str] = {}
     async with esi_client() as client:
         for i in range(0, len(ids), _ASSET_NAMES_CHUNK):
             chunk = ids[i:i + _ASSET_NAMES_CHUNK]
@@ -4374,13 +4412,14 @@ async def _fetch_asset_names(url: str, token: str, ids: list[int],
                 failed.extend(chunk)
             else:
                 names.update(got)
+                fetched.update(got)
     conn = get_conn()
     try:
         _ensure_asset_name_cache(conn)
-        if names:
+        if fetched:
             now = _time.time()
             conn.executemany("INSERT OR REPLACE INTO asset_name_cache VALUES (?,?,?)",
-                             [(k, v, now) for k, v in names.items()])
+                             [(k, v, now) for k, v in fetched.items()])
             conn.commit()
         if failed:
             for j in range(0, len(failed), 500):
@@ -5280,20 +5319,15 @@ async def suggest_station(request: Request, q: str = ""):
                         other.append(entry)
                         other_ids.add(lid)
 
-            # NPC stations in the found systems
-            sys_tasks = [
-                client.get(
-                    f"https://esi.evetech.net/latest/universe/systems/{sid}/",
-                    params={"datasource": "tranquility"}, timeout=4.0,
-                )
-                for sid in system_ids[:5]
-            ]
-            if sys_tasks:
-                sys_results = await asyncio.gather(*sys_tasks, return_exceptions=True)
-                new_npc: list[int] = []
-                for sys_r in sys_results:
-                    if not isinstance(sys_r, Exception) and sys_r.status_code == 200:
-                        new_npc.extend(sys_r.json().get("stations", []))
+            # NPC stations in the found systems - the bundled SDE has every one,
+            # so this is a local query instead of an ESI call per system.
+            new_npc: list[int] = []
+            if system_ids[:5]:
+                ph = ",".join("?" * len(system_ids[:5]))
+                new_npc = [r[0] for r in conn.execute(
+                    f"SELECT station_id FROM sde_stations WHERE system_id IN ({ph})"
+                    " ORDER BY station_id", list(system_ids[:5]))]
+            if new_npc:
                 new_npc_ids = [sid for sid in new_npc if sid not in all_names]
                 if new_npc_ids:
                     new_names = await resolve_station_names_bulk(new_npc_ids, token=None, conn=conn)
@@ -5470,12 +5504,17 @@ async def my_location(request: Request):
 
         if not structure_id:
             # Load the system name
-            async with esi_client() as client:
-                sr = await client.get(
-                    f"https://esi.evetech.net/latest/universe/systems/{sys_id}/",
-                    params={"datasource": "tranquility"}, timeout=5,
-                )
-                sys_name = sr.json().get("name", str(sys_id)) if sr.status_code == 200 else str(sys_id)
+            row = conn.execute("SELECT name FROM sde_systems WHERE system_id=?",
+                               (sys_id,)).fetchone()
+            if row:
+                sys_name = row[0]
+            else:                           # a system newer than the bundled SDE
+                async with esi_client() as client:
+                    sr = await client.get(
+                        f"https://esi.evetech.net/latest/universe/systems/{sys_id}/",
+                        params={"datasource": "tranquility"}, timeout=5,
+                    )
+                    sys_name = sr.json().get("name", str(sys_id)) if sr.status_code == 200 else str(sys_id)
             return {"in_space": True, "solar_system_id": sys_id, "solar_system_name": sys_name}
 
         # Resolve the structure/station name and save it to the cache
@@ -10831,6 +10870,7 @@ async def api_activity_run(request: Request):
 async def api_activity_run_all():
     """The panel's Sync All: refresh everything now - characters, Jita, the
     downloaded hubs and the tracked stations."""
+    forget_refusals()
     return {"ok": True, "started": bg.run_all()}
 
 

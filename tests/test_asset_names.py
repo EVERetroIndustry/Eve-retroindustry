@@ -49,6 +49,10 @@ def test_a_timeout_is_retried_once(m, monkeypatch):
 def test_when_esi_keeps_failing_the_last_names_are_used_and_said(m, monkeypatch):
     _esi(monkeypatch, m, [(200, [{"item_id": 5, "name": "Blue Thunder"}])])
     asyncio.run(m._fetch_asset_names(URL, "tok", [5, 6]))
+    conn = m.get_conn()                 # no longer fresh, so ESI is asked
+    conn.execute("UPDATE asset_name_cache SET cached_at = cached_at - 3600")
+    conn.commit()
+    conn.close()
     _esi(monkeypatch, m, [(504, {"error": "Timeout contacting tranquility"})])
     problems = []
     got = asyncio.run(m._fetch_asset_names(URL, "tok", [5, 6], problems))
@@ -95,3 +99,21 @@ def test_the_assets_page_says_names_are_not_fresh(client, m, monkeypatch):
                      (raw,))
         conn.commit()
         conn.close()
+
+
+def test_names_asked_moments_ago_are_not_asked_again(m, monkeypatch):
+    calls = _esi(monkeypatch, m, [(200, [{"item_id": 5, "name": "Blue Thunder"}])])
+    asyncio.run(m._fetch_asset_names(URL, "tok", [5]))
+    calls = _esi(monkeypatch, m, [(200, [{"item_id": 6, "name": "Red Box"}])])
+    got = asyncio.run(m._fetch_asset_names(URL, "tok", [5, 6]))
+    assert got == {5: "Blue Thunder", 6: "Red Box"}
+    assert calls == [[6]]
+    # Older than the asset list's cache time: asked again, a rename shows.
+    conn = m.get_conn()
+    conn.execute("UPDATE asset_name_cache SET cached_at = cached_at - 3600")
+    conn.commit()
+    conn.close()
+    calls = _esi(monkeypatch, m, [(200, [{"item_id": 5, "name": "Renamed"},
+                                         {"item_id": 6, "name": "Red Box"}])])
+    assert asyncio.run(m._fetch_asset_names(URL, "tok", [5, 6]))[5] == "Renamed"
+    assert calls == [[5, 6]]

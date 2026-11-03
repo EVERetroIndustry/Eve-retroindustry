@@ -934,6 +934,13 @@ def test_corp_resolver_asks_only_about_ids_the_corp_owns(app_module):
             return _Resp()
 
     from app.web import main as m
+    # Item 111 is also the character test's item; a name fetched moments ago
+    # is not asked again (_ASSET_NAMES_FRESH), so start without it.
+    _c = m.get_conn()
+    m._ensure_asset_name_cache(_c)
+    _c.execute("DELETE FROM asset_name_cache")
+    _c.commit()
+    _c.close()
     orig = m.esi_client
     m.esi_client = lambda *a, **k: _Client()
     try:

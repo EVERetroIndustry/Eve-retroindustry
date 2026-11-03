@@ -3,6 +3,8 @@ import asyncio
 import time
 from typing import Optional
 
+from app.esi import http_cache
+
 ESI_BASE = "https://esi.evetech.net/latest"
 FUZZWORK_BASE = "https://www.fuzzwork.co.uk"
 ESI_HOST = "esi.evetech.net"
@@ -211,10 +213,14 @@ class _GovernedTransport(httpx.AsyncHTTPTransport):
     """
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        global _market_token_disabled_until
         if request.url.host != ESI_HOST:
             return await super().handle_async_request(request)
+        # Expires / ETag / remembered refusals first: an answer ESI would only
+        # repeat never reaches the governors or the network (see http_cache).
+        return await http_cache.answer(self._governed, request)
 
+    async def _governed(self, request: httpx.Request) -> httpx.Response:
+        global _market_token_disabled_until
         sig = _TokenBucketGovernor.signature(request.url)
         added_auth = False
         auth = _market_auth_header(request)
@@ -259,8 +265,31 @@ class _GovernedTransport(httpx.AsyncHTTPTransport):
 
             _ERROR_LIMIT.observe(_int_header(response, "x-esi-error-limit-remain"), reset)
             _TOKEN_LIMIT.observe(sig, response)
+            if 400 <= response.status_code < 500:
+                _count_error(sig, response.status_code)
             return response
         return last  # exhausted retries - hand it back so raise_for_status fires
+
+
+# --- error accounting ----------------------------------------------------------
+# Every 4xx spends one of the 100 errors a minute ESI allows the whole IP, so
+# which routes produce them is the first thing to know when the limit is hit.
+_ERRORS: dict[tuple[str, int], int] = {}
+
+
+def _count_error(sig: str, status: int) -> None:
+    k = (sig, status)
+    _ERRORS[k] = _ERRORS.get(k, 0) + 1
+    if _ERRORS[k] in (1, 10, 100, 1000):
+        print(f"[esi] {status} on {sig} (x{_ERRORS[k]} since start)", flush=True)
+
+
+def esi_stats() -> dict:
+    """4xx answers per route since start, and what the HTTP cache saved."""
+    store = http_cache.cache()
+    return {"errors": [{"route": s, "status": st, "count": n}
+                       for (s, st), n in sorted(_ERRORS.items(), key=lambda kv: -kv[1])],
+            "cache": dict(store.stats) if store else None}
 
 
 def esi_throttle_status(url: str | None = None) -> dict:
