@@ -88,6 +88,12 @@ def ensure_public_contract_tables(conn: sqlite3.Connection) -> None:
     # 27 133 of 48 029), so re-reading them all would cost hours of ESI calls. A
     # blueprint row with NULL is treated as "we do not know" and re-read when that
     # one contract is actually opened.
+    # Issued on behalf of a corporation: the game shows the corporation as the
+    # issuer then, not the character who clicked. Filled from the next listing.
+    pcols = {r[1] for r in conn.execute("PRAGMA table_info(public_contracts)").fetchall()}
+    for col in ("for_corporation", "issuer_corporation_id"):
+        if col not in pcols:
+            conn.execute(f"ALTER TABLE public_contracts ADD COLUMN {col} INTEGER")
     icols = {r[1] for r in conn.execute("PRAGMA table_info(public_contract_items)").fetchall()}
     for col in ("is_bpc", "runs", "me", "te"):
         if col not in icols:
@@ -235,12 +241,14 @@ def _store_public_listing(conn: sqlite3.Connection, region_id: int, contracts: l
     conn.executemany(
         "INSERT OR REPLACE INTO public_contracts (contract_id, region_id, type, price,"
         " reward, collateral, buyout, volume, date_expired, title, start_location_id,"
-        " end_location_id, issuer_id, system_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " end_location_id, issuer_id, system_id, for_corporation, issuer_corporation_id)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         [(c.get("contract_id"), region_id, c.get("type"), c.get("price") or 0,
           c.get("reward") or 0, c.get("collateral") or 0, c.get("buyout") or 0,
           c.get("volume") or 0, c.get("date_expired", ""), c.get("title") or "",
           c.get("start_location_id"), c.get("end_location_id"), c.get("issuer_id"),
-          systems.get(int(c.get("start_location_id") or 0)))
+          systems.get(int(c.get("start_location_id") or 0)),
+          1 if c.get("for_corporation") else 0, c.get("issuer_corporation_id"))
          for c in contracts if c.get("contract_id")])
     conn.execute(
         "INSERT OR REPLACE INTO public_contract_meta (region_id, indexed_at, contract_count)"
@@ -604,14 +612,26 @@ def search_public_contracts(conn: sqlite3.Connection, region_id: int | None = No
             where.append("t.name LIKE ?")
             params.append(f"%{item.strip()}%")
         where.append("i.is_included = 1")
+    if location.strip() or q.strip() or issuer.strip():
+        # Name caches the resolvers create on first use: a fresh install that
+        # searched before resolving anything failed on the missing table.
+        from app.web.location_resolver import ensure_location_name_table
+        ensure_location_name_table(conn)
+        conn.execute("CREATE TABLE IF NOT EXISTS party_name_cache (party_id INTEGER"
+                     " PRIMARY KEY, name TEXT, category TEXT, cached_at REAL)")
     if location.strip() or q.strip():
         joins += (" LEFT JOIN location_name_cache ls ON ls.location_id = c.start_location_id"
                   " LEFT JOIN location_name_cache le ON le.location_id = c.end_location_id")
     if issuer.strip() or q.strip():
         joins += " LEFT JOIN party_name_cache pn ON pn.party_id = c.issuer_id"
     if q.strip():
-        where.append("(c.title LIKE ? OR ls.name LIKE ? OR le.name LIKE ? OR pn.name LIKE ?)")
-        params += [f"%{q.strip()}%"] * 4
+        # The contents too, as the game's search box does: "azariel" typed here
+        # found nothing while the Item field found the 465b titan.
+        where.append("(c.title LIKE ? OR ls.name LIKE ? OR le.name LIKE ? OR pn.name LIKE ?"
+                     " OR c.contract_id IN (SELECT qi.contract_id FROM public_contract_items qi"
+                     " JOIN sde_types qt ON qt.type_id = qi.type_id"
+                     " WHERE qi.is_included = 1 AND qt.name LIKE ?))")
+        params += [f"%{q.strip()}%"] * 5
     if ctype:
         where.append("c.type = ?")
         params.append(ctype)
@@ -646,19 +666,60 @@ def search_public_contracts(conn: sqlite3.Connection, region_id: int | None = No
         params.append(cutoff)
     cond = " AND ".join(where) if where else "1=1"
     order = {"price": "c.price ASC", "price_hi": "c.price DESC",
-             "expires": "c.date_expired ASC", "reward": "c.reward DESC",
+             "expires": "c.date_expired ASC", "expires_hi": "c.date_expired DESC",
+             "reward": "c.reward DESC", "reward_lo": "c.reward ASC",
              "issued": "c.date_expired DESC"}.get(sort, "c.price ASC")
     total = conn.execute(
         f"SELECT COUNT(DISTINCT c.contract_id) FROM public_contracts c{joins} WHERE {cond}",
         params).fetchone()[0]
     cols = ["contract_id", "type", "price", "reward", "collateral", "volume",
             "date_expired", "title", "start_location_id", "end_location_id", "issuer_id",
-            "region_id"]
+            "region_id", "for_corporation", "issuer_corporation_id"]
     sel = ", ".join(f"c.{c}" for c in cols)
     rows = conn.execute(
         f"SELECT DISTINCT {sel} FROM public_contracts c{joins} WHERE {cond}"
         f" ORDER BY {order} LIMIT ?", params + [limit]).fetchall()
     return [dict(zip(cols, r)) for r in rows], total
+
+
+def contents_summary(conn: sqlite3.Connection, contract_ids) -> dict[int, dict]:
+    """What a contract holds, in a few words, the way the game lists it.
+
+    Without it a contract with no title showed nothing but its location and
+    price: an Azariel for 465b sat on the 11th row of "most expensive first",
+    and nothing on that row said it was a titan. One item gives its name (with
+    the quantity and "(copy)" for a blueprint copy); more give the most valuable
+    one by Jita sell plus how many others. A contract that only asks for items
+    says what it wants. Contents not read yet give no entry.
+    """
+    ids = [int(c) for c in contract_ids if c]
+    out: dict[int, dict] = {}
+    if not ids:
+        return out
+    rows = []
+    for i in range(0, len(ids), 500):
+        part = ids[i:i + 500]
+        ph = ",".join("?" * len(part))
+        rows += conn.execute(
+            "SELECT i.contract_id, i.type_id, i.quantity, i.is_included, i.is_bpc,"
+            " COALESCE(t.name, 'Type ' || i.type_id), COALESCE(p.sell_price, 0)"
+            " FROM public_contract_items i"
+            " LEFT JOIN sde_types t ON t.type_id = i.type_id"
+            " LEFT JOIN market_price_cache p ON p.type_id = i.type_id"
+            f" WHERE i.contract_id IN ({ph})", part).fetchall()
+    by: dict[int, list] = {}
+    for r in rows:
+        by.setdefault(r[0], []).append(r)
+    for cid, items in by.items():
+        given = [r for r in items if r[3]]
+        wanted = [r for r in items if not r[3]]
+        pick = given or wanted
+        top = max(pick, key=lambda r: ((0 if r[4] else r[6]) * (r[2] or 1), r[2] or 0))
+        label = top[5] + (" (copy)" if top[4] else "")
+        if (top[2] or 1) > 1:
+            label += f" x {top[2]:,}".replace(",", " ")
+        out[cid] = {"label": label, "more": len(pick) - 1, "wants": not given}
+    return out
 
 
 def _original_only(conn: sqlite3.Connection, type_id: int, alias: str) -> str:
@@ -1189,6 +1250,8 @@ _ALLIANCE_SORTS = {
     "price":    "c.price ASC",
     "price_hi": "c.price DESC",
     "reward":   "c.reward DESC",
+    "reward_lo": "c.reward ASC",
+    "expires_hi": "c.date_expired DESC",
     # For a finished contract the date that means anything is when it sold, not
     # when the listing would have run out.
     "sold":     "c.date_completed DESC",

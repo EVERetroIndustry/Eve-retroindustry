@@ -60,16 +60,22 @@
       </tr></thead>
       <tbody>
         {% for c in results %}
-        <tr data-search="{{ (c.title ~ ' ' ~ c.issuer_name ~ ' ' ~ c.start_name ~ ' ' ~ c.region_name) | lower }}"
+        {% set what = (c.contents.label if c.contents else '') %}
+        <tr data-search="{{ (what ~ ' ' ~ c.title ~ ' ' ~ c.issuer_name ~ ' ' ~ c.start_name ~ ' ' ~ c.region_name) | lower }}"
             data-type="{{ c.type }}" data-typelabel="{{ c.type_label }}"
             data-price="{{ c.price }}" data-reward="{{ c.reward }}"
             data-collateral="{{ c.collateral }}" data-volume="{{ c.volume }}"
             data-issuer="{{ c.issuer_name }}" data-location="{{ c.start_name }}"
-            data-region="{{ c.region_name }}" data-title="{{ c.title }}"
+            data-region="{{ c.region_name }}" data-title="{{ what or c.title }}"
             data-expires="{{ c.date_expired }}">
           <td><span class="badge {% if c.type == 'courier' %}badge-courier{% elif c.type == 'auction' %}badge-rxn{% else %}badge-mfg{% endif %}" style="font-size:.65rem">{{ c.type_label }}</span></td>
           <td style="max-width:280px">
-            {% if c.title %}<div class="text-truncate" title="{{ c.title }}">{{ c.title }}</div>{% endif %}
+            {% if c.contents %}
+            <div class="text-truncate" title="{{ 'Wants: ' if c.contents.wants }}{{ c.contents.label }}{% if c.contents.more %} and {{ c.contents.more }} more{% endif %}">
+              {% if c.contents.wants %}<span class="text-muted">Wants:</span> {% endif %}{{ c.contents.label }}{% if c.contents.more %} <span class="text-muted">+{{ c.contents.more }} more</span>{% endif %}
+            </div>
+            {% endif %}
+            {% if c.title %}<div class="text-truncate{% if c.contents %} text-muted{% endif %}" {% if c.contents %}style="font-size:.75rem" {% endif %}title="{{ c.title }}">{{ c.title }}</div>{% endif %}
             {% if c.type != 'courier' %}
             <button class="btn btn-link p-0 text-decoration-none" style="font-size:.72rem"
                     data-price="{{ c.price or 0 }}"
@@ -83,7 +89,7 @@
           <td class="text-muted text-truncate" style="max-width:130px;font-size:.75rem">{{ c.region_name }}</td>
           <td class="text-end" style="white-space:nowrap">{% if c.price %}{{ c.price | isk }}{% else %}<span class="text-muted">-</span>{% endif %}</td>
           <td class="text-end" style="white-space:nowrap">{% if c.reward %}{{ c.reward | isk }}{% else %}<span class="text-muted">-</span>{% endif %}</td>
-          <td class="text-muted text-truncate" style="max-width:130px;font-size:.78rem">{{ c.issuer_name }}</td>
+          <td class="text-muted text-truncate" style="max-width:130px;font-size:.78rem"{% if c.issuer_char %} title="Issued by {{ c.issuer_char }} for the corporation"{% endif %}>{{ c.issuer_name }}</td>
           <td class="text-end text-muted" style="white-space:nowrap;font-size:.75rem">{{ c.date_expired | replace('T',' ') | replace('Z','') | truncate(10,true,'') }}</td>
         </tr>
         {% endfor %}

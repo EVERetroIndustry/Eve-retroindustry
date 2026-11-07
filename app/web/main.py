@@ -7861,6 +7861,9 @@ async def public_contracts_page(
             location=location, issuer=issuer, title=title, expires_days=_i(expires),
             sort=sort, limit=ctx["limit"])
         party_ids = {c["issuer_id"] for c in results if c["issuer_id"]}
+        party_ids |= {c["issuer_corporation_id"] for c in results
+                      if c.get("for_corporation") and c.get("issuer_corporation_id")}
+        contents = contracts_helper.contents_summary(conn, [c["contract_id"] for c in results])
         loc_ids = {lid for c in results for lid in (c["start_location_id"], c["end_location_id"]) if lid}
         party_names = await _resolve_party_names(party_ids) if party_ids else {}
         loc_names: dict[int, str] = {}
@@ -7874,6 +7877,12 @@ async def public_contracts_page(
         for c in results:
             c["type_label"] = contracts_api.type_label(c["type"])
             c["issuer_name"] = party_names.get(c["issuer_id"], str(c["issuer_id"] or ""))
+            if c.get("for_corporation") and c.get("issuer_corporation_id"):
+                # As the game shows it; the character stays in the tooltip.
+                c["issuer_char"] = c["issuer_name"]
+                c["issuer_name"] = party_names.get(c["issuer_corporation_id"],
+                                                   c["issuer_name"])
+            c["contents"] = contents.get(c["contract_id"])
             c["start_name"] = loc_names.get(c["start_location_id"], "")
             c["end_name"] = loc_names.get(c["end_location_id"], "")
             c["region_name"] = region_names.get(c.get("region_id"), "")

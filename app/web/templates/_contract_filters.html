@@ -148,9 +148,11 @@
       <div class="col-md-3">
         <label class="form-label small text-muted mb-1">Sort by</label>
         <select id="cf-sort" {% if srv %}name="sort"{% endif %} class="form-select form-select-sm">
-          {% for v, label in [('expires', 'Expires soonest'), ('issued', 'Newest first'),
+          {% for v, label in [('expires', 'Expires soonest'), ('expires_hi', 'Expires latest'),
+                              ('issued', 'Newest first'),
                               ('price', 'Price, lowest'), ('price_hi', 'Price, highest'),
-                              ('reward', 'Reward, highest'), ('sold', 'Sold, most recent')] %}
+                              ('reward', 'Reward, highest'), ('reward_lo', 'Reward, lowest'),
+                              ('sold', 'Sold, most recent')] %}
           <option value="{{ v }}" {% if f.get('sort', 'expires') == v %}selected{% endif %}>{{ label }}</option>
           {% endfor %}
         </select>
@@ -204,11 +206,38 @@
     sorted.forEach(r => tbody.appendChild(r));
   }
 
+  // Server mode shows only the first rows of the whole index in the order the
+  // form asked for, so sorting those rows in the browser answered the wrong
+  // question: "Price, lowest" then a click on Price gave the dearest of the
+  // CHEAPEST 300 (all zero-price want-to-buy contracts), and the Azariel for
+  // 465b was nowhere. Columns the server can order by ask it to; the rest still
+  // sort what is shown.
+  const form = document.getElementById('contract-filters');
+  const serverMode = form && form.dataset.mode === 'server';
+  const SERVER_SORT = {price: ['price', 'price_hi'], reward: ['reward_lo', 'reward'],
+                       expires: ['expires', 'expires_hi']};
+  const sortSel = document.getElementById('cf-sort');
+  if (serverMode && sortSel) {
+    for (const [key, [up, down]] of Object.entries(SERVER_SORT)) {
+      if (sortSel.value !== up && sortSel.value !== down) continue;
+      const th = table.querySelector(`th[data-sort^="${key}:"]`);
+      if (!th) continue;
+      th.dataset.dir = sortSel.value === up ? 'asc' : 'desc';
+      const ic = th.querySelector('.sort-icon');
+      if (ic) ic.textContent = sortSel.value === up ? '▲' : '▼';
+    }
+  }
+
   table.querySelectorAll('th[data-sort]').forEach(th => {
     th.style.cursor = 'pointer';
     th.addEventListener('click', () => {
       const [key, kind] = th.dataset.sort.split(':');
       const asc = th.dataset.dir !== 'asc';
+      if (serverMode && sortSel && SERVER_SORT[key]) {
+        sortSel.value = SERVER_SORT[key][asc ? 0 : 1];
+        form.submit();
+        return;
+      }
       table.querySelectorAll('th[data-sort]').forEach(o => {
         delete o.dataset.dir;
         const i = o.querySelector('.sort-icon');
@@ -259,6 +288,8 @@
     price:    ['price', 'num', true],
     price_hi: ['price', 'num', false],
     reward:   ['reward', 'num', false],
+    reward_lo:  ['reward', 'num', true],
+    expires_hi: ['expires', 'text', false],
   };
 
   function apply() {
