@@ -193,3 +193,18 @@ def test_the_store_is_private(store, monkeypatch):
     net.get(WALLET, _jwt(1))
     mode = stat.S_IMODE(os.stat(store / "esi_http_cache.db").st_mode)
     assert mode & 0o077 == 0
+
+
+def test_a_found_route_is_not_kept_but_no_route_is(store, monkeypatch):
+    # A found route's jump count has its own store, which forgets counts when
+    # the gate network changes; a copy kept here could bring an old one back.
+    net = _ESI(monkeypatch)
+    net.answers = [_ok([1, 2, 3]), _ok([1, 3]), httpx.Response(404, json={"error": "No route found"})]
+    route = "https://esi.evetech.net/latest/route/30000001/30000003/"
+    assert net.get(route).json() == [1, 2, 3]
+    assert net.get(route).json() == [1, 3]
+    assert len(net.sent) == 2
+    nowhere = "https://esi.evetech.net/latest/route/30000001/31000005/"
+    assert net.get(nowhere).status_code == 404
+    assert net.get(nowhere).status_code == 404
+    assert len(net.sent) == 3

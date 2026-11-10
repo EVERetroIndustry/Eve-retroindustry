@@ -4288,8 +4288,8 @@ async def assets_distances(request: Request):
     # Deduplicate systems - one ESI call per unique destination
     unique_sys = list(set(loc_to_sys.values()))
 
-    # Jump counts are static: stargates don't move, so a route's length only ever
-    # changes when the developer edits the map. Without a cache this endpoint fired one ESI
+    # Jump counts change only when the developer edits the gate network
+    # (ensure_route_jump_table drops counts from before such an edit). Without a cache this endpoint fired one ESI
     # call per unique destination system (482 on this account) EVERY time it ran.
     # The pair is stored normalised (low, high) because the gate network is
     # undirected - the shortest path is the same in both directions.
@@ -9163,9 +9163,29 @@ async def entity_portrait(kind: str, entity_id: int, size: int = 32, refresh: in
 
 
 # ── Static map data: jump counts between systems ─────────────────────────────
-# /route/{a}/{b}/ answers are static (stargates don't move), so they are cached
-# permanently. Pairs are stored normalised (low, high): the gate network is
-# undirected, so the shortest path is the same both ways and one row serves both.
+# /route/{a}/{b}/ answers only change when the gate network does, so they are
+# kept until it does. Pairs are stored normalised (low, high): the gate network
+# is undirected, so the shortest path is the same both ways and one row serves both.
+#
+# The network does change: Fractured Skies (2026-11-10) opened Renyn - Jufvitte
+# and Ienakkamon - T-LIWS, and a count saved before that can be longer than the
+# route is now. Two guards drop such counts:
+#   * _GATE_NETWORK_CHANGED - counts saved before the last known change. It is
+#     needed because ESI routes over new gates before the SDE that has them is
+#     out, and this release can ship before that SDE.
+#   * the gate links in the SDE - when an SDE update changes them, every count
+#     is asked again, so a later change needs no edit here.
+_GATE_NETWORK_CHANGED = 1794308400.0     # 2026-11-10 11:00 UTC, Fractured Skies
+
+
+def _gate_network_fingerprint(conn: sqlite3.Connection) -> str:
+    import hashlib
+    try:
+        rows = conn.execute("SELECT a, b FROM sde_stargate_links ORDER BY a, b").fetchall()
+    except sqlite3.Error:
+        return ""
+    return hashlib.sha1(repr(rows).encode()).hexdigest() if rows else ""
+
 
 def ensure_route_jump_table(conn: sqlite3.Connection) -> None:
     conn.execute("""
@@ -9177,6 +9197,15 @@ def ensure_route_jump_table(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (sys_a, sys_b)
         )
     """)
+    conn.execute("CREATE TABLE IF NOT EXISTS route_jump_meta (key TEXT PRIMARY KEY, value TEXT)")
+    gates = _gate_network_fingerprint(conn)
+    row = conn.execute("SELECT value FROM route_jump_meta WHERE key='gates'").fetchone()
+    if gates and (row is None or row[0] != gates):
+        if row is not None:
+            conn.execute("DELETE FROM route_jump_cache")
+        conn.execute("INSERT OR REPLACE INTO route_jump_meta VALUES ('gates', ?)", (gates,))
+    conn.execute("DELETE FROM route_jump_cache WHERE cached_at IS NULL OR cached_at < ?",
+                 (_GATE_NETWORK_CHANGED,))
     conn.commit()
 
 

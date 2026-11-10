@@ -21,6 +21,12 @@ import pytest
 # remembered from one test to the next; its own tests switch it back on.
 os.environ["EVE_NO_HTTP_CACHE"] = "1"
 
+# A test module that imports app.web.main at the top runs before the app
+# fixture and fixes the data directory at import time. Without this it fell
+# back to the project root and the whole run seeded and rewrote the developer's
+# own eve_cache.db there. Now such a run fails on an empty directory instead.
+os.environ["EVE_APP_DIR"] = tempfile.mkdtemp(prefix="eve-test-early-")
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NPC_STATION = 60003760           # Jita IV-4 (resolves from the SDE, no ESI)
 JITA_SYSTEM = 30000142

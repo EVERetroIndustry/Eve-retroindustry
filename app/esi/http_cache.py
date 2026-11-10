@@ -73,6 +73,12 @@ _CACHED = re.compile(
 # (new content arrives with a patch), not on every page load as before.
 _NOT_FOUND = re.compile(r"^/(universe/(types|groups)/\{\}/$|alliances/\{\}/$|route/)")
 NOT_FOUND_TTL = 24 * 3600
+
+# Routes kept only for their "not found": a found route's jump count has its
+# own store (route_jump_cache in main.py), which drops counts when the gate
+# network changes. A body kept here as well could hand a count from before the
+# change back to that store, which would then keep it for good.
+_ONLY_NOT_FOUND = re.compile(r"^/route/")
 _VERSION = re.compile(r"^/(latest|legacy|dev|v\d+)(?=/)")
 
 # Headers that describe the transfer, not the content: the stored body is
@@ -263,10 +269,14 @@ async def answer(transport_send, request: httpx.Request) -> httpx.Response:
         return await transport_send(request)
     key = key_of(request)
     owner = _owner(request)      # before the transport may add a market token
+    sig = signature(request.url)
+    only_not_found = bool(_ONLY_NOT_FOUND.match(sig))
     try:
         entry = store.get(key)
     except Exception:
         entry = None
+    if only_not_found and entry is not None and entry["status"] != 404:
+        entry = None             # kept by v0.11.43/44; no longer used
     now = time.time()
     if entry is not None and now < entry["fresh_until"]:
         store.stats["fresh" if entry["status"] == 200 else "refusal_hit"] += 1
@@ -301,11 +311,11 @@ async def answer(transport_send, request: httpx.Request) -> httpx.Response:
     headers = kept_headers(response)
     fresh = _seconds_to_expiry(response)
     try:
-        if status == 200 and (response.headers.get("etag") or fresh):
+        if status == 200 and not only_not_found and (response.headers.get("etag") or fresh):
             store.put(key, owner, 200, response.headers.get("etag"),
                       headers, body, fresh or 0.0)
             store.stats["changed"] += 1
-        elif status == 404 and _NOT_FOUND.match(signature(request.url)):
+        elif status == 404 and _NOT_FOUND.match(sig):
             store.put(key, owner, 404, None, headers, body, NOT_FOUND_TTL)
         elif status == 403 and _is_refusal(response, body):
             ttl = (STRUCTURE_REFUSAL_TTL if "/universe/structures/" in request.url.path
