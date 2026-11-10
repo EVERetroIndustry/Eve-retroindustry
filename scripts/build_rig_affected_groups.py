@@ -16,7 +16,8 @@ Output: app/web/rig_affected_groups.py  (committed; runtime is fully offline).
 Regenerate after an SDE rebuild or when the developer adds rig sets / product groups.
 
 Usage:  venv/bin/python scripts/build_rig_affected_groups.py
-Requires network access to ref-data.everef.net.
+Requires network access to ref-data.everef.net, and data/fsd/groups.yaml from
+the same SDE build as sde_base.db (the rebuild steps put it there).
 """
 from __future__ import annotations
 
@@ -77,6 +78,20 @@ RIG_STRATEGY: dict[int, object] = {
 }
 
 
+GROUPS_YAML = os.path.join(REPO, "data", "fsd", "groups.yaml")
+
+
+def _sde_group_categories() -> dict[int, int]:
+    if not os.path.exists(GROUPS_YAML):
+        return {}
+    import yaml
+    loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+    with open(GROUPS_YAML, encoding="utf-8") as f:
+        data = yaml.load(f, Loader=loader) or {}
+    return {int(g): int(v["categoryID"]) for g, v in data.items()
+            if isinstance(v, dict) and v.get("categoryID") is not None}
+
+
 def _get(url: str):
     with urllib.request.urlopen(url, timeout=20) as r:
         return json.load(r)
@@ -93,19 +108,29 @@ def main() -> None:
     }
     print(f"manufacturable product groups: {len(prod_groups)}")
 
-    # category_id for each product group (parallel).
+    # category_id for each product group: from the SDE's own groups.yaml (the
+    # build sde_base.db was made from), EVE Ref only for a group it lacks.
+    # EVE Ref follows a patch by days: on Fractured Skies day it did not know
+    # group 5140 "Rig Synchronizer", which then fell out of the Equipment rigs
+    # without a word.
+    group_cat: dict[int, int] = _sde_group_categories()
+
     def cat_of(gid):
         try:
             return gid, _get(f"{BASE}/groups/{gid}").get("category_id")
         except Exception:
             return gid, None
 
-    group_cat: dict[int, int] = {}
+    missing = sorted(prod_groups - set(group_cat))
     with ThreadPoolExecutor(max_workers=16) as ex:
-        for gid, cid in ex.map(cat_of, sorted(prod_groups)):
+        for gid, cid in ex.map(cat_of, missing):
             if cid is not None:
                 group_cat[gid] = cid
-    print(f"resolved categories for {len(group_cat)} groups")
+    unknown = sorted(prod_groups - set(group_cat))
+    if unknown:
+        sys.exit(f"no category for product groups {unknown}: refusing to write a map without them")
+    print(f"resolved categories for {len(prod_groups)} product groups"
+          f" ({len(missing)} from EVE Ref)")
 
     # One representative published rig type per rig group.
     rep_type: dict[int, int] = {}
