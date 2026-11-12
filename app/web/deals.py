@@ -38,14 +38,19 @@ this was written:
   all because every one is a different object. So every item in a contract must
   have actually traded recently, or the contract is not shown.
 
+  An asking price nobody pays. Having traded is not enough: Carnotite traded at
+  2 720 ISK while its cheapest Jita sell said 1 000 000, and 210 606 of them for
+  750M read as 210b of value. A sell order more than three times the median
+  traded price now counts at the traded price (`contracts_helper.credible_sell`).
+  Ore and ice go one step further and are worth what they reprocess into at the
+  best reachable yield, which is what anyone buying a pile of ore pays for.
+
 What remains is small and believable: measured on a real index, 451 public and
 31 alliance contracts at 15 % or better, headed by a Rorqual at 7.95b against a
 10.25b reference, compressed ore, moon drills and faction modules.
 """
 from __future__ import annotations
 
-import datetime as _dt
-import json
 import sqlite3
 import time
 
@@ -100,10 +105,6 @@ def dockable_locations(conn: sqlite3.Connection) -> set[int]:
     return out
 
 
-def _cut_day(days: int) -> str:
-    return (_dt.date.today() - _dt.timedelta(days=days)).isoformat()
-
-
 def liquid_types(conn: sqlite3.Connection, days: int = LIQUIDITY_DAYS) -> set[int]:
     """Types that actually traded inside the window, from the daily history the
     price chart already caches.
@@ -113,24 +114,8 @@ def liquid_types(conn: sqlite3.Connection, days: int = LIQUIDITY_DAYS) -> set[in
     summing them would read as a lively market. That trap has bitten this project
     before, in the 7-day volume column.
     """
-    cut = _cut_day(days)
-    out: set[int] = set()
-    try:
-        rows = conn.execute(
-            "SELECT type_id, data_json FROM price_history_cache WHERE region_id = ?",
-            (JITA_REGION,)).fetchall()
-    except sqlite3.OperationalError:
-        rows = []
-    for tid, blob in rows:
-        try:
-            for d in json.loads(blob):
-                if (d.get("d") or "") >= cut and (d.get("vol") or 0) > 0:
-                    out.add(int(tid))
-                    break
-        except (ValueError, TypeError):
-            continue
-    out |= _contract_traded_types(conn, days)
-    return out
+    return (set(contracts_helper.jita_trade_summary(conn, days=days))
+            | _contract_traded_types(conn, days))
 
 
 def _contract_traded_types(conn: sqlite3.Connection, days: int) -> set[int]:
@@ -187,11 +172,18 @@ def types_needing_history(conn: sqlite3.Connection,
     14-30 days old. A day is the limit now - ESI rebuilds the history daily.
     """
     stale_before = time.time() - max_age
+    contracted = ("SELECT type_id FROM public_contract_items"
+                  " UNION SELECT type_id FROM alliance_contract_items")
+    # Ore in a contract is valued by what it reprocesses into, so the materials
+    # need a history too - Technetium is rarely contracted itself.
+    has_ore = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table'"
+                           " AND name='sde_ore_reprocess'").fetchone()
+    if has_ore:
+        contracted += (" UNION SELECT material_type_id FROM sde_ore_reprocess"
+                       f" WHERE type_id IN ({contracted})")
     try:
-        return [r[0] for r in conn.execute("""
-            SELECT DISTINCT i.type_id FROM (
-                     SELECT type_id FROM public_contract_items
-                     UNION SELECT type_id FROM alliance_contract_items) i
+        return [r[0] for r in conn.execute(f"""
+            SELECT DISTINCT i.type_id FROM ({contracted}) i
             JOIN market_price_cache p ON p.type_id = i.type_id
             WHERE p.sell_price IS NOT NULL
               AND i.type_id NOT IN (
@@ -202,20 +194,28 @@ def types_needing_history(conn: sqlite3.Connection,
         return []
 
 
-def reference_prices(conn: sqlite3.Connection) -> tuple[dict, dict]:
+def reference_prices(conn: sqlite3.Connection, traded: dict | None = None
+                     ) -> tuple[dict, dict]:
     """(market, offers) - everything needed to price a line against the alternatives.
 
-    `market` is the Jita sell price. `offers` is the two cheapest single-item
-    contracts per type, so a contract that is itself the cheapest offer can be
-    compared with the next one instead of with itself.
+    `market` is the Jita sell price, or what the item actually traded for when
+    the sell order asks more than TRADED_CAP times that (`credible_sell`: a sell
+    of 1 000 000 ISK for Carnotite trading at 2 720 made a 750M contract worth
+    210b). `offers` is the two cheapest single-item contracts per type, so a
+    contract that is itself the cheapest offer can be compared with the next one
+    instead of with itself.
 
     Straight out of `appraise_items`' rule otherwise, because the Deals list and
     the contract you open from it must agree: the lower of a Jita sell order and
     the cheapest contract, with an offer under a tenth of the market ignored as
     bait so one silly listing cannot reprice everything.
     """
-    market = {r[0]: r[1] for r in conn.execute(
-        "SELECT type_id, sell_price FROM market_price_cache WHERE sell_price IS NOT NULL")}
+    if traded is None:
+        traded = contracts_helper.jita_trade_summary(conn)
+    market = {}
+    for tid, sell in conn.execute(
+            "SELECT type_id, sell_price FROM market_price_cache WHERE sell_price IS NOT NULL"):
+        market[tid] = contracts_helper.credible_sell(sell, traded.get(tid))[0]
     return market, contracts_helper.contract_unit_prices_all(conn)
 
 
@@ -256,8 +256,14 @@ def _flag_is_informative(conn: sqlite3.Connection, table: str) -> bool:
 def _scan(conn: sqlite3.Connection) -> tuple[list[dict], dict]:
     """Value every indexed contract once. Everything after this is filtering."""
     t0 = time.time()
-    market, offers = reference_prices(conn)
-    liquid = liquid_types(conn)
+    traded = contracts_helper.jita_trade_summary(conn, days=LIQUIDITY_DAYS)
+    market, offers = reference_prices(conn, traded)
+    liquid = set(traded) | _contract_traded_types(conn, LIQUIDITY_DAYS)
+    # Ore and ice are worth what they reprocess into. Only materials that traded
+    # themselves count, the same evidence rule as for any other line.
+    ore = contracts_helper.ore_values(
+        contracts_helper.ore_materials(conn),
+        {t: p for t, p in market.items() if t in liquid})
     bps = contracts_helper._all_blueprint_types(conn)
 
     rows: list[dict] = []
@@ -308,13 +314,16 @@ def _scan(conn: sqlite3.Connection) -> tuple[list[dict], dict]:
                 if tid in bps and (bpc == 1 or bpc is None or not trust_flag):
                     bad = "copies"         # a copy is not what the price describes
                     break
-                ref = _line_reference(tid, market, offers, cid)
-                if ref is None:
-                    bad = "unpriced"
-                    break
-                if tid not in liquid:
-                    bad = "illiquid"
-                    break
+                if tid in ore:
+                    ref = ore[tid]         # its materials traded; the ore need not
+                else:
+                    ref = _line_reference(tid, market, offers, cid)
+                    if ref is None:
+                        bad = "unpriced"
+                        break
+                    if tid not in liquid:
+                        bad = "illiquid"
+                        break
                 worth = qty * ref
                 if inc and worth > top_worth:
                     top_tid, top_worth = tid, worth
@@ -336,6 +345,7 @@ def _scan(conn: sqlite3.Connection) -> tuple[list[dict], dict]:
     meta = {"scanned_at": time.time(), "took": time.time() - t0,
             "skipped": skipped, "priced_types": len(market),
             "liquid_types": len(liquid), "found": len(rows),
+            "reprocess_yield": contracts_helper.REPROCESS_YIELD,
             "blueprint_flag": {s: _flag_is_informative(conn, f"{s}_contract_items")
                                for s in ("public", "alliance")}}
     return rows, meta

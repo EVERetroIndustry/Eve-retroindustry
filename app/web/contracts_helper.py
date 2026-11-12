@@ -1550,6 +1550,130 @@ def _adjusted_prices(conn: sqlite3.Connection, type_ids) -> dict[int, float]:
 _BAIT_FLOOR = 0.10
 
 
+# ── what a sell order is evidence of ─────────────────────────────────────────
+#
+# The cheapest Jita sell order is only an asking price. On a thin market it can
+# be anything: Carnotite had a cheapest sell of 1 000 000 ISK while it traded at
+# 2 526-2 720 ISK on the few days it traded at all, and a contract of 210 606
+# Carnotite for 750M showed up in Deals as worth 210.63b. Measured on a real
+# index: 35 of 2 320 deals rested mostly on a sell order over three times the
+# traded price, and they made up 219b of the 627b the list said you would save.
+#
+# So a sell order that far above what people actually pay is replaced by what
+# they pay: the median of the daily average price over the days the item traded.
+# The median, so one day of somebody buying from that silly order cannot drag
+# the reference up (Carnotite's 26 October average was 13 099 ISK, high 50 000).
+
+TRADED_DAYS = 30
+TRADED_CAP = 3.0
+JITA_REGION = 10000002
+
+
+def jita_trade_summary(conn: sqlite3.Connection, type_ids=None,
+                       days: int = TRADED_DAYS) -> dict[int, float | None]:
+    """Types that traded in Jita in the last `days` CALENDAR days, each with the
+    median daily average price over those days (None when no day carried one).
+
+    A calendar window, not "the last N records": ESI leaves out days with no
+    trade, so the last twelve records of a rare item can span half a year.
+    `type_ids=None` reads every cached history, which is what the Deals scan
+    needs; otherwise only the given types.
+    """
+    import datetime as _dt
+    import statistics
+
+    cut = (_dt.date.today() - _dt.timedelta(days=days)).isoformat()
+    sql = "SELECT type_id, data_json FROM price_history_cache WHERE region_id = ?"
+    rows: list = []
+    try:
+        if type_ids is None:
+            rows = conn.execute(sql, (JITA_REGION,)).fetchall()
+        else:
+            ids = sorted({int(t) for t in type_ids if t})
+            for i in range(0, len(ids), 900):
+                chunk = ids[i:i + 900]
+                rows += conn.execute(
+                    f"{sql} AND type_id IN ({','.join('?' * len(chunk))})",
+                    (JITA_REGION, *chunk)).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    out: dict[int, float | None] = {}
+    for tid, blob in rows:
+        try:
+            days_in = [d for d in _json.loads(blob)
+                       if (d.get("d") or "") >= cut and (d.get("vol") or 0) > 0]
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if not days_in:
+            continue
+        avgs = [float(d["avg"]) for d in days_in if (d.get("avg") or 0) > 0]
+        out[int(tid)] = statistics.median(avgs) if avgs else None
+    return out
+
+
+def credible_sell(sell: float | None, traded: float | None) -> tuple[float | None, bool]:
+    """(the price to use, whether the sell order was replaced by the traded price)."""
+    if sell is not None and traded and sell > TRADED_CAP * traded:
+        return traded, True
+    return sell, False
+
+
+# ── ore and ice are worth what they reprocess into ───────────────────────────
+#
+# Nobody buys raw ore to keep it, and its own market is often thin to empty: the
+# value of a pile of Carnotite is the Technetium, Cobalt and Atmospheric Gases it
+# turns into. The yield is the best reachable one, every factor read from the SDE
+# (dogma attributes of build 3682781):
+#
+#   T2 grading processor rig    refiningYieldMultiplier 0.53, nullSecModifier 1.12
+#   Tatara                      strRefiningYieldBonus 5.5 %
+#   Reprocessing V              refiningYieldMutator 3 % a level
+#   Reprocessing Efficiency V   2 % a level
+#   the ore's own skill at V    2 % a level (every reprocessable ore, moon ore and
+#                               ice type has one, checked for all 456)
+#   Zainou 'Beancounter' Reprocessing RX-804   4 %
+#
+# 0.53 x 1.12 x 1.055 x 1.15 x 1.10 x 1.10 x 1.04 = 0.9063. No reprocessing tax:
+# on your own Tatara you set it.
+
+REPROCESS_YIELD = 0.53 * 1.12 * 1.055 * 1.15 * 1.10 * 1.10 * 1.04
+
+
+def ore_materials(conn: sqlite3.Connection, type_ids=None
+                  ) -> dict[int, tuple[int, list[tuple[int, int]]]]:
+    """{ore type: (portion size, [(material, quantity per portion)])} from the SDE."""
+    sql = "SELECT type_id, portion_size, material_type_id, quantity FROM sde_ore_reprocess"
+    rows: list = []
+    try:
+        if type_ids is None:
+            rows = conn.execute(sql).fetchall()
+        else:
+            ids = sorted({int(t) for t in type_ids if t})
+            for i in range(0, len(ids), 900):
+                chunk = ids[i:i + 900]
+                rows += conn.execute(
+                    f"{sql} WHERE type_id IN ({','.join('?' * len(chunk))})",
+                    chunk).fetchall()
+    except sqlite3.OperationalError:
+        return {}                         # a database from before the table existed
+    out: dict[int, tuple[int, list]] = {}
+    for tid, portion, mid, qty in rows:
+        out.setdefault(int(tid), (int(portion or 1), []))[1].append((int(mid), int(qty)))
+    return out
+
+
+def ore_values(materials: dict, material_price: dict) -> dict[int, float]:
+    """Value per unit of each ore, reprocessed at REPROCESS_YIELD. An ore with any
+    material we hold no price for is left out rather than valued low."""
+    out: dict[int, float] = {}
+    for tid, (portion, mats) in materials.items():
+        prices = [material_price.get(mid) for mid, _q in mats]
+        if not mats or any(p is None for p in prices):
+            continue
+        out[tid] = REPROCESS_YIELD * sum(q * p for (_m, q), p in zip(mats, prices)) / portion
+    return out
+
+
 def appraise_items(conn: sqlite3.Connection, items: list[dict],
                    contract_id: int | None = None) -> dict:
     """Value a contract's contents from the app's own data: what it would cost to
@@ -1571,6 +1695,13 @@ def appraise_items(conn: sqlite3.Connection, items: list[dict],
          sell, a ~450M lowball buy order, and an adjusted price of ~73b - only the
          last is in the right universe.)
       3. Nothing: counted and named, never silently valued at zero.
+
+    Two corrections to step 1, both because an asking price is not a price:
+
+      * a Jita sell order more than TRADED_CAP times what the item actually traded
+        for counts at the traded price instead (`credible_sell`);
+      * ore and ice skip the chain entirely and are worth what they reprocess
+        into at REPROCESS_YIELD, the materials priced by the same rule.
 
     The contract itself is never excluded from the comparison - excluding self made
     the same hull worth 42.5b in one row and 46.5b in another. When this contract IS
@@ -1608,7 +1739,17 @@ def appraise_items(conn: sqlite3.Connection, items: list[dict],
                         if i.get("type_id") and kinds[id(i)] == "original"})
     copy_ids = sorted({int(i["type_id"]) for i in items
                        if i.get("type_id") and kinds[id(i)] == "copy"})
-    jita = get_cached_jita_prices(conn, plain_ids) if plain_ids else {}
+    # Ore and ice are valued as what they reprocess into, so their materials need
+    # prices too - by the same rule as everything else, sell capped by trade.
+    ores = ore_materials(conn, plain_ids) if plain_ids else {}
+    mat_ids = sorted({m for _p, mats in ores.values() for m, _q in mats})
+    jita = get_cached_jita_prices(conn, sorted(set(plain_ids) | set(mat_ids))) \
+        if plain_ids else {}
+    traded = jita_trade_summary(conn, sorted(set(plain_ids) | set(mat_ids))) \
+        if plain_ids else {}
+    ore_unit = ore_values(ores, {
+        m: credible_sell((jita.get(m) or (None, None))[0], traded.get(m))[0]
+        for m in mat_ids})
     # Asked for EVERY item, not only the ones the market does not carry: a contract
     # can undercut Jita, and then the contract price is what the item costs.
     # (Measured: 50 of the most-contracted types answer in ~210 ms, and this runs
@@ -1620,8 +1761,11 @@ def appraise_items(conn: sqlite3.Connection, items: list[dict],
     copy_prices = contract_unit_prices(conn, copy_ids, copies=True) if copy_ids else {}
 
     out = {"value": 0.0, "asked": 0.0, "by_source": {"jita": 0.0, "contract": 0.0,
-                                                     "estimate": 0.0},
-           "counts": {"jita": 0, "contract": 0, "estimate": 0},
+                                                     "estimate": 0.0, "traded": 0.0,
+                                                     "reprocess": 0.0},
+           "counts": {"jita": 0, "contract": 0, "estimate": 0, "traded": 0,
+                      "reprocess": 0},
+           "reprocess_yield": REPROCESS_YIELD,
            "buy": 0.0, "asked_buy": 0.0, "self_priced": 0,
            "unpriced": 0, "unpriced_names": []}
     for it in items:
@@ -1637,18 +1781,26 @@ def appraise_items(conn: sqlite3.Connection, items: list[dict],
         elif kind == "copy":
             if tid in copy_prices:
                 unit, source, from_cid = copy_prices[tid][0], "contract", copy_prices[tid][2]
+        elif tid in ore_unit:
+            # Ore and ice: what the materials are worth, not what the ore's own
+            # (often empty) market or a contract of it says.
+            it["jita_sell"] = sell
+            unit, source = ore_unit[tid], "reprocess"
         else:
             it["jita_sell"] = sell
+            market, capped = credible_sell(sell, traded.get(tid))
+            if capped:
+                it["traded"] = market
             offers = []
-            if sell is not None:
-                offers.append((sell, "jita", None))
+            if market is not None:
+                offers.append((market, "traded" if capped else "jita", None))
             if tid in from_contracts:
                 price, _, ccid = from_contracts[tid]
                 # A single-item contract far under the market price is bait or a
                 # mistake often enough that it must not become the reference for
                 # everything else; with no market price there is nothing to check
                 # it against, which is exactly the capital case we want.
-                if sell is None or price >= sell * _BAIT_FLOOR:
+                if market is None or price >= market * _BAIT_FLOOR:
                     offers.append((price, "contract", ccid))
             if offers:
                 unit, source, from_cid = min(offers, key=lambda o: o[0])

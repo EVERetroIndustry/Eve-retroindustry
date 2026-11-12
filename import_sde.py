@@ -491,6 +491,53 @@ def import_map(conn: sqlite3.Connection, zip_path: str | None = None) -> str | N
     return zip_path
 
 
+# The Asteroid category: every ore, compressed ore, moon ore and ice type.
+_ASTEROID_CATEGORY = 25
+
+
+def import_ore_reprocess(conn: sqlite3.Connection, types_data: dict,
+                         zip_path: str | None) -> None:
+    """What one portion of each ore, moon ore and ice type reprocesses into.
+
+    The Deals list and the contract appraisal value ore by its materials, because
+    the ore's own market is often thin: Carnotite's cheapest Jita sell said
+    1 000 000 ISK while it traded at 2 720. Only the Asteroid category is kept -
+    modules and ships reprocess too, but nothing values them that way, and the
+    whole typeMaterials.yaml would be 9 635 types for 456 that are used.
+    """
+    if not zip_path or not os.path.exists(GROUPS_YAML):
+        console.print("[yellow]No flat SDE zip or groups.yaml - skipping ore reprocessing[/]")
+        return
+    with open(GROUPS_YAML, "r", encoding="utf-8") as f:
+        groups = _yaml_load(f) or {}
+    asteroid_groups = {int(g) for g, v in groups.items()
+                       if (v or {}).get("categoryID") == _ASTEROID_CATEGORY}
+    with zipfile.ZipFile(zip_path) as z:
+        materials = _yaml_load(z.read("typeMaterials.yaml")) or {}
+    rows = []
+    for tid, info in types_data.items():
+        if (not isinstance(info, dict) or info.get("groupID") not in asteroid_groups
+                or not info.get("published")):
+            continue
+        portion = int(info.get("portionSize") or 1)
+        for m in (materials.get(int(tid)) or {}).get("materials") or []:
+            rows.append((int(tid), int(m["materialTypeID"]), int(m["quantity"]), portion))
+    conn.executescript("""
+        DROP TABLE IF EXISTS sde_ore_reprocess;
+        CREATE TABLE sde_ore_reprocess (
+            type_id          INTEGER NOT NULL,
+            material_type_id INTEGER NOT NULL,
+            quantity         INTEGER NOT NULL,   -- per portion
+            portion_size     INTEGER NOT NULL,   -- units reprocessed at a time
+            PRIMARY KEY (type_id, material_type_id)
+        );
+    """)
+    conn.executemany("INSERT INTO sde_ore_reprocess VALUES (?,?,?,?)", rows)
+    conn.commit()
+    console.print(f"  ore reprocessing: [green]{len({r[0] for r in rows})}[/] types,"
+                  f" [green]{len(rows)}[/] material rows")
+
+
 def _zip_layout(path: str) -> str | None:
     try:
         with zipfile.ZipFile(path) as z:
@@ -808,7 +855,7 @@ def main():
     import_groups(conn)
     import_planet_schematics(conn)
     import_universe(conn)
-    import_map(conn)
+    import_ore_reprocess(conn, types_data, import_map(conn))
     conn.close()
 
     console.print(f"\n[bold green]Done in {time.time()-t_start:.1f}s[/]")

@@ -27,10 +27,14 @@ TRIT = 34                     # nothing about Tritanium can ever be a copy
 @pytest.fixture
 def conn(app_module):
     c = app_module.get_conn()
+    from app.market.prices import ensure_price_table
+    ensure_price_table(c)
     ch.ensure_public_contract_tables(c)
     ch.ensure_alliance_contract_tables(c)
+    # Trade history too: a sell order far above the traded price is capped, so a
+    # history left behind by another test would change these prices.
     for t in ("public_contracts", "public_contract_items", "market_price_cache",
-              "alliance_contracts", "alliance_contract_items"):
+              "alliance_contracts", "alliance_contract_items", "price_history_cache"):
         c.execute(f"DELETE FROM {t}")
     c.commit()
     yield c

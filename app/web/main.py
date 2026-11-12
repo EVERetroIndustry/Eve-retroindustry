@@ -272,6 +272,10 @@ _SDE_TABLES_TO_REFRESH = (
     "sde_system_planets",
     "sde_sov_upgrades",
     "sde_ice_belts",
+    # What ore, moon ore and ice reprocess into: Deals and the contract
+    # appraisal value ore by its materials. A new table, so an existing install
+    # picks it up through the missing-table check.
+    "sde_ore_reprocess",
 )
 
 

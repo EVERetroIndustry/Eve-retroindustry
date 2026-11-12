@@ -361,6 +361,21 @@ window.renderContractItems = function (box, data, price) {
       return ' <span class="text-warning" title="CCP adjusted price for '
         + what + ' - an index value, not an offer">est</span>';
     }
+    if (it.price_source === 'reprocess') {
+      const y = data.appraisal && data.appraisal.reprocess_yield;
+      return ' <span class="text-info" title="What ' + what + ' reprocesses into at '
+        + (y ? (y * 100).toFixed(2) + ' %' : 'the best yield')
+        + ' (T2-rigged Tatara in nullsec, every skill at V, RX-804 implant, no tax),'
+        + ' materials at Jita sell' + (it.jita_sell
+          ? `. Its own cheapest Jita sell is ${escHtml(iskShort(it.jita_sell))} a unit`
+          : '') + '">rp</span>';
+    }
+    if (it.price_source === 'traded') {
+      return ' <span class="text-warning" title="The cheapest Jita sell order for '
+        + what + ` asks ${escHtml(iskShort(it.jita_sell))}, more than three times what`
+        + ' it traded for. Valued at the median daily price of its trades over the'
+        + ` last 30 days, ${escHtml(iskShort(it.traded))}">traded</span>`;
+    }
     return '';
   };
   // A copy is a different thing from the original it was made from, even though
@@ -397,12 +412,16 @@ window.renderContractItems = function (box, data, price) {
     const atLeast = a.unpriced ? '&ge; ' : '';
     const parts = [`<span class="fw-semibold" title="What the same items would cost the`
       + ` cheapest way we can see: Jita sell orders and single-item contracts we have`
-      + ` indexed, whichever is lower">Cheapest we see</span>`
+      + ` indexed, whichever is lower. A sell order far above what the item trades for`
+      + ` counts at the traded price, and ore and ice at what they reprocess into"`
+      + `>Cheapest we see</span>`
       + ` <b>${atLeast}${iskShort(a.net)}</b>`];
     // Say when the total is not purely a market number.
     const mix = [];
     if (a.counts.contract) mix.push(`${a.counts.contract} priced off contracts`);
     if (a.counts.estimate) mix.push(`${a.counts.estimate} estimated`);
+    if (a.counts.reprocess) mix.push(`${a.counts.reprocess} valued as reprocessed`);
+    if (a.counts.traded) mix.push(`${a.counts.traded} at the traded price`);
     if (mix.length) parts.push(`<span class="text-muted">incl. ${mix.join(', ')}</span>`);
     const p = Number(price) || 0;
     if (a.self_priced) {

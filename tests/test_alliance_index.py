@@ -823,7 +823,8 @@ def test_value_comes_from_jita_then_contracts_then_ccps_estimate(conn):
              {"type_id": NOTHING, "quantity": 1, "name": "Molok", "included": True}]
     a = ch.appraise_items(conn, items)
     assert [i["price_source"] for i in items] == ["jita", "contract", "estimate", None]
-    assert a["counts"] == {"jita": 1, "contract": 1, "estimate": 1}
+    assert a["counts"] == {"jita": 1, "contract": 1, "estimate": 1, "traded": 0,
+                           "reprocess": 0}
     assert a["value"] == 5_000 + 80_000_000_000 + 137_000_000
     assert a["unpriced"] == 1 and a["unpriced_names"] == ["Molok"]
 

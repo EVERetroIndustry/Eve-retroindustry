@@ -47,6 +47,8 @@ SDE_TABLES = {
     "sde_system_planets",
     "sde_sov_upgrades",
     "sde_ice_belts",
+    # What ore, moon ore and ice reprocess into (import_sde.import_ore_reprocess).
+    "sde_ore_reprocess",
     META_TABLE,
 }
 

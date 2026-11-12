@@ -64,11 +64,16 @@ def _price(conn, type_id, sell):
 
 
 def _traded(conn, type_id, days_ago=1, vol=100):
-    """Give a type a trade that many days back, in the daily history."""
+    """Give a type a trade that many days back, in the daily history.
+
+    No average price on purpose: these tests are about WHETHER something traded,
+    and an invented average would cap their sell prices (see
+    test_reprocess_value.py for the tests about what it traded at).
+    """
     day = (dt.date.today() - dt.timedelta(days=days_ago)).isoformat()
     conn.execute("INSERT OR REPLACE INTO price_history_cache VALUES (?,?,?,?)",
                  (deals.JITA_REGION, type_id,
-                  json.dumps([{"d": day, "avg": 1.0, "vol": vol}]), time.time()))
+                  json.dumps([{"d": day, "vol": vol}]), time.time()))
     conn.commit()
 
 

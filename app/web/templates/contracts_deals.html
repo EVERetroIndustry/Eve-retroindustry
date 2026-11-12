@@ -136,6 +136,10 @@
   {{ meta.skipped.unpriced | count_eu }} with an item we have no price for at all,
   and {{ meta.skipped.barter | count_eu }} that want goods handed back rather than
   only ISK, which no percentage off an asking price can describe.
+  A Jita sell order more than three times what the item traded for in the last
+  {{ liquidity_days }} days counts at the traded price, and ore and ice are worth
+  what they reprocess into at {{ '%.2f' | format(meta.reprocess_yield * 100) }} %
+  (T2-rigged Tatara in nullsec, every skill at V, RX-804 implant, no tax).
   {% if not meta.blueprint_flag.alliance %}
   The alliance index has no copy flags recorded yet, so every blueprint in it is
   left out until the next Refresh on the Alliance tab.
