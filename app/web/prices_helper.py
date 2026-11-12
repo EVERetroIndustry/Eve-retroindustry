@@ -251,14 +251,32 @@ def fill_missing_sell_prices(conn: sqlite3.Connection,
     is the market having nothing to say, which for a supercarrier or a titan is
     permanent. Valuing those at zero made a 44b pile of assets count as 1.11b.
 
-    Returns {type_id: "contract"|"estimate"} for the entries it filled, so the UI
-    can mark them: neither is a market price and the reader has to be able to see
-    which is which.
+    It also replaces a sell price nobody pays: a sell order more than TRADED_CAP
+    times what the type traded for in Jita over the last 30 days counts at that
+    traded price - the rule the contract appraisal and Deals use, so the Assets
+    page, net worth and a contract cannot value the same thing differently. A
+    type with no recent history keeps its sell price; there is nothing to check
+    it against.
+
+    Returns {type_id: "contract"|"estimate"|"traded"} for the entries it changed,
+    so the UI can mark them: none is a plain market price and the reader has to be
+    able to see which is which.
     """
+    from app.web.contracts_helper import credible_sell, jita_trade_summary
+
+    sources: dict[int, str] = {}
+    priced = [t for t, pair in prices.items() if pair[0] is not None]
+    if priced:
+        traded = jita_trade_summary(conn, priced)
+        for tid in priced:
+            sell, buy = prices[tid]
+            used, capped = credible_sell(sell, traded.get(tid))
+            if capped:
+                prices[tid] = (used, buy)
+                sources[tid] = "traded"
     missing = [t for t, pair in prices.items() if pair[0] is None]
     if not missing:
-        return {}
-    sources: dict[int, str] = {}
+        return sources
     for tid, got in off_market_prices(conn, missing).items():
         prices[tid] = (got["price"], prices[tid][1])
         sources[tid] = got["source"]
