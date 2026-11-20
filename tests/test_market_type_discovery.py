@@ -13,8 +13,9 @@ cheapest sell 69.79M) and the Akoman attack battlecruiser from the Crimson
 Harvest event (95741, a 1.8B buy order).
 
 The order book is the authority on what trades, so the refresh now learns from
-it. Discovery is free: those pages are downloaded anyway, and /universe/types/
-carries no rate-limit group, so a genuinely new id costs one call, once.
+it. Discovery is cheap: those pages are downloaded anyway, and a genuinely new
+id costs one request to the SDE API (sde.evetech.net), once. ESI dropped
+/universe/types at compatibility date 2026-11-19.
 """
 import asyncio
 import sqlite3
@@ -35,9 +36,13 @@ class _Resp:
     def json(self):
         return self._p
 
+    def raise_for_status(self):
+        if self.status_code >= 400 and self.status_code != 404:
+            raise RuntimeError(self.status_code)
+
 
 class _Client:
-    """Stands in for ESI. Records which type ids were actually asked about."""
+    """Stands in for the SDE API. Records which type ids were actually asked about."""
 
     def __init__(self, table, asked):
         self.table, self.asked = table, asked
@@ -49,10 +54,12 @@ class _Client:
         return False
 
     async def get(self, url, **kw):
-        tid = int(url.rstrip("/").rsplit("/", 1)[-1])
+        assert url.startswith("https://sde.evetech.net/tranquility/latest/types/"), url
+        assert kw.get("follow_redirects"), "latest/ redirects to the current release"
+        tid = int(url.rsplit("/", 1)[-1].removesuffix(".json"))
         self.asked.append(tid)
         payload = self.table.get(tid)
-        return _Resp(payload, 200 if payload else 404)
+        return _Resp(payload if payload else {"error": "Not found"}, 200 if payload else 404)
 
 
 @pytest.fixture
@@ -72,9 +79,10 @@ def _stub(monkeypatch, table, asked):
     monkeypatch.setattr(ph, "esi_client", lambda *a, **k: _Client(table, asked))
 
 
+# The shape the SDE API really answers with (types/96544.json, trimmed).
 ESI_TABLE = {
-    ACCEL: {"name": ACCEL_NAME, "group_id": 303, "market_group_id": 2487,
-            "published": True, "volume": 1.0, "packaged_volume": 1.0},
+    ACCEL: {"typeID": ACCEL, "name": {"de": "x", "en": ACCEL_NAME}, "groupID": 303,
+            "marketGroupID": 2487, "published": True, "volume": 1.0, "packagedVolume": 1.0},
 }
 
 
@@ -93,7 +101,7 @@ def test_a_traded_type_the_static_data_lacks_is_learned(conn, monkeypatch):
 
 
 def test_a_learned_type_passes_the_tradeable_filter(conn, monkeypatch):
-    """published + a market group come from ESI, so the existing filter lets it
+    """published + a market group come from the SDE API, so the existing filter lets it
     through on its own - the catalogue was the gap, not the filter."""
     _stub(monkeypatch, ESI_TABLE, [])
     asyncio.run(ph.discover_market_types(conn, [ACCEL]))
@@ -110,9 +118,9 @@ def test_nothing_is_asked_when_the_static_data_already_knows_everything(conn, mo
     assert asked == []
 
 
-def test_a_type_esi_will_not_describe_is_skipped_not_invented(conn, monkeypatch):
+def test_a_type_the_sde_will_not_describe_is_skipped_not_invented(conn, monkeypatch):
     """404, or a reply with no name: record nothing rather than a blank row."""
-    _stub(monkeypatch, {ACCEL: {"name": "   ", "published": True}}, [])
+    _stub(monkeypatch, {ACCEL: {"typeID": ACCEL, "name": {"en": "   "}, "published": True}}, [])
     assert asyncio.run(ph.discover_market_types(conn, [ACCEL, 999999])) == []
     assert conn.execute("SELECT COUNT(*) FROM discovered_types").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM sde_types WHERE type_id=?", (ACCEL,)).fetchone()[0] == 0
@@ -184,8 +192,8 @@ def test_a_later_discovery_keeps_the_earlier_ones(conn, monkeypatch):
     re-applied the table, found the EARLIER discoveries in sde_types (put there
     by itself) and deleted their records - so the next SDE update lost them."""
     other = 99999901
-    table = {**ESI_TABLE, other: {"name": "Another New Thing", "group_id": 303,
-                                  "market_group_id": 2487, "published": True}}
+    table = {**ESI_TABLE, other: {"typeID": other, "name": {"en": "Another New Thing"},
+                                  "groupID": 303, "marketGroupID": 2487, "published": True}}
     _stub(monkeypatch, table, [])
     asyncio.run(ph.discover_market_types(conn, [ACCEL]))
     asyncio.run(ph.discover_market_types(conn, [ACCEL, other]))

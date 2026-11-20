@@ -50,7 +50,8 @@ KEEP_SECONDS = 7 * 24 * 3600            # entries unused this long are dropped
 #     (19k types a region; whole bodies would be ~150 MB). A caller that wants
 #     the whole series opts in per request (extensions={"esi_cache": True}).
 #   * /contracts/public/items/{}/ - immutable, stored for good elsewhere.
-#   * /universe/systems|stations|... - static, in the SDE or stored elsewhere.
+#   * /universe/systems|stations|types|... - static; ESI dropped them at
+#     compatibility date 2026-11-19, they come from the SDE (app/esi/static_data).
 #   * POST routes (names, ids) - not cacheable.
 _CACHED = re.compile(
     r"^/(characters/\{\}/(?!search/)"
@@ -64,14 +65,14 @@ _CACHED = re.compile(
     r"|contracts/public/\{\}/$"
     r"|universe/structures/"
     r"|universe/system_(jumps|kills)/$"
-    r"|universe/(types|groups)/\{\}/$"
     r"|route/\{\}/\{\}/$"
     r"|incursions/$)")
 
-# Routes where "not found" stays true: a type or group that is not there, a
-# dissolved alliance, two systems with no route. Asked again a day later
+# Routes where "not found" stays true: a dissolved alliance, two systems with
+# no route. (Types and groups were here too, until ESI dropped those routes at
+# compatibility date 2026-11-19.) Asked again a day later
 # (new content arrives with a patch), not on every page load as before.
-_NOT_FOUND = re.compile(r"^/(universe/(types|groups)/\{\}/$|alliances/\{\}/$|route/)")
+_NOT_FOUND = re.compile(r"^/(alliances/\{\}/$|route/)")
 NOT_FOUND_TTL = 24 * 3600
 
 # Routes kept only for their "not found": a found route's jump count has its

@@ -378,17 +378,11 @@ FUZZ_SEMAPHORE = asyncio.Semaphore(5)
 
 
 async def fetch_type_info(client: httpx.AsyncClient, type_id: int) -> Optional[dict]:
-    """Fetches the type's name and category from ESI."""
+    """The type's name, group and volumes - from the SDE API, because ESI dropped
+    /universe/types at compatibility date 2026-11-19. None if it does not exist."""
+    from app.esi.static_data import fetch_type
     async with ESI_SEMAPHORE:
-        r = await client.get(
-            f"{ESI_BASE}/universe/types/{type_id}/",
-            params={"datasource": "tranquility", "language": "en"},
-            timeout=10,
-        )
-        if r.status_code == 404:
-            return None
-        r.raise_for_status()
-        return r.json()
+        return await fetch_type(client, type_id)
 
 
 async def fetch_blueprint_data(client: httpx.AsyncClient, type_id: int) -> Optional[dict]:

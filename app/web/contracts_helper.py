@@ -14,6 +14,7 @@ import sqlite3
 import time
 
 from app.character import contracts as contracts_api
+from app.esi import static_data
 from app.esi.client import esi_client
 
 
@@ -185,8 +186,17 @@ async def resolve_station_systems(conn: sqlite3.Connection, station_ids,
                            (sid,)).fetchone()
         if row and row[0]:
             out[sid] = row[0]
-        else:
-            miss.append(sid)
+            continue
+        if sid < 1_000_000_000_000:
+            try:
+                st = conn.execute("SELECT system_id FROM sde_stations WHERE station_id=?",
+                                  (sid,)).fetchone()
+            except sqlite3.OperationalError:
+                st = None
+            if st and st[0]:
+                out[sid] = st[0]          # bundled SDE: no request, nothing to cache
+                continue
+        miss.append(sid)
     # Structures whose last attempt failed are retried only occasionally.
     if miss:
         stale = []
@@ -211,12 +221,11 @@ async def resolve_station_systems(conn: sqlite3.Connection, station_ids,
                     if r.status_code == 200:
                         return sid, (r.json() or {}).get("solar_system_id")
                     return sid, None
-                r = await client.get(
-                    f"https://esi.evetech.net/latest/universe/stations/{sid}", timeout=10)
-                if r.status_code == 200:
-                    return sid, (r.json() or {}).get("system_id")
-            except Exception:
-                pass
+                # An NPC station newer than the bundled SDE.
+                st = await static_data.fetch_station(client, sid)
+                return sid, (st or {}).get("system_id")
+            except Exception as exc:
+                print(f"[contracts] location {sid} failed: {exc}", flush=True)
             return sid, None
         try:
             async with esi_client(timeout=15) as client:

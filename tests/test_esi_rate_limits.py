@@ -168,7 +168,7 @@ def test_token_is_attached_to_market_calls_only():
     esi.set_market_token_provider(lambda: "abc123")
     t = _Transport([_resp(200), _resp(200)])
     _get(t, "https://esi.evetech.net/latest/markets/10000002/orders/")
-    _get(t, "https://esi.evetech.net/latest/universe/types/34/")
+    _get(t, "https://esi.evetech.net/latest/status/")
     assert t.sent[0].get("authorization") == "Bearer abc123"
     assert "authorization" not in t.sent[1]
 

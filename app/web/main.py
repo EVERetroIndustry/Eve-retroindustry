@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.request import pathname2url
 
 import httpx
+from app.esi import static_data
 from app.esi.http_cache import forget_refusals
 from app.esi.client import (
     esi_client, esi_error_message, esi_throttle_status,
@@ -1020,7 +1021,8 @@ def _science_skill_mult(
 
 
 async def _ensure_groups_populated(conn: sqlite3.Connection) -> None:
-    """Populate sde_groups via ESI /universe/groups/{id}/ with concurrency limit.
+    """Populate sde_groups from the SDE API (ESI dropped /universe/groups at
+    compatibility date 2026-11-19) with a concurrency limit.
 
     Top-up semantics: fetches only groups referenced by sde_types that are
     MISSING from sde_groups. The previous all-or-nothing early return meant
@@ -1040,19 +1042,10 @@ async def _ensure_groups_populated(conn: sqlite3.Connection) -> None:
 
     async def _fetch(client: httpx.AsyncClient, gid: int):
         async with sem:
-            try:
-                r = await client.get(
-                    f"https://esi.evetech.net/latest/universe/groups/{gid}/",
-                    params={"datasource": "tranquility"},
-                    timeout=10,
-                )
-                if r.status_code == 200:
-                    d = r.json()
-                    if d.get("published", True):
-                        return (gid, d["name"])
-            except Exception:
-                pass
-            return None
+            d = await static_data.fetch_group(client, gid)   # SDE API; errors are logged
+        if d and d["published"]:
+            return (gid, d["name"])
+        return None
 
     async with esi_client() as client:
         results = await asyncio.gather(*[_fetch(client, gid) for gid in group_ids])
@@ -5406,22 +5399,22 @@ async def add_station(request: Request, raw: str = Form(...)):
     try:
         async with esi_client() as client:
             if structure_id < 1_000_000_000_000:
-                r = await client.get(
-                    f"https://esi.evetech.net/latest/universe/stations/{structure_id}/",
-                    params={"datasource": "tranquility"}, timeout=8,
-                )
+                st = await static_data.fetch_station(client, structure_id, conn)
+                if st:
+                    resolved_name = st["name"] or resolved_name
+                    sys_id = st["system_id"]
             else:
                 headers = {"Authorization": f"Bearer {token}"} if token else {}
                 r = await client.get(
                     f"https://esi.evetech.net/latest/universe/structures/{structure_id}/",
                     params={"datasource": "tranquility"}, headers=headers, timeout=8,
                 )
-            if r.status_code == 200:
-                data = r.json()
-                resolved_name = data.get("name") or resolved_name
-                sys_id = data.get("solar_system_id") or data.get("system_id")
-    except Exception:
-        pass
+                if r.status_code == 200:
+                    data = r.json()
+                    resolved_name = data.get("name") or resolved_name
+                    sys_id = data.get("solar_system_id")
+    except Exception as exc:
+        print(f"[structures] resolving {structure_id} failed: {exc}", flush=True)
 
     if not resolved_name:
         resolved_name = f"[Structure {structure_id}]"
@@ -5467,7 +5460,7 @@ async def location_resolve(request: Request, location_id: int):
     from app.web.location_resolver import resolve_station_name, _cache
     _cache.pop(location_id, None)  # force a fresh ESI call
     async with esi_client() as client:
-        name, sys_id = await resolve_station_name(client, location_id, token)
+        name, sys_id = await resolve_station_name(client, location_id, token, conn)
     resolved = name != str(location_id) and not name.startswith("[")
     if resolved:
         ensure_location_name_table(conn)
@@ -5508,17 +5501,10 @@ async def my_location(request: Request):
 
         if not structure_id:
             # Load the system name
-            row = conn.execute("SELECT name FROM sde_systems WHERE system_id=?",
-                               (sys_id,)).fetchone()
-            if row:
-                sys_name = row[0]
-            else:                           # a system newer than the bundled SDE
-                async with esi_client() as client:
-                    sr = await client.get(
-                        f"https://esi.evetech.net/latest/universe/systems/{sys_id}/",
-                        params={"datasource": "tranquility"}, timeout=5,
-                    )
-                    sys_name = sr.json().get("name", str(sys_id)) if sr.status_code == 200 else str(sys_id)
+            # Bundled SDE first, the SDE API for a system newer than the bundle.
+            async with esi_client() as client:
+                system = await static_data.fetch_system(client, sys_id, conn)
+            sys_name = (system or {}).get("name") or str(sys_id)
             return {"in_space": True, "solar_system_id": sys_id, "solar_system_name": sys_name}
 
         # Resolve the structure/station name and save it to the cache
@@ -5526,20 +5512,20 @@ async def my_location(request: Request):
         try:
             async with esi_client() as client:
                 if structure_id < 1_000_000_000_000:
-                    r2 = await client.get(
-                        f"https://esi.evetech.net/latest/universe/stations/{structure_id}/",
-                        params={"datasource": "tranquility"}, timeout=8,
-                    )
+                    st = await static_data.fetch_station(client, structure_id, conn)
+                    if st:
+                        resolved_name = st["name"] or resolved_name
+                        sys_id = st["system_id"] or sys_id
                 else:
                     r2 = await client.get(
                         f"https://esi.evetech.net/latest/universe/structures/{structure_id}/",
                         params={"datasource": "tranquility"},
                         headers={"Authorization": f"Bearer {token}"}, timeout=8,
                     )
-                if r2.status_code == 200:
-                    data = r2.json()
-                    resolved_name = data.get("name", resolved_name)
-                    sys_id = data.get("solar_system_id") or data.get("system_id") or sys_id
+                    if r2.status_code == 200:
+                        data = r2.json()
+                        resolved_name = data.get("name", resolved_name)
+                        sys_id = data.get("solar_system_id") or sys_id
         except Exception:
             pass
 
@@ -7709,29 +7695,21 @@ _REGIONS_CACHE: list[tuple[int, str]] | None = None
 
 
 async def _get_all_regions() -> list[tuple[int, str]]:
-    """All regions (id, name) from ESI, sorted by name. Cached per process
-    (regions practically never change). Skips wormhole/abyssal (>= 11000000) -
-    there are no public contracts there."""
+    """All known-space regions (id, name), sorted by name, from the bundled SDE.
+    Skips wormhole/abyssal (>= 11000000) - there are no public contracts there.
+    (ESI dropped /universe/regions at compatibility date 2026-11-19; the bundle
+    has every region anyway, so this needs no network.)"""
     global _REGIONS_CACHE
     if _REGIONS_CACHE is not None:
         return _REGIONS_CACHE
+    conn = get_conn()
     try:
-        async with esi_client(timeout=15) as client:
-            r = await client.get("https://esi.evetech.net/latest/universe/regions/")
-            ids = [i for i in (r.json() if r.status_code == 200 else []) if i < 11000000]
-            names: dict[int, str] = {}
-            for i in range(0, len(ids), 1000):
-                rr = await client.post("https://esi.evetech.net/latest/universe/names/",
-                                      json=ids[i:i + 1000], headers={"Accept": "application/json"})
-                if rr.status_code == 200:
-                    for it in rr.json():
-                        names[it["id"]] = it["name"]
-        regs = sorted(((rid, names.get(rid, str(rid))) for rid in ids), key=lambda x: x[1])
-        if regs:
-            _REGIONS_CACHE = regs
-        return regs
-    except Exception:
-        return _REGIONS_CACHE or []
+        regs = static_data.all_regions(conn)
+    finally:
+        conn.close()
+    if regs:
+        _REGIONS_CACHE = regs
+    return regs
 
 
 async def _resolve_region_id(name_or_id: str) -> tuple[int | None, str]:
@@ -9383,8 +9361,9 @@ def _ensure_pi_cache_tables(conn: sqlite3.Connection) -> None:
 
 async def _resolve_planet_names(conn: sqlite3.Connection, planet_ids) -> dict[int, str]:
     """Planet names ("Jita IV" - includes the system). Cached permanently in the
-    DB (they never change); only cache-misses hit ESI's per-planet endpoint
-    (/universe/names can't resolve planets)."""
+    DB (they never change); only cache-misses ask the SDE API (ESI dropped
+    /universe/planets at compatibility date 2026-11-19, and /universe/names
+    can't resolve planets)."""
     _ensure_pi_cache_tables(conn)
     names: dict[int, str] = {}
     miss: list[int] = []
@@ -9396,17 +9375,9 @@ async def _resolve_planet_names(conn: sqlite3.Connection, planet_ids) -> dict[in
             miss.append(pid)
     if miss:
         async def _p(client, pid):
-            try:
-                r = await client.get(
-                    f"https://esi.evetech.net/latest/universe/planets/{pid}/",
-                    params={"datasource": "tranquility"}, timeout=8)
-                if r.status_code == 200:
-                    return pid, r.json().get("name")
-            except Exception:
-                pass
-            return pid, None
+            return pid, await static_data.fetch_planet_name(client, pid, conn)
         try:
-            async with esi_client(timeout=8) as client:
+            async with esi_client(timeout=15) as client:
                 for pid, nm in await asyncio.gather(*[_p(client, p) for p in miss]):
                     if nm:
                         names[pid] = nm

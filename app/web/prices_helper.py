@@ -10,6 +10,7 @@ import sqlite3
 import time
 import httpx
 from app.esi.client import esi_client, esi_throttle_status
+from app.esi.static_data import fetch_type
 
 from app.market.prices import (
     fetch_adjusted_prices,
@@ -367,9 +368,10 @@ def set_custom_price(conn: sqlite3.Connection, type_id: int, price: float | None
 # the app simply could not show, twice reported by the user.
 #
 # The order book is the authority on what trades, so that is what we learn from.
-# Discovery is free: those pages are downloaded by the refresh anyway, and
-# /universe/types/{id} carries no rate-limit group (checked in the live spec),
-# so the only cost is one call per genuinely new id, once.
+# Discovery is cheap: those pages are downloaded by the refresh anyway, and a
+# type record comes from the SDE API (sde.evetech.net), not ESI - ESI dropped
+# /universe/types at compatibility date 2026-11-19. One request per genuinely
+# new id, once.
 
 _DISCOVER_SEM = asyncio.Semaphore(20)
 _DISCOVER_CAP = 500          # per refresh; a sane bound if ESI ever floods us
@@ -394,6 +396,24 @@ def ensure_discovered_types_table(conn: sqlite3.Connection) -> None:
         discovered_at   REAL NOT NULL
     )""")
     conn.commit()
+
+
+def record_discovered_type(conn: sqlite3.Connection, type_id: int, d: dict,
+                           now: float | None = None, commit: bool = True) -> None:
+    """Remember a type the bundled SDE lacks, in the shape fetch_type returns.
+
+    Everything that learns a type at runtime goes through here, so the record
+    survives _refresh_sde_from_bundle (which replaces sde_types wholesale).
+    """
+    ensure_discovered_types_table(conn)
+    conn.execute(
+        "INSERT OR REPLACE INTO discovered_types (type_id, name, group_id, market_group_id,"
+        " published, volume, packaged_volume, discovered_at) VALUES (?,?,?,?,?,?,?,?)",
+        (type_id, d["name"], d.get("group_id"), d.get("market_group_id"),
+         1 if d.get("published") else 0, d.get("volume"), d.get("packaged_volume"),
+         now if now is not None else time.time()))
+    if commit:
+        conn.commit()
 
 
 def _apply_discovered_types(conn: sqlite3.Connection, prune: bool = False) -> int:
@@ -450,17 +470,8 @@ async def discover_market_types(conn: sqlite3.Connection, seen_type_ids) -> list
 
     async def _one(client, tid: int):
         async with _DISCOVER_SEM:
-            try:
-                r = await client.get(f"https://esi.evetech.net/latest/universe/types/{tid}/",
-                                     params={"datasource": "tranquility"}, timeout=15)
-            except Exception:
-                return None
-        if r.status_code != 200:
-            return None                       # 404 = gone again; just skip it
-        try:
-            return tid, r.json()
-        except Exception:
-            return None
+            d = await fetch_type(client, tid)     # None = not (yet) in the SDE; logged on error
+        return (tid, d) if d else None
 
     async with esi_client() as client:
         results = await asyncio.gather(*[_one(client, t) for t in unknown])
@@ -474,11 +485,7 @@ async def discover_market_types(conn: sqlite3.Connection, seen_type_ids) -> list
         name = (d.get("name") or "").strip()
         if not name:
             continue                          # a type with no name is nothing we can show
-        conn.execute(
-            "INSERT OR REPLACE INTO discovered_types (type_id, name, group_id, market_group_id,"
-            " published, volume, packaged_volume, discovered_at) VALUES (?,?,?,?,?,?,?,?)",
-            (tid, name, d.get("group_id"), d.get("market_group_id"),
-             1 if d.get("published") else 0, d.get("volume"), d.get("packaged_volume"), now))
+        record_discovered_type(conn, tid, d, now=now, commit=False)
         added.append(tid)
     conn.commit()
     if added:

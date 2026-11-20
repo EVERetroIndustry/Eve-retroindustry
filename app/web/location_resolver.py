@@ -4,6 +4,7 @@ import asyncio
 import sqlite3
 import time
 import httpx
+from app.esi import static_data
 from app.esi.client import esi_client
 
 ESI_BASE = "https://esi.evetech.net/latest"
@@ -71,25 +72,23 @@ async def get_security_status(
     if row and row[0] is not None:
         return row[0]
 
+    # Bundled SDE first, the SDE API only for a system newer than the bundle
+    # (ESI dropped /universe/systems at compatibility date 2026-11-19).
     try:
         async with esi_client() as client:
-            r = await client.get(
-                f"{ESI_BASE}/universe/systems/{system_id}/",
-                params={"datasource": "tranquility"},
-                timeout=10,
-            )
-        if r.status_code == 200:
-            sec = r.json().get("security_status")
-            if sec is not None:
-                conn.execute(
-                    "INSERT OR REPLACE INTO solar_system_cache (system_id, security_status) VALUES (?,?)",
-                    (system_id, float(sec)),
-                )
-                conn.commit()
-                return float(sec)
-    except Exception:
-        pass
-    return None
+            system = await static_data.fetch_system(client, system_id, conn)
+    except Exception as exc:
+        print(f"[location] security of {system_id} failed: {exc}", flush=True)
+        return None
+    sec = (system or {}).get("security_status")
+    if sec is None:
+        return None
+    conn.execute(
+        "INSERT OR REPLACE INTO solar_system_cache (system_id, security_status) VALUES (?,?)",
+        (system_id, float(sec)),
+    )
+    conn.commit()
+    return float(sec)
 
 
 def get_cached_security(conn: sqlite3.Connection, system_id: int) -> float | None:
@@ -190,7 +189,7 @@ async def get_region_for_location(conn: sqlite3.Connection, location_id: int, to
     # If we don't have a system_id, resolve the station
     if not sys_id:
         async with esi_client() as client:
-            _, sys_id = await resolve_station_name(client, location_id, token)
+            _, sys_id = await resolve_station_name(client, location_id, token, conn)
         if sys_id:
             conn.execute(
                 "INSERT OR IGNORE INTO location_name_cache (location_id, name, solar_system_id) VALUES (?,?,?)",
@@ -209,28 +208,12 @@ async def get_region_for_location(conn: sqlite3.Connection, location_id: int, to
         conn.commit()
         return local
 
-    # system → constellation → region (2 ESI calls) - only for a system the
-    # bundled SDE does not have yet.
+    # A system the bundled SDE does not have yet: its SDE API record carries
+    # the region itself (ESI needed system -> constellation -> region).
     try:
         async with esi_client() as client:
-            sys_r = await client.get(
-                f"{ESI_BASE}/universe/systems/{sys_id}/",
-                params={"datasource": "tranquility"}, timeout=8,
-            )
-            if sys_r.status_code != 200:
-                return None
-            constellation_id = sys_r.json().get("constellation_id")
-            if not constellation_id:
-                return None
-
-            con_r = await client.get(
-                f"{ESI_BASE}/universe/constellations/{constellation_id}/",
-                params={"datasource": "tranquility"}, timeout=8,
-            )
-            if con_r.status_code != 200:
-                return None
-            region_id = con_r.json().get("region_id")
-
+            system = await static_data.fetch_system(client, sys_id, conn)
+        region_id = (system or {}).get("region_id")
         if region_id:
             conn.execute(
                 "UPDATE location_name_cache SET region_id=? WHERE location_id=?",
@@ -379,6 +362,7 @@ async def resolve_station_name(
     client: httpx.AsyncClient,
     location_id: int,
     token: str | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> tuple[str, int | None]:
     """Return (name, solar_system_id)."""
     if location_id in _cache:
@@ -398,17 +382,11 @@ async def resolve_station_name(
     async with _SEM:
         try:
             if location_id < 1_000_000_000_000:
-                r = await client.get(
-                    f"{ESI_BASE}/universe/stations/{location_id}/",
-                    params={"datasource": "tranquility"},
-                    timeout=10,
-                )
-                if r.status_code == 200:
-                    data = r.json()
-                    name = data.get("name", name)
-                    sys_id = data.get("system_id")
-                elif r.status_code == 420:
-                    _set_error_limited()
+                # NPC station: bundled SDE, else SDE API + /universe/names.
+                st = await static_data.fetch_station(client, location_id, conn)
+                if st:
+                    name = st["name"] or name
+                    sys_id = st["system_id"]
             else:
                 if token:
                     r = await client.get(
@@ -454,7 +432,7 @@ async def resolve_station_names_bulk(
         db_names = {}
 
     async with esi_client() as client:
-        tasks = [resolve_station_name(client, lid, token) for lid in location_ids]
+        tasks = [resolve_station_name(client, lid, token, conn) for lid in location_ids]
         results = await asyncio.gather(*tasks)
 
     name_map = {lid: name for lid, (name, _) in zip(location_ids, results)}

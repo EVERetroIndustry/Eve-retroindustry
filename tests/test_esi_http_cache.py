@@ -156,10 +156,10 @@ def test_without_an_app_dir_nothing_is_stored(tmp_path, monkeypatch):
     assert len(net.sent) == 2
 
 
-def test_a_type_that_is_not_there_is_not_asked_again_the_same_day(store, monkeypatch):
+def test_an_alliance_that_is_not_there_is_not_asked_again_the_same_day(store, monkeypatch):
     net = _ESI(monkeypatch)
-    net.answers = [httpx.Response(404, json={"error": "Type not found!"})]
-    url = "https://esi.evetech.net/latest/universe/types/999999999/"
+    net.answers = [httpx.Response(404, json={"error": "Alliance not found"})]
+    url = "https://esi.evetech.net/latest/alliances/999999999/"
     assert net.get(url).status_code == 404
     assert net.get(url).status_code == 404
     assert len(net.sent) == 1

@@ -1010,8 +1010,8 @@ async def get_region_for_structure(structure_id: int,
     """Resolves the region_id for a structure or station. Cached in memory.
 
     The bundled SDE first (every NPC station, and the system of a structure whose
-    name the resolver stored), then ESI system -> constellation -> region for
-    what the SDE does not have."""
+    name the resolver stored), then the SDE API for an NPC station the bundle
+    does not have yet."""
     if structure_id in _region_cache:
         return _region_cache[structure_id]
     if conn is not None:
@@ -1029,29 +1029,14 @@ async def get_region_for_structure(structure_id: int,
             return local
     try:
         async with esi_client() as client:
-            # NPC station: /universe/stations/{id}/ → system_id
-            if structure_id < 1_000_000_000_000:
-                r = await client.get(f"{ESI_BASE}/universe/stations/{structure_id}/",
-                                     params={"datasource": "tranquility"}, timeout=8)
-                sys_id = r.json().get("system_id") if r.status_code == 200 else None
-            else:
+            # NPC station newer than the bundled SDE: SDE API (ESI dropped
+            # /universe/stations and /universe/systems at 2026-11-19).
+            if structure_id >= 1_000_000_000_000:
                 # Player structure - we have no token here, try via DB location_name_cache
                 return None
-
-            if not sys_id:
-                return None
-
-            sys_r = await client.get(f"{ESI_BASE}/universe/systems/{sys_id}/",
-                                     params={"datasource": "tranquility"}, timeout=8)
-            if sys_r.status_code != 200:
-                return None
-            con_id = sys_r.json().get("constellation_id")
-
-            con_r = await client.get(f"{ESI_BASE}/universe/constellations/{con_id}/",
-                                     params={"datasource": "tranquility"}, timeout=8)
-            if con_r.status_code != 200:
-                return None
-            region_id = con_r.json().get("region_id")
+            from app.esi import static_data
+            st = await static_data.fetch_station(client, structure_id, conn)
+            region_id = (st or {}).get("region_id")
 
         if region_id:
             _region_cache[structure_id] = region_id
