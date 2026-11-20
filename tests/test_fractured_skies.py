@@ -1,4 +1,4 @@
-"""Fractured Skies (2026-11-10, SDE 3682781) reaches the calculator.
+"""Fractured Skies (2026-11-10, SDE 3682781, follow-ups to 3720952) reaches the calculator.
 
 The rig map once dropped a new product group without a word because EVE Ref,
 where the generator took group categories from, had not caught up with the
@@ -50,3 +50,33 @@ def test_the_map_has_the_new_gates_and_names():
     for a, b in ((30004970, 30005308), (30003299, 30045313)):   # Renyn-Jufvitte, T-LIWS-Ienakkamon
         assert conn.execute("SELECT 1 FROM sde_stargate_links WHERE (a=? AND b=?) OR (a=? AND b=?)",
                             (a, b, b, a)).fetchone()
+
+
+# ── follow-up fixes in SDE 3698585 - 3720952 (2026-11-13 to 11-19) ──────────
+
+def test_z_grade_ore_reprocesses_into_nine_times_the_aberrant_mineral():
+    """The launch build had Raspite Z-Grade give 25 Aberrant Raspite per 100;
+    CCP raised it to 225 (X-Grade 10 -> 90). Ore is valued by its minerals in
+    Deals and the contract appraisal, so a stale table undervalues it ~4x."""
+    conn = _sde()
+    mats = dict(conn.execute("SELECT material_type_id, quantity FROM sde_ore_reprocess"
+                             " WHERE type_id=96286").fetchall())        # Raspite Z-Grade
+    assert mats[97512] == 225                                           # Aberrant Raspite
+    assert conn.execute("SELECT quantity FROM sde_ore_reprocess"
+                        " WHERE type_id=97559 AND material_type_id=97512").fetchone()[0] == 90
+
+
+def test_medium_republic_fleet_synchronizer_needs_its_trigger_units():
+    """Missing from the launch build while Small and Large had it."""
+    assert _sde().execute(
+        "SELECT quantity FROM sde_blueprint_materials WHERE blueprint_type_id=96156"
+        " AND activity='manufacturing' AND material_type_id=25593").fetchone()[0] == 60
+
+
+def test_the_imperial_navy_webifier_is_buildable():
+    conn = _sde()
+    assert conn.execute("SELECT product_type_id FROM sde_blueprint_products"
+                        " WHERE blueprint_type_id=98846 AND activity='manufacturing'"
+                        ).fetchone()[0] == 98845
+    assert conn.execute("SELECT name FROM sde_types WHERE type_id=97955"
+                        ).fetchone()[0] == "Compact Imperial Navy Stasis Webifier"
