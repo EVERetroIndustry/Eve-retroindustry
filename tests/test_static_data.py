@@ -264,3 +264,35 @@ def test_the_guard_would_catch_one():
     assert not _REMOVED_RE.search("/universe/structures/")
     assert not _REMOVED_RE.search("/universe/names/")
     assert not _REMOVED_RE.search("/universe/system_jumps/")
+
+
+def test_a_record_the_sde_does_not_have_is_not_asked_again_at_once():
+    net = _Net()
+    assert _run(sd.fetch_type(net, 999999999)) is None
+    assert _run(sd.fetch_type(net, 999999999)) is None
+    assert len(net.calls) == 1
+    # a failure is not remembered: the next look tries again
+    net = _Net(fail={"types/587"})
+    _run(sd.fetch_type(net, 587))
+    _run(sd.fetch_type(net, 587))
+    assert len(net.calls) == 2
+
+
+def test_no_code_uses_the_legacy_latest_prefix():
+    """Under /latest/ ESI kept answering routes the compatibility date has
+    dropped (the static /universe ones, GET /route) - and GET /route there
+    still routed over the gate network from before Fractured Skies. Every call
+    goes to the root, where the date we send decides."""
+    bad = []
+    files = [*REPO.joinpath("app").rglob("*.py"), REPO / "launcher.py",
+             *REPO.joinpath("scripts").rglob("*.py")]
+    for f in files:
+        for line, text in _code_strings(f):
+            if "esi.evetech.net/latest" in text or re.match(r"^/latest/", text):
+                bad.append(f"{f.relative_to(REPO)}:{line}: {text.strip()[:80]}")
+    assert not bad, "\n".join(bad)
+
+
+def test_the_compatibility_date_is_the_one_without_the_static_routes():
+    from app.esi.client import ESI_COMPAT_DATE
+    assert ESI_COMPAT_DATE >= "2026-11-19"

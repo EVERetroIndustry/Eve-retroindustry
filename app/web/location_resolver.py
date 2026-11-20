@@ -7,7 +7,7 @@ import httpx
 from app.esi import static_data
 from app.esi.client import esi_client
 
-ESI_BASE = "https://esi.evetech.net/latest"
+ESI_BASE = "https://esi.evetech.net"
 _cache: dict[int, str] = {}
 _sys_cache: dict[int, int] = {}   # location_id → solar_system_id
 _SEM = asyncio.Semaphore(10)

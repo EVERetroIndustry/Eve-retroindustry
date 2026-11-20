@@ -173,7 +173,7 @@ async def alliance_names(conn: sqlite3.Connection, ids) -> dict[int, dict]:
                 async def one(aid):
                     async with sem:
                         try:
-                            return aid, await client.get(f"{_BASE}/latest/alliances/{aid}/")
+                            return aid, await client.get(f"{_BASE}/alliances/{aid}/")
                         except Exception:
                             return aid, None
                 for aid, r in await asyncio.gather(*[one(a) for a in miss]):

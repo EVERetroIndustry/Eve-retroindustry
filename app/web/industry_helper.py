@@ -9,7 +9,7 @@ from app.esi.client import esi_client
 # name-based product classification, which produced ~74 false positives.
 from app.web.rig_affected_groups import RIG_AFFECTED_GROUPS
 
-ESI_BASE = "https://esi.evetech.net/latest"
+ESI_BASE = "https://esi.evetech.net"
 
 # SCC Surcharge - raised on 2024-02-01 from 1.5 % to 4.0 % (third increase since Viridian 2023)
 _SCC = 0.04

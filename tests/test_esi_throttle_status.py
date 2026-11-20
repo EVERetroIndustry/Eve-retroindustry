@@ -28,7 +28,7 @@ def clean_governors():
     err._pause_until, tok._pause_until, tok._group_of = before
 
 
-HIST_URL = "https://esi.evetech.net/latest/markets/1/history/"
+HIST_URL = "https://esi.evetech.net/markets/1/history/"
 
 
 def test_nothing_paused_reports_clear():
@@ -49,7 +49,7 @@ def test_a_different_groups_pause_does_not_leak_into_an_unrelated_endpoint():
     """The whole point of per-group state: a paused market bucket must not make
     an unrelated endpoint look throttled too."""
     other_sig = _TokenBucketGovernor.signature(
-        __import__("httpx").URL("https://esi.evetech.net/latest/characters/1/wallet/"))
+        __import__("httpx").URL("https://esi.evetech.net/characters/1/wallet/"))
     esi_client_mod._TOKEN_LIMIT._group_of[other_sig] = "char-wallet"
     esi_client_mod._TOKEN_LIMIT._pause_until["char-wallet"] = time.monotonic() + 42
     assert esi_throttle_status(HIST_URL) == {"paused": False, "seconds": 0}

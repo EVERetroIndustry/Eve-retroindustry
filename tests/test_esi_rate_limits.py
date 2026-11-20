@@ -63,7 +63,7 @@ def _no_network(monkeypatch):
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", fake)
 
 
-def _get(transport, url="https://esi.evetech.net/latest/markets/10000002/orders/"):
+def _get(transport, url="https://esi.evetech.net/markets/10000002/orders/"):
     async def run():
         async with httpx.AsyncClient(transport=transport) as c:
             return await c.get(url)
@@ -74,11 +74,11 @@ def _get(transport, url="https://esi.evetech.net/latest/markets/10000002/orders/
 
 def test_signature_collapses_ids_so_all_regions_share_a_bucket_key():
     sig = esi._TokenBucketGovernor.signature
-    a = sig(httpx.URL("https://esi.evetech.net/latest/markets/10000002/orders/"))
-    b = sig(httpx.URL("https://esi.evetech.net/latest/markets/10000043/orders/"))
-    assert a == b == "/latest/markets/{}/orders/"
+    a = sig(httpx.URL("https://esi.evetech.net/markets/10000002/orders/"))
+    b = sig(httpx.URL("https://esi.evetech.net/markets/10000043/orders/"))
+    assert a == b == "/markets/{}/orders/"
     # Different routes must not collide.
-    assert sig(httpx.URL("https://esi.evetech.net/latest/markets/1/history/")) != a
+    assert sig(httpx.URL("https://esi.evetech.net/markets/1/history/")) != a
 
 
 def test_limit_header_is_tokens_per_window():
@@ -115,17 +115,17 @@ def test_429_without_headers_is_still_survived():
 def test_429_pauses_only_its_own_group():
     """A drained market bucket must not stall wallet or asset calls - that is the
     whole reason this governor is per group rather than client-wide."""
-    esi._TOKEN_LIMIT._group_of["/latest/markets/{}/orders/"] = "market-order"
+    esi._TOKEN_LIMIT._group_of["/markets/{}/orders/"] = "market-order"
     esi._TOKEN_LIMIT._pause_until["market-order"] = time.monotonic() + 30
 
     async def run():
         # An unrelated group is not paused, so this returns immediately.
         await asyncio.wait_for(
-            esi._TOKEN_LIMIT.wait("/latest/characters/{}/wallet/"), timeout=0.5)
+            esi._TOKEN_LIMIT.wait("/characters/{}/wallet/"), timeout=0.5)
         # The market group is paused, so waiting on it would block.
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(
-                esi._TOKEN_LIMIT.wait("/latest/markets/{}/orders/"), timeout=0.3)
+                esi._TOKEN_LIMIT.wait("/markets/{}/orders/"), timeout=0.3)
     asyncio.run(run())
 
 
@@ -167,8 +167,8 @@ def test_healthy_remaining_does_not_brake():
 def test_token_is_attached_to_market_calls_only():
     esi.set_market_token_provider(lambda: "abc123")
     t = _Transport([_resp(200), _resp(200)])
-    _get(t, "https://esi.evetech.net/latest/markets/10000002/orders/")
-    _get(t, "https://esi.evetech.net/latest/status/")
+    _get(t, "https://esi.evetech.net/markets/10000002/orders/")
+    _get(t, "https://esi.evetech.net/status/")
     assert t.sent[0].get("authorization") == "Bearer abc123"
     assert "authorization" not in t.sent[1]
 
@@ -185,7 +185,7 @@ def test_existing_authorization_is_never_overwritten():
 
     async def run():
         async with httpx.AsyncClient(transport=t) as c:
-            return await c.get("https://esi.evetech.net/latest/markets/1/orders/",
+            return await c.get("https://esi.evetech.net/markets/1/orders/",
                                headers={"Authorization": "Bearer caller"})
     asyncio.run(run())
     assert t.sent[0]["authorization"] == "Bearer caller"

@@ -34,7 +34,7 @@ TRANSACTIONS_MAX_AGE = 3600.0
 JOBS_MAX_AGE = 3600.0
 MINING_MAX_AGE = 6 * 3600.0
 
-ESI_BASE = "https://esi.evetech.net/latest"
+ESI_BASE = "https://esi.evetech.net"
 
 
 def ensure_history_tables(conn: sqlite3.Connection) -> None:

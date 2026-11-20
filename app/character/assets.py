@@ -9,7 +9,7 @@ import sqlite3
 import json
 import httpx
 
-ESI_BASE  = "https://esi.evetech.net/latest"
+ESI_BASE  = "https://esi.evetech.net"
 CACHE_TTL = 60 * 10  # 10 minutes (assets change)
 
 

@@ -120,3 +120,13 @@ def app_module():
 def client(app_module):
     from fastapi.testclient import TestClient
     return TestClient(app_module.app)
+
+
+@pytest.fixture(autouse=True)
+def _forget_missing_static_records():
+    """static_data remembers SDE API 404s for hours; one test's fake network
+    must not decide what the next test's fake network gets asked."""
+    from app.esi import static_data
+    static_data._missing.clear()
+    yield
+    static_data._missing.clear()

@@ -216,7 +216,7 @@ async def resolve_station_systems(conn: sqlite3.Connection, station_ids,
                     if not token:
                         return sid, None
                     r = await client.get(
-                        f"https://esi.evetech.net/latest/universe/structures/{sid}",
+                        f"https://esi.evetech.net/universe/structures/{sid}",
                         headers={"Authorization": f"Bearer {token}"}, timeout=10)
                     if r.status_code == 200:
                         return sid, (r.json() or {}).get("solar_system_id")
@@ -285,7 +285,7 @@ async def refresh_public_listings(conn: sqlite3.Connection, region_ids,
         async with _PUBLIC_LIST_SEM:
             try:
                 r = await client.get(
-                    f"https://esi.evetech.net/latest/contracts/public/{rid}/",
+                    f"https://esi.evetech.net/contracts/public/{rid}/",
                     params={"page": 1}, timeout=20)
             except Exception:
                 return rid, None
@@ -294,7 +294,7 @@ async def refresh_public_listings(conn: sqlite3.Connection, region_ids,
             pages = int(r.headers.get("x-pages", 1))
             out = list(r.json() or [])
         rest = await asyncio.gather(*[
-            client.get(f"https://esi.evetech.net/latest/contracts/public/{rid}/",
+            client.get(f"https://esi.evetech.net/contracts/public/{rid}/",
                        params={"page": p}, timeout=20) for p in range(2, pages + 1)
         ], return_exceptions=True)
         for rr in rest:
@@ -376,7 +376,7 @@ async def fill_public_items(conn: sqlite3.Connection, budget: int = 12000,
         async with _PUBLIC_ITEM_SEM:
             try:
                 r = await client.get(
-                    f"https://esi.evetech.net/latest/contracts/public/items/{cid}/", timeout=15)
+                    f"https://esi.evetech.net/contracts/public/items/{cid}/", timeout=15)
             except Exception:
                 return
         async with lock:

@@ -23,7 +23,7 @@ import httpx
 
 from app.esi.client import IncompleteAnswer
 
-ESI_BASE = "https://esi.evetech.net/latest"
+ESI_BASE = "https://esi.evetech.net"
 
 
 def _auth(token: str) -> dict:

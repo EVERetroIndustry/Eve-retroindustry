@@ -12,7 +12,7 @@ reset it is what matters.
 from __future__ import annotations
 import httpx
 
-ESI_BASE = "https://esi.evetech.net/latest"
+ESI_BASE = "https://esi.evetech.net"
 
 PLANET_TYPES: dict[str, str] = {
     "temperate": "Temperate", "barren": "Barren", "oceanic": "Oceanic",

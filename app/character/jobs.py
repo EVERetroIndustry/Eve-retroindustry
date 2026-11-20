@@ -7,7 +7,7 @@ Scope: esi-industry.read_character_jobs.v1
 from __future__ import annotations
 import httpx
 
-ESI_BASE = "https://esi.evetech.net/latest"
+ESI_BASE = "https://esi.evetech.net"
 
 ACTIVITY_LABELS: dict[int, str] = {
     1: "Manufacturing",

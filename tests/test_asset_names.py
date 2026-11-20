@@ -8,7 +8,7 @@ import json
 import httpx
 import pytest
 
-URL = "https://esi.evetech.net/latest/characters/1/assets/names/"
+URL = "https://esi.evetech.net/characters/1/assets/names/"
 
 
 def _esi(monkeypatch, m, answers):

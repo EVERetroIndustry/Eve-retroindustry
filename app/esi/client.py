@@ -5,14 +5,21 @@ from typing import Optional
 
 from app.esi import http_cache
 
-ESI_BASE = "https://esi.evetech.net/latest"
+ESI_BASE = "https://esi.evetech.net"
 FUZZWORK_BASE = "https://www.fuzzwork.co.uk"
 ESI_HOST = "esi.evetech.net"
 
 # ESI date-based versioning: pin behavior to a fixed date (X-Compatibility-Date)
 # so future breaking changes don't break us. Change the date only on a deliberate switch
-# to newer API behavior. /latest in the URL still works; the header takes precedence.
-ESI_COMPAT_DATE = "2026-07-17"
+# to newer API behavior.
+#
+# 2026-11-19 (from 2026-07-17): drops the static /universe routes - the app reads
+# them from the SDE (app/esi/static_data.py). The only other change between the
+# two dates on a route we call is /corporations/{id}, of which we read alliance_id
+# (unchanged; checked live). URLs carry no /latest/ prefix any more: under it ESI
+# still answered the removed routes even with this date, which would have hidden
+# a forgotten call until CCP retires /latest/.
+ESI_COMPAT_DATE = "2026-11-19"
 
 
 # The connection pool must cover our concurrency (semaphores up to 30), otherwise refresh

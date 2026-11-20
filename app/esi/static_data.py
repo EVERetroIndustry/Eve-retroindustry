@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import time
 
 import httpx
 
@@ -34,6 +35,13 @@ SDE_API = "https://sde.evetech.net/tranquility/latest"
 ESI_NAMES = "https://esi.evetech.net/universe/names/"
 
 _SEM = asyncio.Semaphore(20)
+
+# A record the SDE does not have is not asked for again for a while: a type id
+# in the assets that no release knows would otherwise cost a request on every
+# page load. (ESI's 404 for /universe/types was kept 24 h by http_cache.) New
+# content arrives with a release, so a few hours is plenty.
+_MISSING_TTL = 6 * 3600
+_missing: dict[tuple[str, int], float] = {}
 
 # Wormhole and Abyssal regions: no public contracts there, never offered.
 _LAST_KSPACE_REGION = 11_000_000
@@ -57,10 +65,14 @@ async def sde_record(client: httpx.AsyncClient, table: str, key: int) -> dict | 
 
     Raises on anything else (network, 5xx): the caller decides how to say so.
     """
+    k = (table, int(key))
+    if time.monotonic() - _missing.get(k, -_MISSING_TTL) < _MISSING_TTL:
+        return None
     async with _SEM:
         r = await client.get(f"{SDE_API}/{table}/{int(key)}.json",
                              follow_redirects=True, timeout=15)
     if r.status_code == 404:
+        _missing[k] = time.monotonic()
         return None
     r.raise_for_status()
     return r.json()

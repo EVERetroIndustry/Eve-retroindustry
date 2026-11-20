@@ -5,7 +5,7 @@ import sqlite3
 import time
 import httpx
 
-ESI_BASE  = "https://esi.evetech.net/latest"
+ESI_BASE  = "https://esi.evetech.net"
 CACHE_TTL = 3600  # 1 hour
 
 # Industry and AdvIndustry are applied separately in calc_job_time,

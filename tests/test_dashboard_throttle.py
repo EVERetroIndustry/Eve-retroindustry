@@ -170,14 +170,14 @@ def test_a_pause_on_an_unrelated_group_does_not_stop_the_dashboard(client,
     price refresh earns routinely - made the dashboard declare itself
     rate-limited. Verified while it was happening: the shared error budget was
     100 of 100, untouched, because a 429 costs nothing."""
-    _pause_group("https://esi.evetech.net/latest/markets/10000002/orders/", 120)
+    _pause_group("https://esi.evetech.net/markets/10000002/orders/", 120)
     d = client.get("/api/dashboard/live").json()
     assert d.get("throttled") in (False, None)
 
 
 def test_a_pause_on_a_group_the_dashboard_uses_does_stop_it(client, clean_governors,
                                                            no_dash_cache):
-    _pause_group("https://esi.evetech.net/latest/characters/1/wallet/", 90)
+    _pause_group("https://esi.evetech.net/characters/1/wallet/", 90)
     t0 = time.time()
     d = client.get("/api/dashboard/live").json()
     assert d["throttled"] is True

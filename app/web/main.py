@@ -806,7 +806,7 @@ async def _fetch_wallet_balance(
     try:
         async with esi_client(timeout=8) as client:
             r = await client.get(
-                f"https://esi.evetech.net/latest/characters/{char_id}/wallet/",
+                f"https://esi.evetech.net/characters/{char_id}/wallet/",
                 headers={"Authorization": f"Bearer {token}"},
             )
             if r.status_code == 200:
@@ -1682,7 +1682,7 @@ _CORP_CHECK_TTL = 6 * 3600
 
 async def _fetch_character_corp(client, cid: int) -> int | None:
     """corporation_id from the public /characters/{id}/ sheet, or None."""
-    r = await client.get(f"https://esi.evetech.net/latest/characters/{cid}/",
+    r = await client.get(f"https://esi.evetech.net/characters/{cid}/",
                          headers={"Accept": "application/json"})
     if r.status_code != 200:
         return None
@@ -1770,7 +1770,7 @@ async def _compute_dashboard(request: Request, conn, *, live: bool,
             try:
                 async with esi_client(timeout=5) as client:
                     r = await client.post(
-                        "https://esi.evetech.net/latest/universe/names/",
+                        "https://esi.evetech.net/universe/names/",
                         json=corp_ids,
                         headers={"Accept": "application/json"},
                     )
@@ -1944,7 +1944,7 @@ async def _compute_dashboard(request: Request, conn, *, live: bool,
             try:
                 async with esi_client(timeout=5) as client:
                     rr = await client.post(
-                        "https://esi.evetech.net/latest/universe/names/",
+                        "https://esi.evetech.net/universe/names/",
                         json=list(_sys_ids), headers={"Accept": "application/json"},
                     )
                     if rr.status_code == 200:
@@ -2129,9 +2129,9 @@ async def dashboard(request: Request):
 # rate-limited and refuse to load. Verified while it was doing exactly that: the
 # shared error budget was 100 of 100, untouched, because a 429 costs nothing.
 _DASHBOARD_ESI_URLS = (
-    "https://esi.evetech.net/latest/characters/1/wallet/",
-    "https://esi.evetech.net/latest/characters/1/location/",
-    "https://esi.evetech.net/latest/characters/1/skillqueue/",
+    "https://esi.evetech.net/characters/1/wallet/",
+    "https://esi.evetech.net/characters/1/location/",
+    "https://esi.evetech.net/characters/1/skillqueue/",
 )
 
 
@@ -4264,7 +4264,7 @@ async def assets_distances(request: Request):
 
     async with esi_client() as client:
         r = await client.get(
-            f"https://esi.evetech.net/latest/characters/{char_id}/location/",
+            f"https://esi.evetech.net/characters/{char_id}/location/",
             params={"datasource": "tranquility"},
             headers={"Authorization": f"Bearer {token}"},
             timeout=10,
@@ -4294,27 +4294,17 @@ async def assets_distances(request: Request):
     cached_jumps = load_route_jumps(conn, origin_sys, unique_sys)
     todo = [s for s in unique_sys if s not in cached_jumps and s != origin_sys]
 
-    async def _jumps(client: httpx.AsyncClient, dest: int) -> int:
-        try:
-            resp = await client.get(
-                f"https://esi.evetech.net/latest/route/{origin_sys}/{dest}/",
-                params={"datasource": "tranquility"},
-                timeout=10,
-            )
-            return len(resp.json()) - 1 if resp.status_code == 200 else -1
-        except Exception:
-            return -1
-
     sys_jumps = dict(cached_jumps)
     sys_jumps[origin_sys] = 0
     if todo:
         async with esi_client() as client:
-            results = await asyncio.gather(*[_jumps(client, s) for s in todo])
+            results = await asyncio.gather(*[route_jumps(client, origin_sys, s) for s in todo])
         fresh = {s: j for s, j in zip(todo, results)}
-        sys_jumps.update(fresh)
-        # Only persist real answers; -1 means the lookup failed (transient) or the
-        # systems aren't connected, and we must be able to retry that.
-        save_route_jumps(conn, origin_sys, {s: j for s, j in fresh.items() if j >= 0})
+        sys_jumps.update({s: (-1 if j is None else j) for s, j in fresh.items()})
+        # A count and "no gate route" (-1, e.g. wormhole space or Pochven) are
+        # both answers and kept until the gate network changes; a failed lookup
+        # (None) is not, so it is asked again next time.
+        save_route_jumps(conn, origin_sys, {s: j for s, j in fresh.items() if j is not None})
     conn.close()
 
     distances = {loc_id: sys_jumps.get(sys_id, -1) for loc_id, sys_id in loc_to_sys.items()}
@@ -4453,7 +4443,7 @@ async def _resolve_corp_container_names(
         return result
 
     custom_names = await _fetch_asset_names(
-        f"https://esi.evetech.net/latest/corporations/{corp_id}/assets/names/",
+        f"https://esi.evetech.net/corporations/{corp_id}/assets/names/",
         token, owned_ids, problems)
 
     type_id_set = {asset_map[cid]["type_id"] for cid in container_ids if cid in asset_map}
@@ -4751,7 +4741,7 @@ async def _resolve_container_names(
         return result
 
     custom_names = await _fetch_asset_names(
-        f"https://esi.evetech.net/latest/characters/{char_id}/assets/names/",
+        f"https://esi.evetech.net/characters/{char_id}/assets/names/",
         token, owned_ids, problems)
 
     type_id_set = {asset_map[cid]["type_id"] for cid in container_ids if cid in asset_map}
@@ -5243,7 +5233,7 @@ async def suggest_station(request: Request, q: str = ""):
             if ask_esi_ids:
                 esi_tasks.append(
                     client.post(
-                        "https://esi.evetech.net/latest/universe/ids/",
+                        "https://esi.evetech.net/universe/ids/",
                         params={"datasource": "tranquility"},
                         json=[q.strip()],
                         timeout=5.0,
@@ -5253,7 +5243,7 @@ async def suggest_station(request: Request, q: str = ""):
             if char and token:
                 esi_tasks.append(
                     client.get(
-                        f"https://esi.evetech.net/latest/characters/{char[0]}/search/",
+                        f"https://esi.evetech.net/characters/{char[0]}/search/",
                         params={"categories": "structure", "search": q.strip(),
                                 "datasource": "tranquility", "strict": "false"},
                         headers={"Authorization": f"Bearer {token}"},
@@ -5406,7 +5396,7 @@ async def add_station(request: Request, raw: str = Form(...)):
             else:
                 headers = {"Authorization": f"Bearer {token}"} if token else {}
                 r = await client.get(
-                    f"https://esi.evetech.net/latest/universe/structures/{structure_id}/",
+                    f"https://esi.evetech.net/universe/structures/{structure_id}/",
                     params={"datasource": "tranquility"}, headers=headers, timeout=8,
                 )
                 if r.status_code == 200:
@@ -5487,7 +5477,7 @@ async def my_location(request: Request):
     try:
         async with esi_client() as client:
             r = await client.get(
-                f"https://esi.evetech.net/latest/characters/{char[0]}/location/",
+                f"https://esi.evetech.net/characters/{char[0]}/location/",
                 params={"datasource": "tranquility"},
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=8,
@@ -5518,7 +5508,7 @@ async def my_location(request: Request):
                         sys_id = st["system_id"] or sys_id
                 else:
                     r2 = await client.get(
-                        f"https://esi.evetech.net/latest/universe/structures/{structure_id}/",
+                        f"https://esi.evetech.net/universe/structures/{structure_id}/",
                         params={"datasource": "tranquility"},
                         headers={"Authorization": f"Bearer {token}"}, timeout=8,
                     )
@@ -6030,7 +6020,7 @@ async def api_market_orders(request: Request, type_id: int, region_id: int = JIT
                 while page <= 30:
                     try:
                         r = await client.get(
-                            f"https://esi.evetech.net/latest/markets/structures/{location_id}/",
+                            f"https://esi.evetech.net/markets/structures/{location_id}/",
                             params={"datasource": "tranquility", "page": page},
                             headers={"Authorization": f"Bearer {token}"},
                             timeout=20,
@@ -6054,7 +6044,7 @@ async def api_market_orders(request: Request, type_id: int, region_id: int = JIT
                 while page <= 20:
                     try:
                         r = await client.get(
-                            f"https://esi.evetech.net/latest/markets/{region_id}/orders/",
+                            f"https://esi.evetech.net/markets/{region_id}/orders/",
                             params={"type_id": type_id, "order_type": "all",
                                     "datasource": "tranquility", "page": page},
                             timeout=20,
@@ -6618,7 +6608,7 @@ async def _resolve_party_names(ids: set[int]) -> dict[int, str]:
             chunk = id_list[i:i + 1000]
             try:
                 r = await client.post(
-                    "https://esi.evetech.net/latest/universe/names/",
+                    "https://esi.evetech.net/universe/names/",
                     json=chunk, headers={"Accept": "application/json"},
                 )
                 if r.status_code == 200:
@@ -6749,7 +6739,7 @@ async def wallet_page(request: Request, char: str = "", scope: str = "personal",
                 corp_id = row.get("corporation_id")
                 if not corp_id:
                     cr = await client.get(
-                        f"https://esi.evetech.net/latest/characters/{plan_char_id}/",
+                        f"https://esi.evetech.net/characters/{plan_char_id}/",
                         timeout=10)
                     if cr.status_code == 200:
                         corp_id = cr.json().get("corporation_id")
@@ -7220,7 +7210,7 @@ async def _orders_live(request: Request, char: str, scope: str, state: str) -> d
                         if not corp_id:
                             try:
                                 cr = await client.get(
-                                    f"https://esi.evetech.net/latest/characters/{cid}/", timeout=10)
+                                    f"https://esi.evetech.net/characters/{cid}/", timeout=10)
                                 if cr.status_code == 200:
                                     corp_id = cr.json().get("corporation_id")
                                     if corp_id:
@@ -7273,7 +7263,7 @@ async def _orders_live(request: Request, char: str, scope: str, state: str) -> d
                 corp_id = row.get("corporation_id")
                 if not corp_id:
                     cr = await client.get(
-                        f"https://esi.evetech.net/latest/characters/{plan_char_id}/", timeout=10)
+                        f"https://esi.evetech.net/characters/{plan_char_id}/", timeout=10)
                     if cr.status_code == 200:
                         corp_id = cr.json().get("corporation_id")
                         if corp_id:
@@ -7403,7 +7393,7 @@ async def _corp_alliance_ids(conn: sqlite3.Connection, corp_ids) -> dict[int, in
         async def _one(client, cid):
             try:
                 r = await client.get(
-                    f"https://esi.evetech.net/latest/corporations/{cid}/", timeout=10)
+                    f"https://esi.evetech.net/corporations/{cid}/", timeout=10)
                 if r.status_code == 200:
                     return cid, r.json().get("alliance_id")
             except Exception:
@@ -7606,7 +7596,7 @@ async def _contracts_live(request: Request, char: str, scope: str, status: str) 
                 corp_id = row.get("corporation_id")
                 if not corp_id:
                     cr = await client.get(
-                        f"https://esi.evetech.net/latest/characters/{plan_char_id}/", timeout=10)
+                        f"https://esi.evetech.net/characters/{plan_char_id}/", timeout=10)
                     if cr.status_code == 200:
                         corp_id = cr.json().get("corporation_id")
                         if corp_id:
@@ -7721,7 +7711,7 @@ async def _resolve_region_id(name_or_id: str) -> tuple[int | None, str]:
         return int(s), s
     try:
         async with esi_client(timeout=10) as client:
-            r = await client.post("https://esi.evetech.net/latest/universe/ids/",
+            r = await client.post("https://esi.evetech.net/universe/ids/",
                                   json=[s], headers={"Accept": "application/json"})
             if r.status_code == 200:
                 regs = r.json().get("regions") or []
@@ -9160,6 +9150,30 @@ async def entity_portrait(kind: str, entity_id: int, size: int = 32, refresh: in
 _GATE_NETWORK_CHANGED = 1794308400.0     # 2026-11-10 11:00 UTC, Fractured Skies
 
 
+async def route_jumps(client: httpx.AsyncClient, origin: int, dest: int) -> int | None:
+    """Gate jumps on the shortest route, -1 when there is no gate route at all,
+    None when ESI could not answer (retry later).
+
+    POST /route/{a}/{b} with an empty body (preference "Shorter"). The GET form
+    the app used is not in the ESI spec at any compatibility date since
+    2025-09-30 and only ever answered under the legacy /latest/ prefix.
+    """
+    try:
+        resp = await client.post(f"https://esi.evetech.net/route/{origin}/{dest}",
+                                 json={}, timeout=10)
+    except Exception as exc:
+        print(f"[route] {origin} -> {dest} failed: {exc}", flush=True)
+        return None
+    if resp.status_code == 200:
+        try:
+            return len(resp.json()["route"]) - 1
+        except Exception:
+            return None
+    if resp.status_code == 404:
+        return -1                  # "No route found": not connected by gates
+    return None
+
+
 def _gate_network_fingerprint(conn: sqlite3.Connection) -> str:
     import hashlib
     try:
@@ -10032,7 +10046,7 @@ def _characters_apply() -> str | None:
 
 # ── Market sweeps: Jita and the trade hubs ───────────────────────────────────
 
-_ORDERS_URL = "https://esi.evetech.net/latest/markets/10000002/orders/"
+_ORDERS_URL = "https://esi.evetech.net/markets/10000002/orders/"
 
 
 async def _job_jita(report) -> dict:

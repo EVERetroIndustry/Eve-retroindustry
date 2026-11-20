@@ -14,7 +14,7 @@ import sqlite3
 import httpx
 from app.esi.client import esi_client, esi_throttle_status, esi_budget_share
 
-ESI_BASE = "https://esi.evetech.net/latest"
+ESI_BASE = "https://esi.evetech.net"
 JITA_REGION = 10000002   # The Forge
 JITA_STATION = 60003760  # Jita 4-4 CNAP
 # How long a stored Jita price counts as current. ESI's own order cache is about

@@ -17,9 +17,9 @@ import pytest
 from app.esi import client as esi
 from app.esi import http_cache
 
-WALLET = "https://esi.evetech.net/latest/characters/900000001/wallet/journal/?page=1"
-CORP = "https://esi.evetech.net/latest/corporations/98000001/wallets/"
-HISTORY = "https://esi.evetech.net/latest/markets/10000002/history/?type_id=34"
+WALLET = "https://esi.evetech.net/characters/900000001/wallet/journal/?page=1"
+CORP = "https://esi.evetech.net/corporations/98000001/wallets/"
+HISTORY = "https://esi.evetech.net/markets/10000002/history/?type_id=34"
 
 
 def _jwt(char_id: int) -> str:
@@ -141,9 +141,9 @@ def test_errors_are_counted_per_route(store, monkeypatch):
     net = _ESI(monkeypatch)
     esi._ERRORS.clear()
     net.answers = [httpx.Response(404, json={"error": "nope"})]
-    net.get("https://esi.evetech.net/latest/universe/structures/1000000000001/", _jwt(1))
+    net.get("https://esi.evetech.net/universe/structures/1000000000001/", _jwt(1))
     assert esi.esi_stats()["errors"] == [
-        {"route": "/latest/universe/structures/{}/", "status": 404, "count": 1}]
+        {"route": "/universe/structures/{}/", "status": 404, "count": 1}]
 
 
 def test_without_an_app_dir_nothing_is_stored(tmp_path, monkeypatch):
@@ -159,7 +159,7 @@ def test_without_an_app_dir_nothing_is_stored(tmp_path, monkeypatch):
 def test_an_alliance_that_is_not_there_is_not_asked_again_the_same_day(store, monkeypatch):
     net = _ESI(monkeypatch)
     net.answers = [httpx.Response(404, json={"error": "Alliance not found"})]
-    url = "https://esi.evetech.net/latest/alliances/999999999/"
+    url = "https://esi.evetech.net/alliances/999999999/"
     assert net.get(url).status_code == 404
     assert net.get(url).status_code == 404
     assert len(net.sent) == 1
@@ -175,8 +175,8 @@ def test_other_not_founds_are_not_remembered(store, monkeypatch):
 def test_a_whole_order_book_page_is_not_kept(store, monkeypatch):
     net = _ESI(monkeypatch)
     net.answers = [_ok([1]), _ok([1]), _ok([2]), _ok([3])]
-    book = "https://esi.evetech.net/latest/markets/10000002/orders/?order_type=all&page=1"
-    one = "https://esi.evetech.net/latest/markets/10000002/orders/?type_id=34"
+    book = "https://esi.evetech.net/markets/10000002/orders/?order_type=all&page=1"
+    one = "https://esi.evetech.net/markets/10000002/orders/?type_id=34"
     net.get(book)
     net.get(book)
     assert len(net.sent) == 2
@@ -200,11 +200,11 @@ def test_a_found_route_is_not_kept_but_no_route_is(store, monkeypatch):
     # the gate network changes; a copy kept here could bring an old one back.
     net = _ESI(monkeypatch)
     net.answers = [_ok([1, 2, 3]), _ok([1, 3]), httpx.Response(404, json={"error": "No route found"})]
-    route = "https://esi.evetech.net/latest/route/30000001/30000003/"
+    route = "https://esi.evetech.net/route/30000001/30000003/"
     assert net.get(route).json() == [1, 2, 3]
     assert net.get(route).json() == [1, 3]
     assert len(net.sent) == 2
-    nowhere = "https://esi.evetech.net/latest/route/30000001/31000005/"
+    nowhere = "https://esi.evetech.net/route/30000001/31000005/"
     assert net.get(nowhere).status_code == 404
     assert net.get(nowhere).status_code == 404
     assert len(net.sent) == 3
