@@ -75,12 +75,9 @@ _CACHED = re.compile(
 _NOT_FOUND = re.compile(r"^/(alliances/\{\}/$|route/)")
 NOT_FOUND_TTL = 24 * 3600
 
-# Routes kept only for their "not found": a found route's jump count has its
-# own store (route_jump_cache in main.py), which drops counts when the gate
-# network changes. A body kept here as well could hand a count from before the
-# change back to that store, which would then keep it for good. (The app now
-# asks /route/ by POST, which is never cached here; route_jump_cache keeps the
-# "no route" answers too.)
+# Routes kept only for their "not found": a found route's jump count would go
+# stale when the gate network changes. (The app no longer asks ESI for routes -
+# it counts them from the SDE gate network, see gate_jumps_from in main.py.)
 _ONLY_NOT_FOUND = re.compile(r"^/route/")
 _VERSION = re.compile(r"^/(latest|legacy|dev|v\d+)(?=/)")
 

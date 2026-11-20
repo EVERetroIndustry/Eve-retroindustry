@@ -4282,34 +4282,16 @@ async def assets_distances(request: Request):
     ).fetchall()
     loc_to_sys = {row[0]: row[1] for row in rows}
 
-    # Deduplicate systems - one ESI call per unique destination
-    unique_sys = list(set(loc_to_sys.values()))
-
-    # Jump counts change only when the developer edits the gate network
-    # (ensure_route_jump_table drops counts from before such an edit). Without a cache this endpoint fired one ESI
-    # call per unique destination system (482 on this account) EVERY time it ran.
-    # The pair is stored normalised (low, high) because the gate network is
-    # undirected - the shortest path is the same in both directions.
-    ensure_route_jump_table(conn)
-    cached_jumps = load_route_jumps(conn, origin_sys, unique_sys)
-    todo = [s for s in unique_sys if s not in cached_jumps and s != origin_sys]
-
-    sys_jumps = dict(cached_jumps)
-    sys_jumps[origin_sys] = 0
-    if todo:
-        async with esi_client() as client:
-            results = await asyncio.gather(*[route_jumps(client, origin_sys, s) for s in todo])
-        fresh = {s: j for s, j in zip(todo, results)}
-        sys_jumps.update({s: (-1 if j is None else j) for s, j in fresh.items()})
-        # A count and "no gate route" (-1, e.g. wormhole space or Pochven) are
-        # both answers and kept until the gate network changes; a failed lookup
-        # (None) is not, so it is asked again next time.
-        save_route_jumps(conn, origin_sys, {s: j for s, j in fresh.items() if j is not None})
+    # Shortest gate route from the bundled SDE's gate network: one breadth-first
+    # walk gives every system at once, in about a millisecond. ESI's /route
+    # cost one call per destination (930 systems on a real account) out of a
+    # 3600-token / 15 min bucket shared by the IP - a second character in
+    # another system ran into 429 and five-minute waits.
+    sys_jumps = gate_jumps_from(conn, origin_sys)
     conn.close()
 
     distances = {loc_id: sys_jumps.get(sys_id, -1) for loc_id, sys_id in loc_to_sys.items()}
-    return {"ok": True, "origin_sys": origin_sys, "distances": distances,
-            "from_cache": len(unique_sys) - len(todo), "fetched": len(todo)}
+    return {"ok": True, "origin_sys": origin_sys, "distances": distances}
 
 
 # ---------------------------------------------------------------------------
@@ -9135,104 +9117,34 @@ async def entity_portrait(kind: str, entity_id: int, size: int = 32, refresh: in
 
 
 # ── Static map data: jump counts between systems ─────────────────────────────
-# /route/{a}/{b}/ answers only change when the gate network does, so they are
-# kept until it does. Pairs are stored normalised (low, high): the gate network
-# is undirected, so the shortest path is the same both ways and one row serves both.
+# Counted locally over the bundled SDE's gate network (sde_stargate_links).
+# Checked on a real account against ESI POST /route (preference "Shorter"):
+# all 927 answers equal, the 54 "no route" ones included.
 #
-# The network does change: Fractured Skies (2026-11-10) opened Renyn - Jufvitte
-# and Ienakkamon - T-LIWS, and a count saved before that can be longer than the
-# route is now. Two guards drop such counts:
-#   * _GATE_NETWORK_CHANGED - counts saved before the last known change. It is
-#     needed because ESI routes over new gates before the SDE that has them is
-#     out, and this release can ship before that SDE.
-#   * the gate links in the SDE - when an SDE update changes them, every count
-#     is asked again, so a later change needs no edit here.
-_GATE_NETWORK_CHANGED = 1794308400.0     # 2026-11-10 11:00 UTC, Fractured Skies
-
-
-async def route_jumps(client: httpx.AsyncClient, origin: int, dest: int) -> int | None:
-    """Gate jumps on the shortest route, -1 when there is no gate route at all,
-    None when ESI could not answer (retry later).
-
-    POST /route/{a}/{b} with an empty body (preference "Shorter"). The GET form
-    the app used is not in the ESI spec at any compatibility date since
-    2025-09-30 and only ever answered under the legacy /latest/ prefix.
-    """
+# What ESI had and this does not: gates a patch opens before our next SDE
+# release. Until then a route over a brand-new gate counts the old way round.
+# The app ships a new SDE after every patch anyway.
+def gate_jumps_from(conn: sqlite3.Connection, origin: int) -> dict[int, int]:
+    """{system_id: gate jumps} for every system reachable from `origin`.
+    A system missing from the answer has no gate route (wormhole space,
+    Pochven, an unknown id) - callers show that as -1."""
+    import collections
+    adj: dict[int, list[int]] = collections.defaultdict(list)
     try:
-        resp = await client.post(f"https://esi.evetech.net/route/{origin}/{dest}",
-                                 json={}, timeout=10)
-    except Exception as exc:
-        print(f"[route] {origin} -> {dest} failed: {exc}", flush=True)
-        return None
-    if resp.status_code == 200:
-        try:
-            return len(resp.json()["route"]) - 1
-        except Exception:
-            return None
-    if resp.status_code == 404:
-        return -1                  # "No route found": not connected by gates
-    return None
-
-
-def _gate_network_fingerprint(conn: sqlite3.Connection) -> str:
-    import hashlib
-    try:
-        rows = conn.execute("SELECT a, b FROM sde_stargate_links ORDER BY a, b").fetchall()
+        for a, b in conn.execute("SELECT a, b FROM sde_stargate_links"):
+            adj[a].append(b)
+            adj[b].append(a)
     except sqlite3.Error:
-        return ""
-    return hashlib.sha1(repr(rows).encode()).hexdigest() if rows else ""
-
-
-def ensure_route_jump_table(conn: sqlite3.Connection) -> None:
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS route_jump_cache (
-            sys_a     INTEGER NOT NULL,
-            sys_b     INTEGER NOT NULL,
-            jumps     INTEGER NOT NULL,
-            cached_at REAL,
-            PRIMARY KEY (sys_a, sys_b)
-        )
-    """)
-    conn.execute("CREATE TABLE IF NOT EXISTS route_jump_meta (key TEXT PRIMARY KEY, value TEXT)")
-    gates = _gate_network_fingerprint(conn)
-    row = conn.execute("SELECT value FROM route_jump_meta WHERE key='gates'").fetchone()
-    if gates and (row is None or row[0] != gates):
-        if row is not None:
-            conn.execute("DELETE FROM route_jump_cache")
-        conn.execute("INSERT OR REPLACE INTO route_jump_meta VALUES ('gates', ?)", (gates,))
-    conn.execute("DELETE FROM route_jump_cache WHERE cached_at IS NULL OR cached_at < ?",
-                 (_GATE_NETWORK_CHANGED,))
-    conn.commit()
-
-
-def load_route_jumps(conn: sqlite3.Connection, origin: int, dests: list[int]) -> dict[int, int]:
-    """Cached jump counts from `origin` to each of `dests` ({dest: jumps})."""
-    if not dests:
-        return {}
-    out: dict[int, int] = {}
-    for chunk_start in range(0, len(dests), 900):       # stay under SQLite's var limit
-        chunk = dests[chunk_start:chunk_start + 900]
-        pairs = [(min(origin, d), max(origin, d)) for d in chunk]
-        ph = ",".join("(?,?)" * 1 for _ in pairs)
-        flat: list[int] = [v for pair in pairs for v in pair]
-        rows = conn.execute(
-            f"SELECT sys_a, sys_b, jumps FROM route_jump_cache "
-            f"WHERE (sys_a, sys_b) IN ({ph})", flat
-        ).fetchall()
-        for a, b, j in rows:
-            out[b if a == origin else a] = j
-    return out
-
-
-def save_route_jumps(conn: sqlite3.Connection, origin: int, jumps: dict[int, int]) -> None:
-    if not jumps:
-        return
-    now = _time.time()
-    conn.executemany(
-        "INSERT OR REPLACE INTO route_jump_cache (sys_a, sys_b, jumps, cached_at) VALUES (?,?,?,?)",
-        [(min(origin, d), max(origin, d), j, now) for d, j in jumps.items()],
-    )
-    conn.commit()
+        return {origin: 0}
+    dist = {origin: 0}
+    queue = collections.deque([origin])
+    while queue:
+        here = queue.popleft()
+        for there in adj[here]:
+            if there not in dist:
+                dist[there] = dist[here] + 1
+                queue.append(there)
+    return dist
 
 
 # ── Type icons: local disk cache + long-lived browser caching ────────────────

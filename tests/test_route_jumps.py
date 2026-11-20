@@ -1,103 +1,69 @@
-"""Jump counts are kept until the gate network changes.
+"""Jump counts come from the SDE gate network, not from ESI /route.
 
-Fractured Skies (2026-11-10) opened Renyn - Jufvitte and Ienakkamon - T-LIWS;
-counts saved before that were kept "permanently" and could stay too long.
+ESI's GET /route/{a}/{b}/ left the spec at compatibility date 2025-09-30 and
+kept answering only under the legacy /latest/ prefix - still routing over the
+gate network from before Fractured Skies. Its replacement, POST /route, is one
+call per destination out of a 3600-token / 15 min bucket shared by the IP: on
+a real account (930 asset systems) the second character ran into 429 and
+five-minute waits.
+
+A breadth-first walk over sde_stargate_links answers every system at once in
+about a millisecond. Checked on that account against ESI POST /route: all 927
+answers equal, including the 54 "no route" ones. The pairs below are real ones
+from that check.
 """
 from __future__ import annotations
 
-import sqlite3
-
-
-def _db(M, links):
-    conn = sqlite3.connect(":memory:")
-    conn.execute("CREATE TABLE sde_stargate_links (a INTEGER, b INTEGER, PRIMARY KEY (a, b))")
-    conn.executemany("INSERT INTO sde_stargate_links VALUES (?,?)", links)
-    M.ensure_route_jump_table(conn)
-    return conn
-
-
-def test_counts_from_before_the_expansion_are_not_used(app_module):
-    M = app_module
-    conn = _db(M, [(1, 2)])
-    conn.execute("INSERT INTO route_jump_cache VALUES (1, 9, 12, ?)",
-                 (M._GATE_NETWORK_CHANGED - 3600,))
-    conn.commit()
-    M.save_route_jumps(conn, 1, {8: 4})
-    M.ensure_route_jump_table(conn)
-    assert M.load_route_jumps(conn, 1, [8, 9]) == {8: 4}
-
-
-def test_new_gates_in_the_sde_forget_every_count(app_module):
-    M = app_module
-    conn = _db(M, [(1, 2)])
-    M.save_route_jumps(conn, 1, {8: 4})
-    M.ensure_route_jump_table(conn)
-    assert M.load_route_jumps(conn, 1, [8]) == {8: 4}       # same network: kept
-    conn.execute("INSERT INTO sde_stargate_links VALUES (2, 8)")
-    M.ensure_route_jump_table(conn)
-    assert M.load_route_jumps(conn, 1, [8]) == {}
-
-
-# ── asking ESI: POST /route, and "no route" is an answer ─────────────────────
-# GET /route/{a}/{b}/ left the ESI spec at compatibility date 2025-09-30 and
-# only kept answering under the legacy /latest/ prefix (checked live
-# 2026-11-20: 404 at the root under both 2026-07-17 and 2026-11-19).
-
 import ast
-import asyncio
+import sqlite3
 from pathlib import Path
 
 import pytest
 
-
-class _R:
-    def __init__(self, status, payload=None):
-        self.status_code, self._p = status, payload
-
-    def json(self):
-        return self._p
+REPO = Path(__file__).resolve().parent.parent
+JITA, AMARR, THERA = 30000142, 30002187, 31000005
 
 
-class _Client:
-    def __init__(self, answer):
-        self.answer, self.sent = answer, []
-
-    async def post(self, url, json=None, **kw):
-        self.sent.append((url, json))
-        if isinstance(self.answer, Exception):
-            raise self.answer
-        return self.answer
+@pytest.fixture(scope="module")
+def bundle():
+    c = sqlite3.connect(f"file:{REPO / 'sde_base.db'}?mode=ro", uri=True)
+    yield c
+    c.close()
 
 
-@pytest.mark.parametrize("answer, jumps", [
-    (_R(200, {"route": [30000142, 30000144, 30002187]}), 2),
-    (_R(200, {"route": [30000142]}), 0),
-    (_R(404, {"status": 404, "error": "Not Found",
-              "details": [{"message": "No route found"}]}), -1),
-    (_R(503, {}), None),
-    (_R(200, ["old", "GET", "shape"]), None),
-    (OSError("network down"), None),
+@pytest.mark.parametrize("a, b, jumps", [
+    (JITA, JITA, 0),
+    (JITA, AMARR, 11),
+    (AMARR, JITA, 11),
+    (JITA, 30004759, 42),                 # 1DQ1-A
+    # over the Renyn - Jufvitte gate Fractured Skies opened; ESI's legacy GET
+    # still said 40 and 29 on 2026-11-20
+    (30003430, 30004593, 39),
+    (30004600, 30004972, 28),
 ])
-def test_route_jumps(app_module, answer, jumps):
-    c = _Client(answer)
-    assert asyncio.run(app_module.route_jumps(c, 30000142, 30002187)) == jumps
-    url, body = c.sent[0]
-    assert url == "https://esi.evetech.net/route/30000142/30002187" and body == {}
+def test_jumps_match_esi(app_module, bundle, a, b, jumps):
+    assert app_module.gate_jumps_from(bundle, a)[b] == jumps
 
 
-def test_no_route_is_kept_like_a_count(app_module):
-    M = app_module
-    conn = _db(M, [(1, 2)])
-    M.save_route_jumps(conn, 1, {31000005: -1, 8: 4})
-    assert M.load_route_jumps(conn, 1, [31000005, 8]) == {31000005: -1, 8: 4}
+def test_no_gate_route_is_absent(app_module, bundle):
+    """Thera (wormhole space): ESI answers 404 "No route found"."""
+    assert THERA not in app_module.gate_jumps_from(bundle, JITA)
 
 
-def test_nothing_asks_for_a_route_by_get():
-    root = Path(__file__).resolve().parent.parent
+def test_one_walk_reaches_known_space(app_module, bundle):
+    reached = app_module.gate_jumps_from(bundle, JITA)
+    assert len(reached) > 5000
+
+
+def test_without_a_gate_table_only_the_origin_is_known(app_module):
+    assert app_module.gate_jumps_from(sqlite3.connect(":memory:"), JITA) == {JITA: 0}
+
+
+def test_nothing_asks_esi_for_a_route():
     bad = []
-    for f in root.joinpath("app").rglob("*.py"):
+    for f in REPO.joinpath("app").rglob("*.py"):
         for node in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
-            if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "get" \
+            if isinstance(node, ast.Call) and getattr(node.func, "attr", "") in ("get", "post") \
                     and node.args and "/route/" in ast.unparse(node.args[0]):
-                bad.append(f"{f.relative_to(root)}:{node.lineno}")
+                bad.append(f"{f.relative_to(REPO)}:{node.lineno}")
     assert not bad, bad
