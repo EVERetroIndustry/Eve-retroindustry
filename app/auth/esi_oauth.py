@@ -135,13 +135,33 @@ def _pkce_pair() -> tuple[str, str]:
 class _CallbackHandler(BaseHTTPRequestHandler):
     code: str | None = None
     state: str | None = None
+    # The state this app put in the login URL. A redirect that does not carry
+    # it was not started by this login (an old SSO tab, another program, a
+    # page poking localhost) and is turned away without ending the wait.
+    # PKCE already stops a foreign code from being redeemed; this is the check
+    # the SSO documentation asks for on top of it.
+    expected_state: str | None = None
 
     redirect_to: str = "http://localhost:8000/auth/sync"
 
     def do_GET(self):
         params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        state = params.get("state", [None])[0]
+        expected = _CallbackHandler.expected_state
+        if not expected or not state or not secrets.compare_digest(state, expected):
+            print("[auth] callback ignored: it does not belong to the login this app "
+                  "started (state mismatch)", flush=True)
+            self.send_response(400)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(
+                b"<!doctype html><meta charset='utf-8'><title>EVE Retroindustry</title>"
+                b"<p style='font-family:system-ui,sans-serif'>This sign-in does not belong "
+                b"to the login the app is waiting for. Start Add Character again in "
+                b"EVE Retroindustry.</p>")
+            return
         _CallbackHandler.code  = params.get("code",  [None])[0]
-        _CallbackHandler.state = params.get("state", [None])[0]
+        _CallbackHandler.state = state
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
@@ -259,6 +279,8 @@ def login(client_id: str | None = None) -> bool:
 
     verifier, challenge = _pkce_pair()
     state = secrets.token_urlsafe(16)
+    _CallbackHandler.code = None
+    _CallbackHandler.expected_state = state
 
     params = {
         "response_type":         "code",
@@ -382,6 +404,7 @@ def start_web_login() -> str | None:
     _cancelled = False
     _CallbackHandler.code = None
     _CallbackHandler.state = None
+    _CallbackHandler.expected_state = state
 
     def _run_callback():
         global _active_server
