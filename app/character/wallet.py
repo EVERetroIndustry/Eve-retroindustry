@@ -248,6 +248,10 @@ _REF_TYPE_LABELS: dict[str, str] = {
     "factory_slot_rental_fee": "Factory Slot Rental",
     "market_provider_tax": "Market Provider Tax",
     "ess_escrow_transfer": "ESS Escrow Transfer",
+    "campaign_objective_isk_reward": "Campaign Reward",
+    "campaign_objective_isk_reward_tax": "Campaign Reward Tax",
+    "achievement_milestone_reward": "Achievement Reward",
+    "daily_goal_payouts": "Daily Goal Payout",
 }
 
 

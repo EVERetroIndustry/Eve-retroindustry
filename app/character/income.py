@@ -35,6 +35,12 @@ INCOME_GROUPS: list[tuple[str, str, tuple[str, ...]]] = [
     ("bounty", "Bounty prizes", ("bounty_prizes", "bounty_prize")),
     ("ess", "ESS payouts", ("ess_escrow_transfer",)),
     ("goals", "Daily goals", ("daily_goal_payouts",)),
+    # Military Campaigns (Fractured Skies) pay ISK per hand-in, and achievements
+    # pay a milestone reward. Measured on a real account: 61 M and 7 M that the
+    # quick filters only showed under "other".
+    ("campaigns", "Campaigns and achievements",
+     ("campaign_objective_isk_reward", "campaign_objective_isk_reward_tax",
+      "achievement_milestone_reward")),
     ("agents", "Agents and missions",
      ("agent_mission_reward", "agent_mission_time_bonus_reward", "agent_mission_collateral_refunded")),
     ("market", "Market sales", ("market_transaction", "market_escrow", "market_provider_tax")),

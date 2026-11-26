@@ -160,3 +160,15 @@ def test_a_malformed_entry_is_skipped_not_stored_as_zero():
     ])
     assert stored == 1
     assert conn.execute("SELECT journal_id FROM wallet_journal").fetchall() == [(1001,)]
+
+
+def test_campaign_and_achievement_rewards_have_their_own_filter():
+    """Military Campaigns pay campaign_objective_isk_reward (ESI added the _tax
+    entry on 2026-11-23) and achievements pay achievement_milestone_reward. On a
+    real account that was 61 M and 7 M the quick filters only showed as "other"."""
+    from app.character import income
+    groups = {k: ts for k, _l, ts in income.INCOME_GROUPS}
+    assert {"campaign_objective_isk_reward", "campaign_objective_isk_reward_tax",
+            "achievement_milestone_reward"} <= set(groups["campaigns"])
+    # income_summary takes bounty + ESS as the first two groups
+    assert [k for k, _l, _t in income.INCOME_GROUPS[:2]] == ["bounty", "ess"]
