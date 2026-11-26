@@ -1,4 +1,4 @@
-"""Fractured Skies (2026-11-10, SDE 3682781, follow-ups to 3720952) reaches the calculator.
+"""Fractured Skies (2026-11-10, SDE 3682781, follow-ups to 3749835) reaches the calculator.
 
 The rig map once dropped a new product group without a word because EVE Ref,
 where the generator took group categories from, had not caught up with the
@@ -80,3 +80,26 @@ def test_the_imperial_navy_webifier_is_buildable():
                         ).fetchone()[0] == 98845
     assert conn.execute("SELECT name FROM sde_types WHERE type_id=97955"
                         ).fetchone()[0] == "Compact Imperial Navy Stasis Webifier"
+
+
+# ── SDE 3739102 - 3749835 (2026-11-24 to 11-26) ─────────────────────────────
+
+def test_skins_put_on_the_market_in_3749835_are_tradeable():
+    """Gaia/Pioneer/Gnosis Copper Lightning had no market group before, so the
+    Prices search and the refresh set (market_group_id IS NOT NULL) skipped them."""
+    rows = _sde().execute("SELECT type_id FROM sde_types WHERE type_id IN (98656, 98658, 98661)"
+                          " AND published=1 AND market_group_id IS NOT NULL").fetchall()
+    assert len(rows) == 3
+
+
+def test_the_new_mabebu_and_frost_thorn_skins_are_known():
+    names = {r[0] for r in _sde().execute(
+        "SELECT name FROM sde_types WHERE type_id BETWEEN 99213 AND 99273")}
+    assert {"Sigil Mabebu Exchange SKIN", "Oracle Navy Issue Frost Thorn SKIN"} <= names
+
+
+def test_conquest_salvager_has_its_new_name():
+    """Renamed through the localization feed only (changedLocalization), which
+    a summary of added/changed ids alone does not show."""
+    assert _sde().execute("SELECT name FROM sde_types WHERE type_id=98168"
+                          ).fetchone()[0] == "Sver's Modified Salvager"
