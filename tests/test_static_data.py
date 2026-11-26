@@ -173,9 +173,12 @@ def test_a_name_esi_cannot_resolve_does_not_lose_the_system(bundle):
     assert st["name"] is None and st["system_id"] == JITA
 
 
-def test_names_are_retried_one_by_one_when_a_batch_has_a_bad_id():
-    net = _Net(names={1: "One"})
-    assert _run(sd._esi_names(net, [1, 2])) == {1: "One"}
+def test_a_refused_id_does_not_take_the_others_with_it():
+    """The whole batch 404s on one refused id; the rest still get named
+    (app.esi.names splits the batch - tests/test_esi_names.py has the detail)."""
+    from app.esi import names
+    net = _Net(names={60000001: "One"})
+    assert _run(names.resolve_names(net, [60000001, 60000002])) == {60000001: "One"}
 
 
 # ── planets and regions ─────────────────────────────────────────────────────

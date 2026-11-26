@@ -31,8 +31,10 @@ import time
 
 import httpx
 
+from app.esi import names as esi_names
+
 SDE_API = "https://sde.evetech.net/tranquility/latest"
-ESI_NAMES = "https://esi.evetech.net/universe/names/"
+ESI_NAMES = esi_names.NAMES_URL
 
 _SEM = asyncio.Semaphore(20)
 
@@ -158,26 +160,6 @@ async def fetch_system(client: httpx.AsyncClient | None, system_id: int,
             "region_id": d.get("regionID")}
 
 
-async def _esi_names(client: httpx.AsyncClient, ids: list[int]) -> dict[int, str]:
-    """POST /universe/names - stays on ESI. Unknown ids make the whole call 404,
-    so a failed batch is retried one id at a time."""
-    out: dict[int, str] = {}
-    if not ids:
-        return out
-    try:
-        r = await client.post(ESI_NAMES, json=ids, timeout=15)
-        if r.status_code == 200:
-            return {it["id"]: it["name"] for it in r.json() if it.get("name")}
-        if len(ids) == 1:
-            return out
-    except Exception as exc:                       # noqa: BLE001
-        _log(f"universe/names failed for {len(ids)} id(s): {type(exc).__name__}: {exc}")
-        return out
-    for i in ids:
-        out.update(await _esi_names(client, [i]))
-    return out
-
-
 async def fetch_station(client: httpx.AsyncClient | None, station_id: int,
                         conn: sqlite3.Connection | None = None) -> dict | None:
     """name, system_id, region_id of an NPC station (not a player structure)."""
@@ -196,7 +178,7 @@ async def fetch_station(client: httpx.AsyncClient | None, station_id: int,
     if not d or not d.get("solarSystemID"):
         return None
     system_id = d["solarSystemID"]
-    names = await _esi_names(client, [station_id])
+    names = await esi_names.resolve_names(client, [station_id], conn)
     system = await fetch_system(client, system_id, conn)
     return {"station_id": station_id, "name": names.get(station_id),
             "system_id": system_id, "region_id": (system or {}).get("region_id")}

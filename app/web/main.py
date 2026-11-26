@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.request import pathname2url
 
 import httpx
+from app.esi import names as esi_names
 from app.esi import static_data
 from app.esi.http_cache import forget_refusals
 from app.esi.client import (
@@ -1769,16 +1770,9 @@ async def _compute_dashboard(request: Request, conn, *, live: bool,
         if corp_ids:
             try:
                 async with esi_client(timeout=5) as client:
-                    r = await client.post(
-                        "https://esi.evetech.net/universe/names/",
-                        json=corp_ids,
-                        headers={"Accept": "application/json"},
-                    )
-                    if r.status_code == 200:
-                        for item in r.json():
-                            corp_names[item["id"]] = item["name"]
-            except Exception:
-                pass
+                    corp_names.update(await esi_names.resolve_names(client, corp_ids, conn))
+            except Exception as exc:
+                print(f"[dashboard] corporation names: {type(exc).__name__}: {exc}", flush=True)
 
     # Assets from cache (always).
     # all_assets_by_char: everything incl. singletons - for value calculation
@@ -1941,17 +1935,19 @@ async def _compute_dashboard(request: Request, conn, *, live: bool,
             except Exception:
                 dock_names = {}
         if _sys_ids:
-            try:
-                async with esi_client(timeout=5) as client:
-                    rr = await client.post(
-                        "https://esi.evetech.net/universe/names/",
-                        json=list(_sys_ids), headers={"Accept": "application/json"},
-                    )
-                    if rr.status_code == 200:
-                        for it in rr.json():
-                            sys_names[it["id"]] = it["name"]
-            except Exception:
-                pass
+            # Solar system names are static data: the bundle has every one, so
+            # this costs no request unless a system is newer than the bundle.
+            for _sid in _sys_ids:
+                _sys = await static_data.fetch_system(None, _sid, conn)
+                if _sys and _sys.get("name"):
+                    sys_names[_sid] = _sys["name"]
+            _missing_sys = [i for i in _sys_ids if i not in sys_names]
+            if _missing_sys:
+                try:
+                    async with esi_client(timeout=5) as client:
+                        sys_names.update(await esi_names.resolve_names(client, _missing_sys, conn))
+                except Exception as exc:
+                    print(f"[dashboard] system names: {type(exc).__name__}: {exc}", flush=True)
         if _skill_ids:
             _ph = ",".join("?" * len(_skill_ids))
             skill_names = {r[0]: r[1] for r in conn.execute(
@@ -6553,60 +6549,22 @@ def _ensure_party_name_cache(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _remember_party_names(conn: sqlite3.Connection, names: dict, categories: dict) -> None:
-    """Persist resolved character/corp/alliance names.
-
-    Two reasons: the contract filters can then match on an issuer name in SQL
-    without fetching anything, and a page does not have to re-resolve names it has
-    already seen. Names change rarely and a stale one is harmless here.
-    """
-    if not names:
-        return
-    try:
-        _ensure_party_name_cache(conn)
-        now = _time.time()
-        conn.executemany(
-            "INSERT OR REPLACE INTO party_name_cache (party_id, name, category, cached_at)"
-            " VALUES (?,?,?,?)",
-            [(pid, nm, categories.get(pid), now) for pid, nm in names.items()])
-        conn.commit()
-    except Exception:
-        pass
-
-
 async def _resolve_party_names(ids: set[int]) -> dict[int, str]:
-    """Resolve char/corp/alliance/station/type IDs to names via ESI
-    /universe/names/. The endpoint can't handle player structures (>1e12) - we skip them.
+    """Names for character/corporation/alliance/station/system ids, through
+    app.esi.names: the name cache first, then /universe/names with the refused
+    ids split out (one refused id used to blank a whole page of issuers).
+    Player structures (>1e12) are not this route's business and are skipped.
 
     Side effect: records each id's category in _PARTY_CATEGORY.
     """
-    ids = {i for i in ids if i and i < 1_000_000_000_000}
-    out: dict[int, str] = {}
     if not ids:
-        return out
-    id_list = list(ids)
-    async with esi_client(timeout=10) as client:
-        for i in range(0, len(id_list), 1000):  # ESI limit 1000/req
-            chunk = id_list[i:i + 1000]
-            try:
-                r = await client.post(
-                    "https://esi.evetech.net/universe/names/",
-                    json=chunk, headers={"Accept": "application/json"},
-                )
-                if r.status_code == 200:
-                    for item in r.json():
-                        out[item["id"]] = item["name"]
-                        if item.get("category"):
-                            _PARTY_CATEGORY[item["id"]] = item["category"]
-            except Exception:
-                pass
-    if out:
-        conn = get_conn()
-        try:
-            _remember_party_names(conn, out, _PARTY_CATEGORY)
-        finally:
-            conn.close()
-    return out
+        return {}
+    conn = get_conn()
+    try:
+        async with esi_client(timeout=10) as client:
+            return await esi_names.resolve_names(client, ids, conn, _PARTY_CATEGORY)
+    finally:
+        conn.close()
 
 
 @app.get("/wallet", response_class=HTMLResponse)
