@@ -127,6 +127,10 @@ def _forget_missing_static_records():
     """static_data remembers SDE API 404s for hours; one test's fake network
     must not decide what the next test's fake network gets asked."""
     from app.esi import static_data
-    static_data._missing.clear()
+    from app.web import prices_helper
+    memories = (static_data._missing, prices_helper._OFF_MARKET_CHECKED)
+    for m in memories:
+        m.clear()
     yield
-    static_data._missing.clear()
+    for m in memories:
+        m.clear()

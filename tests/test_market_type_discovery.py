@@ -201,3 +201,72 @@ def test_a_later_discovery_keeps_the_earlier_ones(conn, monkeypatch):
     # The bundle replaces sde_types and lacks both: both come back.
     conn.execute("DELETE FROM sde_types WHERE type_id IN (?,?)", (ACCEL, other))
     assert ph._apply_discovered_types(conn, prune=True) == 2
+
+
+# ── a known type that the static data still lists off the market ─────────────
+
+SKIN = 98656          # Gaia Copper Lightning SKIN: no market group up to SDE 3720952
+SKIN_RECORD = {"typeID": SKIN, "name": {"en": "Gaia Copper Lightning SKIN"}, "groupID": 1950,
+               "marketGroupID": 1976, "published": True, "volume": 0.01}
+
+
+@pytest.fixture
+def conn_with_skin(conn):
+    conn.execute("INSERT INTO sde_types VALUES (?,?,?,?,?,?,?)",
+                 (SKIN, "Gaia Copper Lightning SKIN", 1950, 1, None, 0.01, 0.01))
+    conn.commit()
+    return conn
+
+
+def _tradeable(conn):
+    return {r[0] for r in conn.execute(
+        "SELECT type_id FROM sde_types WHERE published=1 AND market_group_id IS NOT NULL")}
+
+
+def test_a_type_put_on_the_market_after_the_bundle_becomes_tradeable(conn_with_skin, monkeypatch):
+    """SDE 3749835 gave three SKINs a market group. The bundle had them without
+    one, so they were missing from the Prices search and the refresh set, and
+    discovery never looked: it only asked about ids missing entirely."""
+    asked = []
+    _stub(monkeypatch, {SKIN: SKIN_RECORD}, asked)
+    assert SKIN not in _tradeable(conn_with_skin)
+
+    added = asyncio.run(ph.discover_market_types(conn_with_skin, [34, SKIN]))
+
+    assert added == [SKIN], "returned so the same pass prices it"
+    assert asked == [SKIN]
+    assert SKIN in _tradeable(conn_with_skin)
+    assert conn_with_skin.execute("SELECT COUNT(*) FROM sde_types WHERE type_id=?",
+                                  (SKIN,)).fetchone()[0] == 1, "updated, not duplicated"
+
+
+def test_the_market_group_survives_an_sde_update_that_still_lacks_it(conn_with_skin, monkeypatch):
+    _stub(monkeypatch, {SKIN: SKIN_RECORD}, [])
+    asyncio.run(ph.discover_market_types(conn_with_skin, [SKIN]))
+    # The bundle is rebuilt with the type still off the market.
+    conn_with_skin.execute("UPDATE sde_types SET market_group_id=NULL WHERE type_id=?", (SKIN,))
+    ph._apply_discovered_types(conn_with_skin, prune=True)
+    assert SKIN in _tradeable(conn_with_skin)
+    assert conn_with_skin.execute("SELECT COUNT(*) FROM discovered_types WHERE type_id=?",
+                                  (SKIN,)).fetchone()[0] == 1
+
+
+def test_a_bundle_with_the_market_group_supersedes_the_fix(conn_with_skin, monkeypatch):
+    _stub(monkeypatch, {SKIN: SKIN_RECORD}, [])
+    asyncio.run(ph.discover_market_types(conn_with_skin, [SKIN]))
+    conn_with_skin.execute("UPDATE sde_types SET market_group_id=1976 WHERE type_id=?", (SKIN,))
+    ph._apply_discovered_types(conn_with_skin, prune=True)
+    assert conn_with_skin.execute("SELECT COUNT(*) FROM discovered_types").fetchone()[0] == 0
+
+
+def test_a_type_off_the_market_for_the_sde_too_is_left_alone_and_not_asked_again(
+        conn_with_skin, monkeypatch):
+    """A few stray orders can outlive CCP taking a type off the market: record
+    nothing, and do not pay a request for it on every sweep."""
+    asked = []
+    _stub(monkeypatch, {SKIN: {**SKIN_RECORD, "marketGroupID": None}}, asked)
+    assert asyncio.run(ph.discover_market_types(conn_with_skin, [SKIN])) == []
+    assert asyncio.run(ph.discover_market_types(conn_with_skin, [SKIN])) == []
+    assert asked == [SKIN]
+    assert SKIN not in _tradeable(conn_with_skin)
+    assert conn_with_skin.execute("SELECT COUNT(*) FROM discovered_types").fetchone()[0] == 0

@@ -375,6 +375,10 @@ def set_custom_price(conn: sqlite3.Connection, type_id: int, price: float | None
 
 _DISCOVER_SEM = asyncio.Semaphore(20)
 _DISCOVER_CAP = 500          # per refresh; a sane bound if ESI ever floods us
+# Types the static data lists off the market but that turned up in an order
+# book: when each was last asked about (process memory, like static_data._missing).
+_OFF_MARKET_CHECKED: dict[int, float] = {}
+_OFF_MARKET_RECHECK = 6 * 3600
 
 
 def ensure_discovered_types_table(conn: sqlite3.Connection) -> None:
@@ -440,7 +444,18 @@ def _apply_discovered_types(conn: sqlite3.Connection, prune: bool = False) -> in
     applied = 0
     superseded: list[int] = []
     for r in rows:
-        if conn.execute("SELECT 1 FROM sde_types WHERE type_id=?", (r[0],)).fetchone():
+        have = conn.execute("SELECT market_group_id FROM sde_types WHERE type_id=?",
+                            (r[0],)).fetchone()
+        if have:
+            if have[0] is None and r[3] is not None:
+                # The static data has the type but not on the market, and the
+                # SDE API says it is now (CCP put three SKINs on the market in
+                # build 3749835). Only the market fields: the rest is CCP's.
+                # The row stays until a bundle carries the market group itself.
+                conn.execute("UPDATE sde_types SET market_group_id=?, published=?"
+                             " WHERE type_id=?", (r[3], r[4], r[0]))
+                applied += 1
+                continue
             if prune:
                 superseded.append(r[0])
             continue
@@ -457,16 +472,27 @@ def _apply_discovered_types(conn: sqlite3.Connection, prune: bool = False) -> in
 
 
 async def discover_market_types(conn: sqlite3.Connection, seen_type_ids) -> list[int]:
-    """Learn the types that trade but are missing from the static data.
+    """Learn the types that trade but are missing from the static data, or that
+    it still lists as off the market.
 
     Returns the ids newly added, so the caller can price them in the same pass -
     their orders are already in the bulk payload.
     """
     ensure_discovered_types_table(conn)
-    known = {r[0] for r in conn.execute("SELECT type_id FROM sde_types")}
-    unknown = sorted(set(seen_type_ids) - known)[:_DISCOVER_CAP]
+    known = dict(conn.execute("SELECT type_id, market_group_id FROM sde_types").fetchall())
+    seen = {int(t) for t in seen_type_ids if t}
+    now = time.time()
+    # Unknown to the static data at all, or known but listed as off the market
+    # while it trades: the bundle is from before CCP put it on the market. The
+    # second kind is asked about again only after a while, because a type can
+    # keep a few stray orders after CCP takes it off the market.
+    off_market = sorted(t for t in seen if t in known and known[t] is None
+                        and now - _OFF_MARKET_CHECKED.get(t, 0.0) >= _OFF_MARKET_RECHECK)
+    unknown = (sorted(t for t in seen if t not in known) + off_market)[:_DISCOVER_CAP]
     if not unknown:
         return []
+    for t in off_market:
+        _OFF_MARKET_CHECKED[t] = now
 
     async def _one(client, tid: int):
         async with _DISCOVER_SEM:
@@ -476,8 +502,8 @@ async def discover_market_types(conn: sqlite3.Connection, seen_type_ids) -> list
     async with esi_client() as client:
         results = await asyncio.gather(*[_one(client, t) for t in unknown])
 
-    now = time.time()
     added: list[int] = []
+    put_on_market = 0
     for res in results:
         if not res:
             continue
@@ -485,13 +511,22 @@ async def discover_market_types(conn: sqlite3.Connection, seen_type_ids) -> list
         name = (d.get("name") or "").strip()
         if not name:
             continue                          # a type with no name is nothing we can show
+        if tid in known:
+            if d.get("market_group_id") is None:
+                continue                      # off the market for the SDE too: leave it
+            put_on_market += 1
         record_discovered_type(conn, tid, d, now=now, commit=False)
         added.append(tid)
     conn.commit()
     if added:
         _apply_discovered_types(conn)
-        print(f"[prices] learned {len(added)} type(s) from the market that the "
-              f"static data does not have yet", flush=True)
+        new_types = len(added) - put_on_market
+        if new_types:
+            print(f"[prices] learned {new_types} type(s) from the market that the "
+                  f"static data does not have yet", flush=True)
+        if put_on_market:
+            print(f"[prices] {put_on_market} type(s) trade although the static data lists "
+                  f"them off the market; market group taken from the SDE API", flush=True)
     return added
 
 
